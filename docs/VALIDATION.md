@@ -22,10 +22,10 @@ Checked missing-provider feedback and dialog dismissal. No browser application e
 
 The standalone HTML, 1024 x 1024 logo, and 1500 x 500 banner are exported with the current copy and fee split.
 
-## Decorative motion update
+## SOL artwork and layout update
 
-Rechecked six routes at 320, 390, 768, and 1440 pixels after adding background movement. All 24 views retained their page content and the Solana/wallet header without horizontal overflow. Visually reviewed desktop and mobile layouts.
+Rechecked six routes at 320, 390, 768, and 1440 pixels after adding falling SOL artwork, a floating medallion, a revised allocation card, and a unified metrics panel. All 24 views retained the expected page headings and Solana/wallet header without horizontal overflow. Visually reviewed desktop and mobile layouts.
 
-Confirmed that hero transforms change over time, pause and resume work, the pause preference survives reload, and the hero pauses offscreen. A separate execution of the motion controller verified device reduced-motion preference changes and hidden-tab handling. Pausing decorative motion leaves notification animations running.
+Confirmed that SOL particle transforms change over time, pause stops the particles and medallion, and the pause preference survives reload. Mobile displays eight decorative pieces across the background and hero, compared with eighteen on desktop. Route changes do not duplicate background particles. A separate execution of the motion controller verified device reduced-motion preference changes and hidden-tab handling. Decorative elements ignore pointer input and are hidden from assistive technology.
 
-Discovery search, opening a token, wallet popup opening/closing, and missing-provider feedback still work. No application console errors were recorded. All 13 existing tests pass. Market values and chart points are not animated by the decorative layer.
+Discovery search, opening Second Wind, wallet popup opening/closing, and a 0.5 SOL quote for 4,700 WIND still work. No application console errors were recorded. All 13 existing tests pass. Market values and chart points are not animated by the decorative layer.

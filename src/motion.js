@@ -3,6 +3,15 @@
   'use strict';
   const preferenceKey = 'rebound.motion.paused';
   const systemPreference = matchMedia('(prefers-reduced-motion: reduce)');
+  const rain = document.querySelector('.sol-rain');
+  const lanes = [5,17,29,42,54,67,79,93,12,86];
+  if (rain) lanes.forEach((x, index) => {
+    const piece = document.createElement('span');
+    piece.className = 'sol-fragment';
+    piece.style.cssText = `--x:${x}%;--duration:${24 + index % 4 * 5}s;--delay:-${index * 5.7 + 3}s;--size:${18 + index % 3 * 8}px;--drift:${index % 2 ? -32 : 26}px;--turn:${index % 2 ? 25 : -35}deg`;
+    piece.innerHTML = '<svg viewBox="0 0 32 28" focusable="false"><use href="#sol-symbol"/></svg>';
+    rain.append(piece);
+  });
   let paused = false;
   try { paused = localStorage.getItem(preferenceKey) === 'true'; } catch {}
   const footerLinks = document.querySelector('.footer-top>div');
