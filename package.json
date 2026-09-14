@@ -1,0 +1,12 @@
+{
+  "name": "rebound-solana",
+  "version": "0.3.0",
+  "private": true,
+  "description": "REBOUND Solana token and SOL recovery prototype",
+  "scripts": {
+    "start": "node scripts/server.cjs",
+    "build": "node scripts/build.cjs",
+    "test": "node scripts/test.cjs"
+  },
+  "engines": {"node": ">=20"}
+}
