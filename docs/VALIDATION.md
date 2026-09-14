@@ -1,27 +1,23 @@
 # Validation
 
-Executed on 14 September 2026.
+Validated locally on 2026-09-14 for version 0.5.0.
 
-Palette revision: replaced all inherited accent hues with charcoal and emerald throughout the interface and SVG assets. Neutral text and different green values preserve readable contrast. Negative price changes retain their minus sign and use a dashed chart line. Desktop discovery and mobile discovery/token screens were reviewed again, mobile navigation worked, no horizontal overflow or application console errors were observed, and all 11 automated tests passed after the palette update.
+## Automated checks
 
-## Automated tests
+`npm test` passes 13 tests. Coverage includes the 85/15 fee split, integer conservation across 10,001 amounts, duplicate receipts, position maturity, proportional funding, claim timing, post-sale funded claims, cancellation, reference pricing, and policy-safe persistence.
 
-`node scripts/test.cjs`: 11 passing tests.
+Wallet mocks execute the application connection handlers. They verify public-address connection, rejected requests, invalid addresses, account changes, listener cleanup, and disconnection without invoking transaction signing or changing simulated funds.
 
-Coverage includes SOL fixture denominations, fee conservation over 1,001 receipt sizes, lot maturity, permanent outgoing disqualification, delayed claims, duplicate-claim rejection, funded-claim survival after a sale, guardian cancellation, receipt idempotency, allocation caps and rounding, complete price history, buyback gates, precise amount parsing, and BigInt persistence.
+The copy check scans source, tests, fixtures, documentation, editable assets, and generated preview text for retired terminology, allocation values, and long-dash characters or entities.
 
-The repository-wide terminology check covers HTML, CSS, JavaScript, fixtures, tests, documentation, JSON, SVG assets, and the generated preview. It rejects the retired stablecoin symbol, the retired holder phrase, both long dash characters, and their named HTML entities.
+## Browser checks
 
-## Browser checks performed
+All six routes were checked at 320, 390, 768, and 1440 CSS pixels wide. These 24 combinations had no document-level horizontal overflow or retired visible terminology. Desktop and mobile screenshots were visually reviewed, including the two-column wallet dialog and its stacked mobile layout.
 
-The in-app Chromium browser rendered all seven routes at 320, 390, 768, and 1440 pixels: discovery, token detail, launch, portfolio, analytics, buybacks, and documentation. All 28 route/width combinations rendered their expected heading without document-level horizontal overflow. Desktop and mobile screenshots were visually reviewed. No application console errors were observed.
+Executed discovery search, a 0.5 SOL simulated purchase of 4,700 WIND, reward funding, rejection of a premature claim, a successful 1.1475 SOL claim after advancing ten minutes, and a 100 WIND sale. The sale ended future rewards and survived reload.
 
-Desktop interaction checks passed for community filtering, token search, navigation, a 0.5 SOL buy yielding 4,700 WIND, fee collection, round funding, early claim rejection, a matured 1.08 SOL claim, sale confirmation, permanent disqualification, persistence after reload, token name validation, tax bounds, and all three launch steps.
+The mobile creation wizard rejected an empty token name, accepted valid details, showed the SOL and 85/15 policy at review, created a local token, and retained it after reload. Test simulation data was then reset through the interface.
 
-Buyback scheduling and the 48-hour advance exposed the checks-required state without reporting an executed purchase. The wallet dialog and missing-Phantom state worked without a transaction request.
+Checked missing-provider feedback and dialog dismissal. No browser application errors were recorded. Real wallet extension approval was not exercised; connection behavior is covered by mocks and missing-provider browser checks. Real minting, trading, and payouts remain outside this prototype.
 
-Mobile checks passed for the bottom navigation menu, three-step token creation, a 0.1 SOL paper buy, reset confirmation, restoration of eight fixture tokens, keyboard token navigation, and round manifest display with SOL and nine decimals.
-
-## Limits
-
-Browser tests used the local prototype in Chromium. Real wallet extension connections, transaction signing, on-chain transfers, Pump.fun integration, Safari, and physical touch devices were not tested. The earlier conversation's test counts are not reused as evidence for this import.
+The standalone HTML, 1024 x 1024 logo, and 1500 x 500 banner are exported with the current copy and fee split.

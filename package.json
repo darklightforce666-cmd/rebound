@@ -1,12 +1,14 @@
 {
   "name": "rebound-solana",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "private": true,
-  "description": "REBOUND Solana token and SOL recovery prototype",
+  "description": "REBOUND Solana prototype: 85% holder rewards and 15% operations",
   "scripts": {
     "start": "node scripts/server.cjs",
     "build": "node scripts/build.cjs",
     "test": "node scripts/test.cjs"
   },
-  "engines": {"node": ">=20"}
+  "engines": {
+    "node": ">=20"
+  }
 }

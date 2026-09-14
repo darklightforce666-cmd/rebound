@@ -7,7 +7,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
   const PRICE_SCALE = 1_000_000_000_000n;
-  const POLICY = Object.freeze({id:'loss-rebate/v1', holdMs:900_000, roundDelayMs:600_000,
+  const POLICY = Object.freeze({id:'holder-recovery/v2', holdMs:900_000, roundDelayMs:600_000,
     correctionMs:43_200_000, roleDelayMs:86_400_000, activationMs:172_800_000,
     dormantMs:7_776_000_000, activeSweepMs:900_000, idleSweepMs:21_600_000,
     minTaxBps:10, maxTaxBps:1000, defaultTaxBps:500});
@@ -35,8 +35,8 @@
   }
   function validateTax(bps) { invariant(Number.isInteger(bps)&&bps>=10&&bps<=1000,'Creator tax must be 10-1,000 basis points'); return bps; }
   function splitFees(received) {
-    natural(received); const holders=received*8000n/10000n, operations=received*1500n/10000n, buybacks=received*500n/10000n;
-    return {holders, operations, buybacks, dust:received-holders-operations-buybacks};
+    natural(received); const holders=received*8500n/10000n, operations=received*1500n/10000n;
+    return {holders, operations, dust:received-holders-operations};
   }
   function newPosition(wallet) {
     invariant(typeof wallet==='string'&&wallet.length>0,'Wallet required');
@@ -115,9 +115,9 @@
   }
   function treasury(id,createdAt,generation=4) {
     timestamp(createdAt); invariant(generation===3||generation===4,'Unsupported generation');
-    return {id,generation,createdAt,repairDeadline:createdAt+POLICY.correctionMs,lastActivity:createdAt,
-      available:0n,reserved:0n,paid:0n,funded:0n,collected:0n,operations:0n,buybacks:0n,feeDust:0n,recovered:0n,
-      collections:[],rounds:[],roles:{publisher:'demo-publisher',operations:'demo-operations',buybacks:'demo-buybacks',guardian:'demo-guardian'},pendingRoles:{}};
+    return {id,policyId:POLICY.id,generation,createdAt,repairDeadline:createdAt+POLICY.correctionMs,lastActivity:createdAt,
+      available:0n,reserved:0n,paid:0n,funded:0n,collected:0n,operations:0n,feeDust:0n,recovered:0n,
+      collections:[],rounds:[],roles:{publisher:'demo-publisher',operations:'demo-operations',guardian:'demo-guardian'},pendingRoles:{}};
   }
   function collect(t, eventId, amount, now) {
     natural(amount); timestamp(now); invariant(now>=t.createdAt,'Collection precedes treasury creation');
@@ -125,7 +125,7 @@
     const existing=t.collections.find(e=>e.id===eventId);
     if(existing) {invariant(existing.amount===amount,'Idempotency conflict'); return {replayed:true,...existing.split};}
     const split=splitFees(amount);
-    t.available+=split.holders;t.operations+=split.operations;t.buybacks+=split.buybacks;t.feeDust+=split.dust;t.collected+=amount;
+    t.available+=split.holders;t.operations+=split.operations;t.feeDust+=split.dust;t.collected+=amount;
     if(amount>0n) t.lastActivity=now;
     t.collections.push({id:eventId,amount,at:now,split});
     assertAccounting(t); return {replayed:false,...split};
@@ -165,12 +165,8 @@
     natural(amount);timestamp(now);invariant(now>=t.createdAt&&now<t.repairDeadline,'Treasury correction window has closed');
     invariant(amount<=t.available,'Funded claims are protected');t.available-=amount;t.recovered+=amount;assertAccounting(t);return amount;
   }
-  function sweepDormant(t,now) {
-    timestamp(now);invariant(t.generation===4&&now>=t.lastActivity+POLICY.dormantMs,'Treasury is not dormant');
-    const amount=t.available;t.available=0n;t.buybacks+=amount;assertAccounting(t);return amount;
-  }
   function queueRole(t,role,address,now) {
-    timestamp(now);invariant(['publisher','operations','buybacks','guardian'].includes(role),'Unsupported role');
+    timestamp(now);invariant(['publisher','operations','guardian'].includes(role),'Unsupported role');
     invariant(typeof address==='string'&&address.length>0,'Address required');
     if(role==='guardian'){t.roles.guardian=address;return;}
     t.pendingRoles[role]={address,activateAt:now+POLICY.roleDelayMs};
@@ -180,22 +176,16 @@
     t.roles[role]=p.address;delete t.pendingRoles[role];
   }
   function assertAccounting(t) {
-    for(const k of ['available','reserved','paid','funded','collected','operations','buybacks','feeDust','recovered'])natural(t[k],k);
-    invariant(t.collected===t.available+t.reserved+t.paid+t.operations+t.buybacks+t.feeDust+t.recovered,'Accounting conservation failed');
+    invariant(t.policyId===POLICY.id,'Fee policy mismatch');
+    for(const k of ['available','reserved','paid','funded','collected','operations','feeDust','recovered'])natural(t[k],k);
+    invariant(t.collected===t.available+t.reserved+t.paid+t.operations+t.feeDust+t.recovered,'Accounting conservation failed');
     invariant(t.funded===t.reserved+t.paid,'Funded liability accounting failed'); return true;
-  }
-  function buybackStatus({configuredAt,scheduledAt,paused=false},now) {
-    timestamp(now);
-    if(configuredAt==null||scheduledAt==null)return {ready:false,reason:'not-configured',readyAt:null};
-    timestamp(configuredAt);timestamp(scheduledAt);
-    const readyAt=Math.max(configuredAt+POLICY.correctionMs,scheduledAt+POLICY.activationMs);
-    return {ready:!paused&&now>=readyAt,reason:paused?'paused':now<readyAt?'activation-wait':'execution-checks-required',readyAt};
   }
   function nextSweep(lastCheck,hasActivity){return lastCheck+(hasActivity?POLICY.activeSweepMs:POLICY.idleSweepMs);}
   function stringify(v,space=0){return JSON.stringify(v,(_,x)=>typeof x==='bigint'?{$bigint:x.toString()}:x,space);}
   function parse(v){return JSON.parse(v,(_,x)=>x&&typeof x==='object'&&Object.keys(x).length===1&&typeof x.$bigint==='string'&&/^\d+$/.test(x.$bigint)?BigInt(x.$bigint):x);}
   return {PRICE_SCALE,POLICY,invariant,natural,timestamp,parseUnits,formatUnits,validateTax,splitFees,newPosition,purchase,incoming,outgoing,
-    twap,checkedReference,shortfall,allocate,treasury,collect,fund,claim,cancel,recoverUnallocated,sweepDormant,queueRole,applyRole,assertAccounting,
-    buybackStatus,nextSweep,stringify,parse};
+    twap,checkedReference,shortfall,allocate,treasury,collect,fund,claim,cancel,recoverUnallocated,queueRole,applyRole,assertAccounting,
+    nextSweep,stringify,parse};
 });
 

@@ -6,7 +6,7 @@
     E.invariant(input.currency==='SOL','Trading and rewards must use SOL');
     const decimals=assets[input.currency].decimals, unit=10n**BigInt(decimals), id=input.id;
     const t={...input,decimals,tokenDecimals:6,createdAt:now-4*3600000,taxBps:input.taxBps||500,
-      mode:'loss-rebate/v1',mint:null,treasuryAddress:null,website:input.website||'',description:input.description||'A community token with fee-funded recovery.',
+      mode:E.POLICY.id,mint:null,treasuryAddress:null,website:input.website||'',description:input.description||'A community token with fee-funded recovery.',
       priceQ:unit*E.PRICE_SCALE/10000n/1000000n,treasury:E.treasury(id,now-4*3600000),positions:[],trades:[],simulated:true};
     if(input.blank){t.createdAt=now;t.treasury=E.treasury(id,now);return t;}
     const a=E.newPosition('demo-holder'),b=E.newPosition('demo-holder-b');
@@ -31,7 +31,7 @@
       {id:'demo-mellow',name:'Mellow',symbol:'MEL',currency:'SOL',tone:'emerald',art:'mellow',tag:'Culture',change:-2.64,marketCap:42100,volume:11300,taxBps:400},
       {id:'demo-encore',name:'Encore',symbol:'ENCR',currency:'SOL',tone:'emerald',art:'encore',tag:'Community',change:9.18,marketCap:27300,volume:7400}
     ];
-    return {version:2,now,createdAt:now,tokens:inputs.map((t,i)=>token(t,now,i)),demoBalances:{SOL:20n*1000000000n},buyback:{configuredAt:null,scheduledAt:null,paused:false}};
+    return {version:4,now,createdAt:now,tokens:inputs.map((t,i)=>token(t,now,i)),demoBalances:{SOL:20n*1000000000n}};
   }
   return {assets,reference,token,create};
 });
