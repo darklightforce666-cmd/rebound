@@ -22,14 +22,14 @@
   }
   function create(now=Date.now()){
     const inputs=[
-      {id:'demo-rbd',name:'Rebound',symbol:'RBD',currency:'SOL',tone:'lime',art:'rebound',tag:'Platform token',change:18.42,marketCap:1284000,volume:328400},
-      {id:'demo-orbit',name:'Orbital',symbol:'ORBIT',currency:'SOL',tone:'lilac',art:'orbit',tag:'Community',change:32.81,marketCap:386200,volume:98600},
-      {id:'demo-wind',name:'Second Wind',symbol:'WIND',currency:'SOL',tone:'blue',art:'wind',tag:'Fresh energy',change:7.36,marketCap:248700,volume:74200},
-      {id:'demo-cat',name:'Orbit Cat',symbol:'OCAT',currency:'SOL',tone:'peach',art:'cat',tag:'Culture',change:-4.27,marketCap:162900,volume:41600,taxBps:300},
-      {id:'demo-drift',name:'Drift Club',symbol:'DRIFT',currency:'SOL',tone:'mint',art:'drift',tag:'Community',change:12.68,marketCap:98600,volume:24800},
-      {id:'demo-nim',name:'Nimble',symbol:'NIM',currency:'SOL',tone:'pink',art:'nimble',tag:'New launch',change:24.54,marketCap:62400,volume:18600,taxBps:200},
-      {id:'demo-mellow',name:'Mellow',symbol:'MEL',currency:'SOL',tone:'yellow',art:'mellow',tag:'Culture',change:-2.64,marketCap:42100,volume:11300,taxBps:400},
-      {id:'demo-encore',name:'Encore',symbol:'ENCR',currency:'SOL',tone:'lilac',art:'encore',tag:'Community',change:9.18,marketCap:27300,volume:7400}
+      {id:'demo-rbd',name:'Rebound',symbol:'RBD',currency:'SOL',tone:'emerald',art:'rebound',tag:'Platform token',change:18.42,marketCap:1284000,volume:328400},
+      {id:'demo-orbit',name:'Orbital',symbol:'ORBIT',currency:'SOL',tone:'emerald',art:'orbit',tag:'Community',change:32.81,marketCap:386200,volume:98600},
+      {id:'demo-wind',name:'Second Wind',symbol:'WIND',currency:'SOL',tone:'emerald',art:'wind',tag:'Fresh energy',change:7.36,marketCap:248700,volume:74200},
+      {id:'demo-cat',name:'Orbit Cat',symbol:'OCAT',currency:'SOL',tone:'emerald',art:'cat',tag:'Culture',change:-4.27,marketCap:162900,volume:41600,taxBps:300},
+      {id:'demo-drift',name:'Drift Club',symbol:'DRIFT',currency:'SOL',tone:'emerald',art:'drift',tag:'Community',change:12.68,marketCap:98600,volume:24800},
+      {id:'demo-nim',name:'Nimble',symbol:'NIM',currency:'SOL',tone:'emerald',art:'nimble',tag:'New launch',change:24.54,marketCap:62400,volume:18600,taxBps:200},
+      {id:'demo-mellow',name:'Mellow',symbol:'MEL',currency:'SOL',tone:'emerald',art:'mellow',tag:'Culture',change:-2.64,marketCap:42100,volume:11300,taxBps:400},
+      {id:'demo-encore',name:'Encore',symbol:'ENCR',currency:'SOL',tone:'emerald',art:'encore',tag:'Community',change:9.18,marketCap:27300,volume:7400}
     ];
     return {version:2,now,createdAt:now,tokens:inputs.map((t,i)=>token(t,now,i)),demoBalances:{SOL:20n*1000000000n},buyback:{configuredAt:null,scheduledAt:null,paused:false}};
   }

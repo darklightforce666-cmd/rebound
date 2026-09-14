@@ -22,7 +22,7 @@ Open `preview/REBOUND.html` for the self-contained version. It needs no server, 
 - `src/engine.cjs`: integer recovery accounting, funding, claims, correction windows, and buyback gates.
 - `src/fixtures.cjs`: fictional SOL markets and seeded position ledgers. USDC metadata is reference-only.
 - `src/app.js`: navigation, token creation, local trading, wallet connection, and saved demo state.
-- `src/styles.css`, `src/solana.css`: responsive layout and mint/violet visual system.
+- `src/styles.css`, `src/solana.css`: responsive layout and charcoal/emerald visual system.
 - `assets/`: editable SVG mark and social cover.
 - `tests/`: accounting and terminology checks, plus repeatable browser test instructions.
 - `docs/PARITY.md`: mechanics, denomination policy, and production limitations.

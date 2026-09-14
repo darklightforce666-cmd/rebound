@@ -2,6 +2,8 @@
 
 Executed on 14 September 2026.
 
+Palette revision: replaced all inherited accent hues with charcoal and emerald throughout the interface and SVG assets. Neutral text and different green values preserve readable contrast. Negative price changes retain their minus sign and use a dashed chart line. Desktop discovery and mobile discovery/token screens were reviewed again, mobile navigation worked, no horizontal overflow or application console errors were observed, and all 11 automated tests passed after the palette update.
+
 ## Automated tests
 
 `node scripts/test.cjs`: 11 passing tests.
