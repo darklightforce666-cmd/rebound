@@ -1,1 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="500" viewBox="0 0 1500 500" role="img" aria-labelledby="title desc"><title id="title">REBOUND banner</title><desc id="desc">Charcoal and emerald REBOUND branding. 85% of net fees allocated to holders and 15% for operations.</desc><defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#0c0e0d"/><stop offset=".58" stop-color="#10231a"/><stop offset="1" stop-color="#123a2a"/></linearGradient><linearGradient id="tile" x2="1" y2="1"><stop stop-color="#1a8262"/><stop offset="1" stop-color="#104f39"/></linearGradient></defs><rect width="1500" height="500" fill="url(#bg)"/><path d="M60 440H1440" stroke="#496652" stroke-opacity=".4"/><rect x="92" y="116" width="112" height="112" rx="29" fill="url(#tile)" stroke="#458d6c"/><g transform="translate(92 116) scale(.4375)"><path d="M61 77v61a63 63 0 0 0 126 0V57m-39 39 39-39 33 39" fill="none" stroke="#e4f0e8" stroke-width="19" stroke-linecap="round" stroke-linejoin="round"/></g><text x="232" y="196" fill="#e4f0e8" font-family="Arial,sans-serif" font-size="83" font-weight="700" letter-spacing="-4">rebound<tspan fill="#68c6a2">.</tspan></text><text x="235" y="247" fill="#8cab98" font-family="Arial,sans-serif" font-size="18" letter-spacing="4">SOLANA / $RBD</text><text x="235" y="344" fill="#c8d8ce" font-family="Arial,sans-serif" font-size="35" letter-spacing="-1">Rewards paid in SOL.</text><path d="M914 106V380" stroke="#42634e"/><text x="968" y="132" fill="#8cab98" font-family="Arial,sans-serif" font-size="15" letter-spacing="2">NET FEE ALLOCATION</text><text x="961" y="261" fill="#83ba9a" font-family="Arial,sans-serif" font-size="116" font-weight="500" letter-spacing="-5">85<tspan font-size="58" letter-spacing="-1">%</tspan></text><text x="974" y="304" fill="#e4f0e8" font-family="Arial,sans-serif" font-size="26">Holders</text><rect x="974" y="337" width="340" height="4" rx="2" fill="#345442"/><rect x="974" y="337" width="289" height="4" rx="2" fill="#17795b"/><text x="974" y="379" fill="#a7bfb0" font-family="Arial,sans-serif" font-size="22">15% operations</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="500" viewBox="0 0 1500 500" role="img" aria-labelledby="title desc">
+<title id="title">REBOUND launch banner</title><desc id="desc">Launch a token. Reward topblasters. 85% holders, 15% operations, SOL rewards.</desc>
+<defs>
+<linearGradient id="bg" x1="0" y1=".5" x2="1" y2="0"><stop stop-color="#0b100d"/><stop offset=".55" stop-color="#102017"/><stop offset="1" stop-color="#153b27"/></linearGradient>
+<linearGradient id="tile" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#238360"/><stop offset="1" stop-color="#104f39"/></linearGradient>
+<radialGradient id="coin" cx=".3" cy=".15" r=".9"><stop stop-color="#387c57"/><stop offset=".62" stop-color="#183e2b"/><stop offset="1" stop-color="#102d20"/></radialGradient>
+<radialGradient id="glow"><stop stop-color="#6ac695" stop-opacity=".1"/><stop offset="1" stop-color="#6ac695" stop-opacity="0"/></radialGradient>
+</defs>
+<rect width="1500" height="500" fill="url(#bg)"/>
+<ellipse cx="1190" cy="230" rx="440" ry="360" fill="url(#glow)"/>
+<path d="M835 0 625 500M1500 94 1070 500" stroke="#add8ba" stroke-opacity=".04" fill="none"/>
+<g fill="none" stroke="#8bcaa6"><circle cx="1190" cy="250" r="220" stroke-opacity=".07"/><circle cx="1190" cy="250" r="168" stroke-opacity=".12"/><circle cx="1190" cy="250" r="136" stroke-opacity=".24"/></g>
+<g fill="#225a3c" fill-opacity=".18" stroke="#8bcaa6" stroke-opacity=".16"><rect x="950" y="122" width="25" height="25" rx="6" transform="rotate(-14 962 134)"/><rect x="1397" y="312" width="36" height="36" rx="9" transform="rotate(14 1415 330)"/><rect x="1365" y="79" width="19" height="19" rx="5" transform="rotate(12 1374 88)"/></g>
+<circle cx="1190" cy="250" r="120" fill="url(#coin)" stroke="#78b99a" stroke-opacity=".5"/>
+<circle cx="1190" cy="250" r="109" fill="none" stroke="#0e271a" stroke-width="9"/>
+<g transform="translate(1090.1 160.9) scale(5.4)"><path d="M7 9v9a9 9 0 0 0 18 0V6M19 11l6-6 5 6" fill="none" stroke="#c8ecda" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<rect x="90" y="72" width="64" height="64" rx="18" fill="url(#tile)" stroke="#78b99a" stroke-opacity=".3"/>
+<g transform="translate(95.2 80.1) scale(1.45)"><path d="M7 9v9a9 9 0 0 0 18 0V6M19 11l6-6 5 6" fill="none" stroke="#e4f0e8" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g font-family="Segoe UI,Arial,sans-serif">
+<text x="170" y="122" font-size="53" font-weight="700" letter-spacing="-2.6" fill="#e4f0e8">rebound<tspan fill="#86cfa9">.</tspan></text>
+<text x="88" y="252" font-size="61" font-weight="600" letter-spacing="-2.5" fill="#e4f0e8">Launch a token.</text>
+<text x="88" y="323" font-size="61" font-weight="600" letter-spacing="-2.5" fill="#86cfa9">Reward topblasters.</text>
+<text x="91" y="405" font-size="20" font-weight="400" fill="#97b3a2">85% holders<tspan dx="18" fill="#517a62">·</tspan><tspan dx="18">15% operations</tspan><tspan dx="18" fill="#517a62">·</tspan><tspan dx="18">SOL rewards</tspan></text>
+</g></svg>

@@ -1,1 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 256 256" role="img" aria-labelledby="title"><title id="title">REBOUND logo</title><defs><linearGradient id="emerald" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#1a8262"/><stop offset="1" stop-color="#104f39"/></linearGradient></defs><rect x="1" y="1" width="254" height="254" rx="65" fill="url(#emerald)" stroke="#458d6c" stroke-width="2"/><path d="M61 77v61a63 63 0 0 0 126 0V57m-39 39 39-39 33 39" fill="none" stroke="#e4f0e8" stroke-width="19" stroke-linecap="round" stroke-linejoin="round"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+<title id="title">REBOUND square token logo</title>
+<defs><linearGradient id="emerald" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#238360"/><stop offset=".5" stop-color="#176047"/><stop offset="1" stop-color="#103b2b"/></linearGradient><radialGradient id="light" cx=".2" cy=".08" r="1"><stop stop-color="#9cdbb9" stop-opacity=".08"/><stop offset="1" stop-color="#9cdbb9" stop-opacity="0"/></radialGradient></defs>
+<rect width="1024" height="1024" fill="url(#emerald)"/><rect width="1024" height="1024" fill="url(#light)"/>
+<g transform="translate(31 83) scale(26)"><path d="M7 9v9a9 9 0 0 0 18 0V6M19 11l6-6 5 6" fill="none" stroke="#e4f0e8" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"/></g>
+</svg>
