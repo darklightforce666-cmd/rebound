@@ -178,7 +178,10 @@ def test_partial_delivery_and_later_exclusion_carry_release_to_next_round():
     e=Env();e.fixture_active();e.credit();e.rid=e.svm.get_clock().unix_timestamp//1800;e.round=pd(b'round-v2',bytes(e.coin),u(e.rid))
     wallets=[e.alice.pubkey(),e.bob.pubkey()];amounts=[1_000_000_000,2_000_000_000]
     leaves=[h(b'REBOUND:leaf:v2',bytes(PROGRAM),bytes(e.deployment),bytes(e.mint.pubkey()),b'\0',e.policy,u(e.rid),i(n),bytes(wallets[n]),u(amounts[n])) for n in range(2)]
-    root=h(b'REBOUND:node:v2',leaves[0],u(amounts[0]),leaves[1],u(amounts[1]))
+    # The wire client and program canonically sort (hash, sum) pairs. Random
+    # fixture wallets must not make the manifest root depend on leaf order.
+    nodes=sorted(zip(leaves,amounts),key=lambda node:(node[0],node[1]))
+    root=h(b'REBOUND:node:v2',nodes[0][0],u(nodes[0][1]),nodes[1][0],u(nodes[1][1]))
     e.send(ix(6,[m(e.admin.pubkey(),True,True),m(e.publisher.pubkey(),False,True),m(e.verifier.pubkey(),False,True),m(e.deployment),m(e.coin,True),m(e.round,True),m(SYSTEM)],u(e.rid),root,u(sum(amounts)),u(1000),u(e.svm.get_clock().unix_timestamp),h(b'two-conditional-awards')),e.publisher,e.verifier)
     positions=[]
     for n in range(2):
