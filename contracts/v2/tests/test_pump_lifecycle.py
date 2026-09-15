@@ -35,6 +35,12 @@ def test_actual_pump_creation_sharing_and_collection(tmp_path):
         result=subprocess.run(['node',str(BASE/'tests/pump-vector.cjs'),str(source)],capture_output=True,text=True)
         assert result.returncode==0,result.stderr
         vectors=json.loads(result.stdout)
+        # Protocol fee recipients already exist on mainnet. Supply their local
+        # System-account rent balances; these are NOT fabricated trade proceeds.
+        for v in vectors:
+            for recipient in v.get('testExistingFeeRecipients',[]):
+                key=Pubkey.from_string(recipient)
+                if e.svm.get_account(key) is None:e.svm.set_account(key,Account(10_000_000,b'',Pubkey.default()))
         return [Instruction(Pubkey.from_string(v['program']),base64.b64decode(v['data']),[AccountMeta(Pubkey.from_string(k['key']),k['signer'],k['writable']) for k in v['keys']]) for v in vectors]
     budget=set_compute_unit_limit(1_400_000)
     e.send([budget,*vector('create')],e.mint)

@@ -19,7 +19,8 @@ async function main(){
  if(action==='collectInitial')instructions=[await P.collectInitial(program,mint)];
  if(action==='migrate'){const g=P.sdk.decodeGlobal(info(input.global));instructions=[await P.sdk.migrateInstruction({withdrawAuthority:g.withdrawAuthority,mint,user,tokenProgram:TOKEN_2022_PROGRAM_ID})];}
  if(!instructions)throw Error('Unknown test action');
- const result=instructions.map(ix=>({program:ix.programId.toBase58(),data:ix.data.toString('base64'),keys:ix.keys.map(k=>({key:k.pubkey.toBase58(),signer:k.isSigner,writable:k.isWritable}))}));
+ const {Connection}=require('@solana/web3.js');const idl=P.SDK.getPumpProgram(new Connection('http://127.0.0.1:8899')).idl;
+ const result=instructions.map(ix=>{const spec=idl.instructions.find(s=>Buffer.from(s.discriminator).equals(ix.data.subarray(0,8)));return{program:ix.programId.toBase58(),data:ix.data.toString('base64'),keys:ix.keys.map(k=>({key:k.pubkey.toBase58(),signer:k.isSigner,writable:k.isWritable})),testExistingFeeRecipients:(spec?.accounts||[]).flatMap((a,i)=>['feeRecipient','buybackFeeRecipient'].includes(a.name)?[ix.keys[i].pubkey.toBase58()]:[])};});
  process.stdout.write(JSON.stringify(result));
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});
