@@ -32,7 +32,8 @@ def test_actual_pump_creation_sharing_and_collection(tmp_path):
         if e.svm.get_account(curve):data['curve']=base64.b64encode(e.svm.get_account(curve).data).decode()
         if e.svm.get_account(sharing):data['sharing']=base64.b64encode(e.svm.get_account(sharing).data).decode()
         source=tmp_path/'public-input.json';source.write_text(json.dumps(data))
-        result=subprocess.run(['node',str(BASE/'tests/pump-vector.cjs'),str(source)],capture_output=True,text=True,check=True)
+        result=subprocess.run(['node',str(BASE/'tests/pump-vector.cjs'),str(source)],capture_output=True,text=True)
+        assert result.returncode==0,result.stderr
         vectors=json.loads(result.stdout)
         return [Instruction(Pubkey.from_string(v['program']),base64.b64decode(v['data']),[AccountMeta(Pubkey.from_string(k['key']),k['signer'],k['writable']) for k in v['keys']]) for v in vectors]
     budget=set_compute_unit_limit(1_400_000)
@@ -46,6 +47,7 @@ def test_actual_pump_creation_sharing_and_collection(tmp_path):
     sc=e.svm.get_account(sharing).data;assert sc[75]==1 and sc[80:112]==bytes(e.intake)
     assert e.svm.get_account(curve).data[49:81]==bytes(sharing)
     assert e.svm.get_account(e.coin).data[168]==1
+    initial=e.svm.get_balance(e.intake);e.send([budget,*vector('collectInitial')]);assert e.svm.get_balance(e.intake)>initial
     # A subsequent trade routes into the mint-scoped sharing vault.
     e.send([budget,*vector('buy')]);before=e.svm.get_balance(e.intake)
     e.send([budget,*vector('collect')]);assert e.svm.get_balance(e.intake)>before

@@ -1,7 +1,7 @@
 'use strict';
 const SDK=require('@pump-fun/pump-sdk');
 const {NATIVE_MINT,TOKEN_PROGRAM_ID}=require('@solana/spl-token');
-const {Transaction,SystemProgram,PublicKey}=require('@solana/web3.js');
+const {Transaction,SystemProgram,PublicKey,Connection}=require('@solana/web3.js');
 const BN=require('@coral-xyz/anchor').BN;
 const W=require('./wire.cjs');
 const sdk=SDK.PUMP_SDK;
@@ -43,4 +43,10 @@ async function collect(mint,payer,sharing,{graduated=false}={}){
  if(graduated)instructions.push(await sdk.transferCreatorFeesToPumpV2({mint,payer,quoteMint:NATIVE_MINT,quoteTokenProgram:TOKEN_PROGRAM_ID}));
  instructions.push(await sdk.distributeCreatorFeesV2({mint,payer,sharingConfig:sharing,sharingConfigAddress:SDK.feeSharingConfigPda(mint),quoteMint:NATIVE_MINT,quoteTokenProgram:TOKEN_PROGRAM_ID,shouldInitializeAta:false}));return instructions;
 }
-module.exports={SDK,sdk,solMode,transaction,prepareLaunch,sharingSteps,verifyRouting,collect};
+async function collectInitial(program,mint){
+ const creator=W.addresses(program,mint).intake;
+ // Permissionless direct collection of the isolated pre-sharing creator vault.
+ // Its owner remains System Program, even after the curve points to sharing.
+ return SDK.getPumpProgram(new Connection('http://127.0.0.1:8899')).methods.collectCreatorFeeV2().accountsPartial({creator,quoteMint:NATIVE_MINT,quoteTokenProgram:TOKEN_PROGRAM_ID}).instruction();
+}
+module.exports={SDK,sdk,solMode,transaction,prepareLaunch,sharingSteps,verifyRouting,collect,collectInitial};

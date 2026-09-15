@@ -334,9 +334,12 @@ pub fn process_instruction(program:&Pubkey,accounts:&[AccountInfo],data:&[u8])->
   require(auth.version==pos.version&&auth.epoch==state.funding_epoch,Error::Version)?;
   fresh(clock()?.slot,auth.through,auth.issued,auth.expires)?;
   attest(instructions,&round.verifier,&borsh::to_vec(&auth).map_err(|_|Error::Data)?)?;
-  require(auth.outcome<=2&&auth.evidence!=[0;32],Error::Data)?;
+  require(auth.outcome<=3&&auth.evidence!=[0;32],Error::Data)?;
   if auth.outcome==1{require(auth.payable==0,Error::Disqualified)?;}
   else{
+   // Inferred funding links may be corrected offchain. They cancel this award
+   // but never fabricate an irreversible onchain sale record.
+   if auth.outcome==3{require(auth.payable==0,Error::Data)?;}
    require(!pos.disqualified&&auth.payable<=cap(&pos,&award,auth.cost,auth.value)?,Error::Funds)?;
    require(if auth.outcome==0{auth.payable==award.maximum}else{auth.payable<award.maximum},Error::Data)?;
    if auth.payable>0{require(!d.paused&&auth.holding>0&&holdings(&accounts[7..],&state.mint,wallet.key)?>=auth.holding,Error::Holding)?;}

@@ -16,8 +16,10 @@ async function main(){
   instructions=await P.sdk.buyV2Instructions({global:g,bondingCurveAccountInfo:info(input.curve),bondingCurve:b,associatedUserAccountInfo:input.existing?info(input.existing):null,mint,user,amount:new BN(input.amount||'1000000000'),quoteAmount:new BN(input.maxQuote||'200000000000'),slippage:0,tokenProgram:TOKEN_2022_PROGRAM_ID});
  }
  if(action==='collect')instructions=await P.collect(mint,user,P.sdk.decodeSharingConfig(info(input.sharing)),{graduated:!!input.graduated});
+ if(action==='collectInitial')instructions=[await P.collectInitial(program,mint)];
  if(action==='migrate'){const g=P.sdk.decodeGlobal(info(input.global));instructions=[await P.sdk.migrateInstruction({withdrawAuthority:g.withdrawAuthority,mint,user,tokenProgram:TOKEN_2022_PROGRAM_ID})];}
  if(!instructions)throw Error('Unknown test action');
- process.stdout.write(JSON.stringify(instructions.map(ix=>({program:ix.programId.toBase58(),data:ix.data.toString('base64'),keys:ix.keys.map(k=>({key:k.pubkey.toBase58(),signer:k.isSigner,writable:k.isWritable}))})));
+ const result=instructions.map(ix=>({program:ix.programId.toBase58(),data:ix.data.toString('base64'),keys:ix.keys.map(k=>({key:k.pubkey.toBase58(),signer:k.isSigner,writable:k.isWritable}))}));
+ process.stdout.write(JSON.stringify(result));
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});
