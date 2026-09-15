@@ -34,7 +34,7 @@ class Env:
         self.mint=Pubkey.new_unique();data=bytearray(82);data[44]=6;data[45]=1
         self.svm.set_account(self.mint,Account(1_500_000,bytes(data),TOKEN))
         self.vault=R.vault_address(PROGRAM,self.admin.pubkey(),self.mint);self.set_time(TIME)
-        if prefund:self.send(transfer({'from_pubkey':self.admin.pubkey(),'to_pubkey':self.vault,'lamports':1}))
+        if prefund:self.send(transfer({'from_pubkey':self.admin.pubkey(),'to_pubkey':self.vault,'lamports':self.svm.minimum_balance_for_rent_exemption(0)}))
         self.send(R.initialize(PROGRAM,self.admin.pubkey(),self.mint,self.admin.pubkey(),self.guardian.pubkey(),self.ops.pubkey()))
     def set_time(self,time):
         clock=self.svm.get_clock();clock.unix_timestamp=time;self.svm.set_clock(clock)
@@ -124,7 +124,7 @@ def test_merkle_tampering_and_recipient_substitution(env):
 def test_prefunded_receipt_and_payer_is_beneficiary(env):
     e=env;e.deposit();e.publish();e.set_time(TIME+3600)
     receipt=R.receipt_address(PROGRAM,R.round_address(PROGRAM,e.vault,1),e.alice.pubkey())
-    e.send(transfer({'from_pubkey':e.admin.pubkey(),'to_pubkey':receipt,'lamports':1}))
+    e.send(transfer({'from_pubkey':e.admin.pubkey(),'to_pubkey':receipt,'lamports':e.svm.minimum_balance_for_rent_exemption(0)}))
     e.send(R.claim(PROGRAM,e.alice.pubkey(),e.vault,1,e.awards[0]),e.alice)
     assert e.svm.get_account(receipt).data[:8]==b'RBDCLM01'
 

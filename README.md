@@ -28,5 +28,6 @@ Open `preview/REBOUND.html` for a self-contained copy. The site has no remote sc
 - `tests/`: accounting, wallet mocks, terminology checks, and browser regression steps.
 - `docs/PARITY.md`: reward mechanics and prototype scope.
 - `docs/VALIDATION.md`: executed validation.
+- `contracts/`: Solana rewards program, hourly payout worker, proof builder, deployment settings, and VM tests. See `contracts/README.md` for the trust model and the remaining live integrations.
 
 The current state key is `rebound.demo.holders.v4`. Earlier simulation data stays untouched in older keys and is not imported into this fee policy.

@@ -29,6 +29,14 @@ test('guardian cancellation restores reserved funds and funded basis',()=>{
   const t=F.create(NOW).tokens[0],balance=t.treasury.available,basis=t.positions[0].funded,r=E.fund(t.treasury,t.positions,F.reference(t,NOW),NOW);
   assert.throws(()=>E.cancel(t.treasury,t.positions,r.id,NOW,'other'),/Guardian/);E.cancel(t.treasury,t.positions,r.id,NOW+1);assert.equal(t.treasury.available,balance);assert.equal(t.positions[0].funded,basis);
 });
+
+test('hour boundaries preserve the correction interval and prevent overlapping payouts',()=>{
+  for(const offset of [0,2999999,3000000,3000001,3599999]){
+    const at=NOW+offset,t=F.create(at).tokens[0],r=E.fund(t.treasury,t.positions,F.reference(t,at),at);
+    assert.equal(r.claimableAt%3600000,0);assert.ok(r.claimableAt-at>=600000);assert.ok(r.claimableAt-at<4200000);
+    assert.throws(()=>E.fund(t.treasury,t.positions,F.reference(t,at+1),at+1),/correction wait/);
+  }
+});
 test('awards are capped at remaining shortfall and retain rounding dust',()=>{
   const l=[{wallet:'a',shortfall:5n},{wallet:'b',shortfall:2n}];assert.equal(E.allocate(100n,l).distributed,7n);const a=E.allocate(5n,l);assert.equal(a.distributed+a.dust,5n);assert.deepEqual(a.allocations.map(x=>x.amount),[3n,1n]);
 });
