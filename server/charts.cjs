@@ -53,7 +53,7 @@ function makeService({fetchImpl=globalThis.fetch,now=Date.now}={}){
   const [timeframe,aggregate,step]=INTERVALS[interval];
   const listing=await get('/networks/solana/tokens/'+mint+'/pools?page=1',60000);
   const pool=listing?selectPool(listing.data,mint):null;
-  const result={mint,interval,currency:currency.toUpperCase(),volumeCurrency:'USD',source:'GeckoTerminal',checkedAt:new Date(now()).toISOString(),candles:[],pool:null,state:'awaiting_market'};
+  const result={mint,interval,currency:currency.toUpperCase(),volumeCurrency:currency.toUpperCase(),source:'GeckoTerminal',checkedAt:new Date(now()).toISOString(),candles:[],pool:null,state:'awaiting_market'};
   if(!pool)return{...result,message:'Waiting for an indexed SOL-paired market for this exact mint.'};
   result.pool={address:pool.attributes.address,name:pool.attributes.name,dex:pool.relationships.dex?.data?.id,url:'https://www.geckoterminal.com/solana/pools/'+pool.attributes.address};
   const data=await get('/networks/solana/pools/'+pool.attributes.address+'/ohlcv/'+timeframe+'?'+new URLSearchParams({aggregate:String(aggregate),limit:'500',currency:currency==='sol'?'token':'usd',token:mint,include_empty_intervals:'false'}),30000);

@@ -21,7 +21,7 @@ test('provider candles sort chronologically and reject substitution, malformed o
 test('chart requests select the token explicitly, preserve units, coalesce callers and cache provider requests',async()=>{
  const calls=[];const service=makeService({now:()=>now,fetchImpl:async(url,init)=>{calls.push(url);assert.equal(init.redirect,'error');assert.ok(init.signal);return Response.json(url.includes('/ohlcv/')?data():{data:[pool()]});}});
  const a=await Promise.all([service({mint,currency:'sol'}),service({mint,currency:'sol'})]);
- assert.equal(calls.length,2);assert.equal(a[0].currency,'SOL');assert.equal(a[0].volumeCurrency,'USD');assert.equal(a[0].candles.length,2);
+ assert.equal(calls.length,2);assert.equal(a[0].currency,'SOL');assert.equal(a[0].volumeCurrency,'SOL');assert.equal(a[0].candles.length,2);
  assert.match(calls[1],new RegExp('token='+mint));assert.match(calls[1],/currency=token/);assert.match(calls[1],/include_empty_intervals=false/);
  await service({mint,currency:'sol'});assert.equal(calls.length,2);
 });
