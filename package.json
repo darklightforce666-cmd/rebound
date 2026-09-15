@@ -6,7 +6,12 @@
   "scripts": {
     "start": "node scripts/build.cjs && node scripts/server.cjs",
     "build": "node scripts/build.cjs",
-    "test": "node scripts/test.cjs"
+    "test": "node scripts/test.cjs",
+    "rewards:migrate": "node scripts/rewards/manage.cjs migrate",
+    "rewards:dry-run": "node scripts/rewards/manage.cjs dry-run",
+    "rewards:preflight": "node scripts/rewards/manage.cjs preflight",
+    "rewards:index": "node server/rewards/worker.cjs",
+    "rewards:verifier": "node server/rewards/verifier-server.cjs"
   },
   "engines": {
     "node": ">=24"
@@ -18,6 +23,7 @@
     "@pump-fun/pump-swap-sdk": "1.20.0",
     "@solana/spl-token": "0.4.14",
     "@solana/web3.js": "1.99.0",
+    "bs58": "4.0.1",
     "pg": "8.23.0"
   },
   "devDependencies": {

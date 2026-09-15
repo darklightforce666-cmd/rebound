@@ -1,0 +1,11 @@
+node_modules
+.git
+.env
+.env.*
+runtime-secrets
+verifier-secrets
+runtime-config
+contracts
+tests
+dist
+work

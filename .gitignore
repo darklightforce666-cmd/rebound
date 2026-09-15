@@ -19,3 +19,7 @@ contracts/v2/fixtures/mainnet/
 .venv/
 .test-deps/
 .pip-tmp/
+runtime-secrets/
+verifier-secrets/
+runtime-config/
+rewards-dry-run*.json

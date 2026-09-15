@@ -1,7 +1,7 @@
 name: Conditional rewards V2
 on:
   push:
-    branches: [rewards-v2-implementation]
+    branches: [main, rewards-v2-implementation]
     paths: ['contracts/v2/**', 'server/**', 'scripts/rewards/**', 'tests/rewards/**', '.github/workflows/rewards-v2.yml', 'package.json', 'pnpm-lock.yaml']
   pull_request:
     paths: ['contracts/v2/**', 'server/**', 'scripts/rewards/**', 'tests/rewards/**', '.github/workflows/rewards-v2.yml']
@@ -21,6 +21,8 @@ jobs:
         run: |
           npm install --global pnpm@11.19.0 --ignore-scripts
           pnpm install --frozen-lockfile --ignore-scripts
+      - name: Build site and verify accounting, replay, database and wallet integration
+        run: pnpm test
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -48,6 +50,7 @@ jobs:
         run: |
           node scripts/rewards/clone-protocol.cjs
           python -m pytest contracts/v2/tests/test_pump_lifecycle.py -v
+          PUMP_EXECUTION_FIXTURE=contracts/v2/artifact/pump-execution.json node tests/rewards/replay.test.cjs
       - name: Record build evidence
         if: always()
         run: |
@@ -65,3 +68,8 @@ jobs:
           path: contracts/v2/artifact/
           if-no-files-found: error
           retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: rebound-site-preview
+          path: dist/

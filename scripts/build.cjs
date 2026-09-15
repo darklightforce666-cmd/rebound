@@ -9,6 +9,7 @@ function build(){
   const target=path.join(dist,file);fs.mkdirSync(path.dirname(target),{recursive:true});fs.copyFileSync(path.join(root,file),target);
  }
  fs.cpSync(path.join(root,'assets'),path.join(dist,'assets'),{recursive:true});
+ require('esbuild').buildSync({entryPoints:[path.join(root,'src/rewards-entry.js')],outfile:path.join(dist,'src/rewards.js'),bundle:true,platform:'browser',target:['es2022'],minify:true,define:{'process.env.NODE_ENV':'"production"'},logLevel:'warning'});
  console.log('Built dist with live interface assets. Server code and test data are excluded.');
 }
 if(require.main===module)build();

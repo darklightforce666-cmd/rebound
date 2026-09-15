@@ -20,8 +20,9 @@ function createWallet({providers,isAddress,onChange}){
   finally{pending=false;}
  }
  async function disconnect(){generation++;const old=provider;clear();try{await old?.disconnect?.();}catch{}}
- return{connect,disconnect,get address(){return address;}};
+ async function signMessage(message){if(!address||!provider?.signMessage)throw Error('Connect a wallet that supports message signing.');const original=address,result=await provider.signMessage(new TextEncoder().encode(message),'utf8');if(address!==original)throw Error('Wallet changed during signing.');return result.signature||result;}
+ async function signTransaction(transaction){if(!address||!provider?.signTransaction)throw Error('Connect a wallet that supports Solana transactions.');const original=address,result=await provider.signTransaction(transaction);if(address!==original)throw Error('Wallet changed during signing.');return result;}
+ return{connect,disconnect,signMessage,signTransaction,get address(){return address;}};
 }
 if(typeof module==='object'&&module.exports)module.exports={createWallet};else root.ReboundWallet={createWallet};
 })(typeof window==='object'?window:globalThis);
-
