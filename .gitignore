@@ -1,3 +1,10 @@
 node_modules/
 test-results/
 *.log
+contracts/target/
+contracts/artifact/
+contracts/deploy/settings.json
+contracts/deploy/prepared.json
+**/*keypair*.json
+**/__pycache__/
+.pytest_cache/

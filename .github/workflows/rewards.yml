@@ -1,0 +1,52 @@
+name: Rewards program
+on:
+  push:
+    paths: ['contracts/**', '.github/workflows/rewards.yml', 'src/engine.cjs']
+  pull_request:
+    paths: ['contracts/**', '.github/workflows/rewards.yml', 'src/engine.cjs']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned Solana toolchain
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 https://github.com/anza-xyz/agave/releases/download/v4.2.2/solana-release-x86_64-unknown-linux-gnu.tar.bz2 --output /tmp/solana.tar.bz2
+          printf '%s  %s\n' '5fc8684f7430038105fde953d4308ed56addf627f658daa61709f345448247ee' '/tmp/solana.tar.bz2' | sha256sum --check
+          tar -xjf /tmp/solana.tar.bz2 -C /tmp
+          echo /tmp/solana-release/bin >> "$GITHUB_PATH"
+          rustup update stable --no-self-update
+      - name: Policy and proof tests
+        run: |
+          node scripts/test.cjs
+          node --test contracts/tests/merkle.test.cjs
+      - name: Compile program and run Rust tests
+        working-directory: contracts
+        run: |
+          cargo +stable test
+          cargo build-sbf
+      - name: Run actual SBF transactions in LiteSVM
+        run: |
+          python -m pip install -r contracts/tests/requirements.txt
+          python -m pytest contracts/tests/test_svm.py -v
+      - name: Prepare public build artifact
+        run: |
+          mkdir -p contracts/artifact
+          cp contracts/target/deploy/rebound_rewards.so contracts/artifact/
+          cp contracts/Cargo.lock contracts/artifact/
+          sha256sum contracts/artifact/rebound_rewards.so > contracts/artifact/SHA256SUMS
+          git rev-parse HEAD > contracts/artifact/COMMIT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rebound-rewards-sbf
+          path: contracts/artifact/
+          if-no-files-found: error
+          retention-days: 30

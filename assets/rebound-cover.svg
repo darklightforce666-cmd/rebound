@@ -17,7 +17,7 @@
 <rect x="90" y="72" width="64" height="64" rx="18" fill="url(#tile)" stroke="#78b99a" stroke-opacity=".3"/>
 <g transform="translate(95.2 80.1) scale(1.45)"><path d="M7 9v9a9 9 0 0 0 18 0V6M19 11l6-6 5 6" fill="none" stroke="#e4f0e8" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"/></g>
 <g font-family="Segoe UI,Arial,sans-serif">
-<text x="170" y="122" font-size="53" font-weight="700" letter-spacing="-2.6" fill="#e4f0e8">rebound<tspan fill="#86cfa9">.</tspan></text>
+<text x="170" y="122" font-size="53" font-weight="700" letter-spacing="-2.6" fill="#e4f0e8">rebound</text>
 <text x="88" y="252" font-size="61" font-weight="600" letter-spacing="-2.5" fill="#e4f0e8">Launch a token.</text>
 <text x="88" y="323" font-size="61" font-weight="600" letter-spacing="-2.5" fill="#86cfa9">Reward topblasters.</text>
 <text x="91" y="405" font-size="20" font-weight="400" fill="#97b3a2">85% holders<tspan dx="18" fill="#517a62">·</tspan><tspan dx="18">15% operations</tspan><tspan dx="18" fill="#517a62">·</tspan><tspan dx="18">SOL rewards</tspan></text>
