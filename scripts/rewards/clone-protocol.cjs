@@ -7,7 +7,7 @@ async function main(){
  const out=path.resolve(process.argv[2]||'contracts/v2/fixtures/mainnet');await fs.mkdir(out,{recursive:true});
  const connection=new Connection(process.env.SOLANA_RPC_URL||'https://api.mainnet-beta.solana.com','finalized');
  const programs=[P.SDK.PUMP_PROGRAM_ID,P.SDK.PUMP_AMM_PROGRAM_ID,P.SDK.PUMP_FEE_PROGRAM_ID,P.SDK.MAYHEM_PROGRAM_ID];
- const accounts=[P.SDK.GLOBAL_PDA,P.SDK.AMM_GLOBAL_PDA,W.pda(P.SDK.PUMP_AMM_PROGRAM_ID,'global_config'),P.SDK.FEE_PROGRAM_GLOBAL_PDA,P.SDK.PUMP_FEE_CONFIG_PDA,P.SDK.getGlobalParamsPda(),P.SDK.getSolVaultPda(),new PublicKey('So11111111111111111111111111111111111111112')];
+ const accounts=[P.SDK.GLOBAL_PDA,P.SDK.AMM_GLOBAL_PDA,W.pda(P.SDK.PUMP_AMM_PROGRAM_ID,'global_config'),P.SDK.GLOBAL_VOLUME_ACCUMULATOR_PDA,P.SDK.AMM_GLOBAL_VOLUME_ACCUMULATOR_PDA,W.pda(P.SDK.PUMP_FEE_PROGRAM_ID,'fee_config',W.key(P.SDK.PUMP_AMM_PROGRAM_ID)),P.SDK.FEE_PROGRAM_GLOBAL_PDA,P.SDK.PUMP_FEE_CONFIG_PDA,P.SDK.getGlobalParamsPda(),P.SDK.getSolVaultPda(),new PublicKey('So11111111111111111111111111111111111111112')];
  const manifest={network:'mainnet-beta',capturedAt:new Date().toISOString(),genesis:await connection.getGenesisHash(),programs:[],accounts:[]};
  for(const id of programs){
   const info=await connection.getAccountInfoAndContext(id,'finalized');if(!info.value?.executable||info.value.data.readUInt32LE()!==2)throw Error('Expected upgradeable deployed program');
