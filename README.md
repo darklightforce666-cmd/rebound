@@ -15,7 +15,7 @@ npm test
 npm run build
 ```
 
-Open `preview/REBOUND.html` for a self-contained copy. The site has no remote scripts, fonts, or image dependencies. Wallet extension injection may require localhost.
+Open `preview/REBOUND.html` for a standalone copy. Scripts, page artwork, and fonts are local; browser and sharing icons reference the configured domain. Wallet extension injection may require localhost.
 
 ## Project files
 
@@ -23,7 +23,7 @@ Open `preview/REBOUND.html` for a self-contained copy. The site has no remote sc
 - `src/fixtures.cjs`: sample SOL markets and position ledgers.
 - `src/app.js`: discovery, token creation, paper trading, portfolio, rewards, and wallet popup.
 - `src/styles.css`, `src/solana.css`: charcoal and emerald design.
-- `src/motion.css`, `src/motion.js`: falling SOL artwork, responsive presentation, and saved motion preferences. Device reduced-motion settings take priority.
+- `src/motion.css`, `src/motion.js`: falling REBOUND artwork, responsive presentation, and saved motion preferences. Device reduced-motion settings take priority.
 - `assets/`: logo and banner in editable SVG and PNG formats.
 - `tests/`: accounting, wallet mocks, terminology checks, and browser regression steps.
 - `docs/PARITY.md`: reward mechanics and prototype scope.

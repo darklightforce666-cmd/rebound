@@ -1,6 +1,22 @@
 # Validation
 
-Validated locally on 2026-09-14 for version 0.5.0.
+## Current update: 2026-09-15
+
+The website and banner wordmark no longer have a trailing dot. The footer separator after REBOUND is also removed. The standalone HTML and downloadable branding are rebuilt from the current sources. The latest repository title, favicon, and entry screen changes are preserved.
+
+All 37 automated checks passed for commit `ede53bbf6c1107a84b55c37741973be0e2c32f37`: 14 prototype checks, 4 proof-builder checks, 3 Rust unit tests, and 16 tests executing the compiled Solana SBF program in LiteSVM. [Successful build and test run](https://github.com/darklightforce666-cmd/rebound/actions/runs/34950980043).
+
+The VM checks cover real System Program transfers, the 85/15 split, direct-deposit reconciliation, hourly openings, correction timing, prefunded accounts, permission checks, cancellation, pause behavior, publisher rotation, invalid proofs, duplicate-payment prevention, and the JavaScript builder to Python payout-plan to on-chain receipt path. They do not test a live RPC, installed wallet extensions, or the future trade indexer and creator-fee collector.
+
+The browser automation runtime failed to initialize during this update. No new desktop/mobile visual or end-to-end browser pass is claimed for the hourly change. The earlier browser results below describe the previous ten-minute demo behavior. The revised browser checklist uses automatic hourly payouts.
+
+The contract is a deployment candidate. No program deployment, scheduler activation, or real payment was performed. Live indexing, fee collection, devnet validation, and security review remain launch work.
+
+The saved SBF binary is 127,792 bytes with SHA-256 `c9e1bb301a307459deb25742fe7ae74dea95e049c44fb7446ea0fb83f653dcbb`. Its lockfile is included in `contracts/Cargo.lock`. The build ZIP contains only the program, lockfile, checksum, and commit identifier.
+
+## Earlier validation: 2026-09-14
+
+Validated locally for version 0.5.0 before the hourly payout change.
 
 ## Automated checks
 

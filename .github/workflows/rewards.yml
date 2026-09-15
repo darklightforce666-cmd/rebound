@@ -31,8 +31,9 @@ jobs:
       - name: Compile program and run Rust tests
         working-directory: contracts
         run: |
-          cargo +stable test
+          cargo +stable test --locked
           cargo build-sbf
+          git diff --exit-code -- Cargo.lock
       - name: Run actual SBF transactions in LiteSVM
         run: |
           python -m pip install -r contracts/tests/requirements.txt

@@ -42,7 +42,7 @@ python -m pytest tests/test_svm.py -v
 node tests/merkle.test.cjs
 ```
 
-Until a lockfile is included in this directory, run `cargo test` to resolve dependencies. Use the exact lockfile from the successful build artifact for release rebuilds. The artifact contains the binary, lockfile, binary checksum, and commit. Generated deployment keypairs are excluded from artifacts and source exports.
+The checked-in lockfile comes from the successful build artifact. Use it for release rebuilds. The artifact contains the binary, lockfile, binary checksum, and commit. Generated deployment keypairs are excluded from artifacts and source exports.
 
 ## Fill in addresses later
 
