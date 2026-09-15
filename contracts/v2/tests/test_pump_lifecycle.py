@@ -3,7 +3,7 @@
 No mainnet transaction is sent. This verifies program compatibility, not live
 rewards activation, production price history, or wallet identity inference.
 """
-import base64, json, subprocess
+import base64, json, subprocess, struct
 from pathlib import Path
 from solders.account import Account
 from solders.pubkey import Pubkey
@@ -57,3 +57,18 @@ def test_actual_pump_creation_sharing_and_collection(tmp_path):
     # A subsequent trade routes into the mint-scoped sharing vault.
     e.send([budget,*vector('buy')]);before=e.svm.get_balance(e.intake)
     e.send([budget,*vector('collect')]);assert e.svm.get_balance(e.intake)>before
+    collected=e.svm.get_balance(e.intake)-before;source_signature=e.last_signature
+    # Real collected SOL backs the program receipt. Pricing/eligibility remains
+    # an explicit verifier fixture here; policy and replay tests cover that layer.
+    e.credit(collected,source_signature=source_signature,instruction_path=h(b'1/0'))
+    e.fund(amount=max(1,collected*85//100),wallet=e.admin.pubkey())
+    token22=Pubkey.from_string('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');ata=Pubkey.from_string('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL')
+    e.token=pd(bytes(e.admin.pubkey()),bytes(token22),bytes(e.mint.pubkey()),program=ata)
+    e.send(e.payment());assert e.balances()[2]==0 and e.balances()[3]==e.amount
+    # Complete the real bonding curve then execute Pump's real migration.
+    remaining=struct.unpack_from('<Q',e.svm.get_account(curve).data,24)[0]
+    e.send([budget,*vector('buy',amount=str(remaining))]);assert e.svm.get_account(curve).data[48]==1
+    e.send([budget,*vector('migrate')])
+    # AMM fee sweep is invoked even when the newly migrated pool has no trades;
+    # the subsequent AMM purchase fixture will establish nonzero AMM accrual.
+    e.send([budget,*vector('collect',graduated=True)])

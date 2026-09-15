@@ -53,6 +53,7 @@ class Env:
         if isinstance(instructions,Instruction):instructions=[instructions]
         message=Message.new_with_blockhash(instructions,payer.pubkey(),self.svm.latest_blockhash())
         keys={str(k.pubkey()):k for k in [payer,*signers]};tx=VersionedTransaction(message,list(keys.values()))
+        self.last_signature=bytes(tx.signatures[0])
         assert len(bytes(tx))<=1232, len(bytes(tx))
         result=self.svm.send_transaction(tx)
         assert isinstance(result,TransactionMetadata if ok else FailedTransactionMetadata),str(result)
@@ -64,8 +65,8 @@ class Env:
         self.prepare();a=self.svm.get_account(self.coin);d=bytearray(a.data);d[168]=1;self.svm.set_account(self.coin,Account(a.lamports,bytes(d),PROGRAM))
         d=bytearray(82);d[44:46]=b'\6\1';self.svm.set_account(self.mint.pubkey(),Account(2_000_000,bytes(d),TOKEN))
         self.send(transfer({'from_pubkey':self.admin.pubkey(),'to_pubkey':self.intake,'lamports':10_001_000_000}))
-    def credit(self,n=10_000_000_000,identity=b'fixture-receipt',ok=True):
-        sig=h(identity)*2;path=h(b'0/1');slot=self.svm.get_clock().slot
+    def credit(self,n=10_000_000_000,identity=b'fixture-receipt',ok=True,source_signature=None,instruction_path=None):
+        sig=source_signature or h(identity)*2;path=instruction_path or h(b'0/1');slot=self.svm.get_clock().slot
         msg=b'RBD2RCPT'+bytes(PROGRAM)+bytes(self.deployment)+bytes(self.mint.pubkey())+b'\0'+sig+path+u(n)+u(slot)+u(slot)+u(slot+20)
         event=h(b'REBOUND:receipt:v2',sig,path,bytes(self.mint.pubkey()));self.receipt=pd(b'receipt-v2',bytes(self.coin),event)
         self.send([attestation(self.verifier,msg),ix(5,[m(self.admin.pubkey(),True,True),m(self.deployment),m(self.coin,True),m(self.intake,True),m(self.receipt,True),m(SYSTEM),m(IXSYS)],msg)],ok=ok)
