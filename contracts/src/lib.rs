@@ -194,7 +194,7 @@ fn backing(c: &Config, vault: &AccountInfo) -> Result<u64, ProgramError> {
 fn pay(from: &AccountInfo, to: &AccountInfo, amount: u64) -> ProgramResult {
     writable(from)?;
     writable(to)?;
-    unique(&[from, to])?;
+    require(from.key != to.key, Error::InvalidAccount)?;
     let left = sub(from.lamports(), amount)?;
     let right = add(to.lamports(), amount)?;
     **from.try_borrow_mut_lamports()? = left;
