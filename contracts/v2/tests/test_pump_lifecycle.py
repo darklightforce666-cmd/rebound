@@ -14,6 +14,7 @@ from test_svm import Env, PROGRAM, pd, h
 
 BASE=Path(__file__).parents[1]; FIXTURES=BASE/'fixtures/mainnet'
 PUMP=Pubkey.from_string('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P')
+AMM=Pubkey.from_string('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA')
 FEES=Pubkey.from_string('pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ')
 GLOBAL=Pubkey.from_string('4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf')
 
@@ -31,6 +32,13 @@ def test_actual_pump_creation_sharing_and_collection(tmp_path):
         data={'program':str(PROGRAM),'mint':str(e.mint.pubkey()),'user':str(e.admin.pubkey()),'action':action,'global':base64.b64encode(e.svm.get_account(GLOBAL).data).decode(),**extra}
         if e.svm.get_account(curve):data['curve']=base64.b64encode(e.svm.get_account(curve).data).decode()
         if e.svm.get_account(sharing):data['sharing']=base64.b64encode(e.svm.get_account(sharing).data).decode()
+        pool_authority=pd(b'pool-authority',bytes(e.mint.pubkey()),program=PUMP)
+        wsol=Pubkey.from_string('So11111111111111111111111111111111111111112')
+        pool=pd(b'pool',bytes([0,0]),bytes(pool_authority),bytes(e.mint.pubkey()),bytes(wsol),program=AMM)
+        if e.svm.get_account(pool):data['pool']=base64.b64encode(e.svm.get_account(pool).data).decode()
+        amm_global=pd(b'global_config',program=AMM)
+        if e.svm.get_account(amm_global):data['ammGlobal']=base64.b64encode(e.svm.get_account(amm_global).data).decode()
+        if hasattr(e,'token') and e.svm.get_account(e.token):data['existing']=base64.b64encode(e.svm.get_account(e.token).data).decode()
         source=tmp_path/'public-input.json';source.write_text(json.dumps(data))
         result=subprocess.run(['node',str(BASE/'tests/pump-vector.cjs'),str(source)],capture_output=True,text=True)
         assert result.returncode==0,result.stderr
@@ -69,6 +77,6 @@ def test_actual_pump_creation_sharing_and_collection(tmp_path):
     remaining=struct.unpack_from('<Q',e.svm.get_account(curve).data,24)[0]
     e.send([budget,*vector('buy',amount=str(remaining))]);assert e.svm.get_account(curve).data[48]==1
     e.send([budget,*vector('migrate')])
-    # AMM fee sweep is invoked even when the newly migrated pool has no trades;
-    # the subsequent AMM purchase fixture will establish nonzero AMM accrual.
-    e.send([budget,*vector('collect',graduated=True)])
+    e.send([budget,*vector('ammBuy')])
+    before=e.svm.get_balance(e.intake)
+    e.send([budget,*vector('collect',graduated=True)]);assert e.svm.get_balance(e.intake)>before
