@@ -825,8 +825,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "rebound-rewards"
-version = "0.1.0"
+name = "rebound-rewards-v2"
+version = "2.0.0"
 dependencies = [
  "borsh 1.5.7",
  "solana-program",

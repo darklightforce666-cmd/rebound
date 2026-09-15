@@ -28,8 +28,9 @@ jobs:
       - name: Compile candidate and run Rust tests
         working-directory: contracts/v2
         run: |
-          cargo +stable test
+          cargo +stable test --locked
           cargo build-sbf
+          git diff --exit-code -- Cargo.lock
       - name: Execute program integration tests when present
         run: |
           if test -f contracts/v2/tests/test_svm.py; then
