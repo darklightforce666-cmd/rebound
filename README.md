@@ -1,6 +1,6 @@
 # REBOUND / $RBD
 
-Solana token prototype. 85% of net collected creator fees funds holders, 15% funds operations. Holder rewards are paid in SOL and follow the recorded loss-recovery policy.
+Solana token prototype. 85% of net collected creator fees funds holders, 15% funds operations. Holder rewards are scheduled hourly in SOL and follow the recorded loss-recovery policy.
 
 All trades, balances, prices, and payouts are simulated. There is no live token mint, Pump.fun integration, or real transfer. The Rainbow-style wallet popup connects to Phantom or Solflare for public-address display only. It does not use the Ethereum RainbowKit SDK.
 

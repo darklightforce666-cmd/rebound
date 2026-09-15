@@ -10,7 +10,7 @@ The split applies to newly collected net fees, not trading volume. A 1 SOL recei
 
 Recognized purchases mature after 15 minutes. The reference price is the higher of spot and a complete 15-minute time-weighted average. Remaining shortfall is mature recorded cost minus reference token value minus all prior funded awards, floored at zero.
 
-Available holder funds are allocated proportionally to shortfalls, capped by the total shortfall and rounded down. Funding reserves amounts immediately and reduces future shortfalls. Generation-4 rounds wait 10 minutes before claims open. A guardian can cancel an incorrect round within that wait and restore the balances.
+Available holder funds are allocated proportionally to shortfalls, capped by the total shortfall and rounded down. Funding reserves amounts immediately and reduces future shortfalls. Generation-4 rounds open at the first UTC hour boundary at least 10 minutes after funding. Only one pending round may exist. A guardian can cancel an incorrect round before it opens and restore the balances. A payout worker sends SOL automatically on the hour and retries failed transfers; recipients do not need to sign. Delayed transfers remain owed.
 
 A sale or outgoing transfer permanently ends future rewards for that wallet/token position. Buying again does not restore them. Already-funded claims survive later sales and can be paid once. Unrecognized incoming tokens do not add cost basis.
 

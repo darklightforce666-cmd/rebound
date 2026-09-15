@@ -20,10 +20,10 @@ test('recognized purchase matures at fifteen minutes',()=>{
   const p=E.newPosition('holder');E.purchase(p,{id:'buy',quantity:1000000n,officialCost:2000000000n,at:NOW});const ref=at=>({confirmed:true,historyComplete:true,at,priceQ:E.PRICE_SCALE*1000n});
   assert.equal(E.shortfall(p,ref(NOW+899999)).shortfall,0n);assert.equal(E.shortfall(p,ref(NOW+900000)).shortfall,1000000000n);E.outgoing(p,1n);assert.equal(E.shortfall(p,ref(NOW+900000)).shortfall,0n);
 });
-test('funded claims wait ten minutes, survive sales, and cannot repeat',()=>{
+test('funded awards open hourly, survive sales, and cannot repeat',()=>{
   const t=F.create(NOW).tokens[0],p=t.positions[0],r=E.fund(t.treasury,t.positions,F.reference(t,NOW),NOW),award=r.allocations.find(a=>a.wallet===p.wallet).amount;
-  assert.throws(()=>E.claim(t.treasury,t.positions,r.id,p.wallet,NOW+599999),/correction wait/);E.outgoing(p,1000000n);
-  assert.equal(E.claim(t.treasury,t.positions,r.id,p.wallet,NOW+600000),award);assert.throws(()=>E.claim(t.treasury,t.positions,r.id,p.wallet,NOW+600000),/No unpaid/);assert.ok(E.assertAccounting(t.treasury));
+  assert.throws(()=>E.claim(t.treasury,t.positions,r.id,p.wallet,r.claimableAt-1),/correction wait/);E.outgoing(p,1000000n);
+  assert.equal(E.claim(t.treasury,t.positions,r.id,p.wallet,r.claimableAt),award);assert.throws(()=>E.claim(t.treasury,t.positions,r.id,p.wallet,r.claimableAt),/No unpaid/);assert.ok(E.assertAccounting(t.treasury));
 });
 test('guardian cancellation restores reserved funds and funded basis',()=>{
   const t=F.create(NOW).tokens[0],balance=t.treasury.available,basis=t.positions[0].funded,r=E.fund(t.treasury,t.positions,F.reference(t,NOW),NOW);

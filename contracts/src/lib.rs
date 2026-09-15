@@ -379,7 +379,7 @@ pub fn process_instruction(
             require(
                 [publisher, guardian, operations]
                     .iter()
-                    .all(|k| *k != Pubkey::default() && k != vault.key && k.is_on_curve()),
+                    .all(|k| *k != Pubkey::default() && k != vault.key),
                 Error::InvalidAccount,
             )?;
             let token = solana_program::pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
@@ -641,7 +641,7 @@ pub fn process_instruction(
             let mut c = load_config(program, vault)?;
             authority(admin, &c.admin)?;
             require(
-                next != Pubkey::default() && next.is_on_curve() && next != *vault.key,
+                next != Pubkey::default() && next != *vault.key,
                 Error::InvalidAccount,
             )?;
             c.pending_publisher = next;

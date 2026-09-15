@@ -17,6 +17,7 @@ from solders.transaction import VersionedTransaction
 from solders.transaction_metadata import TransactionMetadata, FailedTransactionMetadata
 sys.path.insert(0,str(Path(__file__).parents[1]/'client'))
 import rebound as R
+import hourly_payouts as worker
 
 TIME=1_800_000_000
 TOKEN=Pubkey.from_string('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')
@@ -152,5 +153,18 @@ def test_javascript_builder_proof_claims_in_vm(env,tmp_path):
     input={'programId':str(PROGRAM),'config':str(e.vault),'roundId':'1','snapshotAt':TIME,'sourceSlot':1,'commitment':'finalized','availableLamports':'850000000','positions':[{'wallet':str(e.alice.pubkey()),'funded':'0','hasOutgoing':False,'lots':[{'id':'trade-1','quantity':'1000000','cost':'2000000000','at':(TIME-900)*1000}]}],'reference':{'confirmed':True,'historyComplete':True,'spotQ':'1000000000000000','samples':[{'at':(TIME-900)*1000,'priceQ':'1000000000000000'},{'at':TIME*1000,'priceQ':'1000000000000000'}]}}
     source=tmp_path/'snapshot.json';out=tmp_path/'round.json';source.write_text(json.dumps(input))
     subprocess.run(['node',str(Path(__file__).parents[1]/'client/build-round.cjs'),str(source),str(out)],check=True)
-    bundle=json.loads(out.read_text());e.send(R.publish(PROGRAM,e.admin.pubkey(),e.vault,bundle));e.set_time(TIME+3600)
-    e.claim(award=bundle['claims'][0]);assert e.state()['paid']==850_000_000
+    bundle=json.loads(out.read_text());e.send(R.publish(PROGRAM,e.admin.pubkey(),e.vault,bundle))
+    class VmRpc:
+        def account(self,address):
+            if str(address)=='SysvarC1ock11111111111111111111111111111111':
+                return {'data':bytes(32)+struct.pack('<q',e.svm.get_clock().unix_timestamp)}
+            a=e.svm.get_account(R.key(address))
+            return None if a is None else {'owner':str(a.owner),'data':a.data,'lamports':a.lamports}
+    settings={'programId':str(PROGRAM),'admin':str(e.admin.pubkey()),'mint':str(e.mint)}
+    rpc=VmRpc();worker.validate_bundle(bundle)
+    assert worker.plan(rpc,settings,bundle,e.admin.pubkey())==[]
+    e.set_time(TIME+3600);pending=worker.plan(rpc,settings,bundle,e.admin.pubkey());assert len(pending)==1
+    e.send(pending[0][1]);assert e.state()['paid']==850_000_000
+    assert worker.plan(rpc,settings,bundle,e.admin.pubkey())==[]
+    corrupt=json.loads(json.dumps(bundle));corrupt['claims'][0]['amount']='850000001'
+    with pytest.raises(ValueError):worker.plan(rpc,settings,corrupt,e.admin.pubkey())

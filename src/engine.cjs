@@ -7,9 +7,9 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
   const PRICE_SCALE = 1_000_000_000_000n;
-  const POLICY = Object.freeze({id:'holder-recovery/v2', holdMs:900_000, roundDelayMs:600_000,
+  const POLICY = Object.freeze({id:'holder-recovery/v2', holdMs:900_000, roundDelayMs:600_000, payoutIntervalMs:3_600_000,
     correctionMs:43_200_000, roleDelayMs:86_400_000, activationMs:172_800_000,
-    dormantMs:7_776_000_000, activeSweepMs:900_000, idleSweepMs:21_600_000,
+    dormantMs:7_776_000_000, activeSweepMs:3_600_000, idleSweepMs:3_600_000,
     minTaxBps:10, maxTaxBps:1000, defaultTaxBps:500});
   function invariant(ok, message) { if (!ok) throw new Error(message); }
   function natural(value, name='amount') {
@@ -137,7 +137,7 @@
     invariant(result.distributed>0n,'No funded awards: check eligible losses, holding time and treasury funds');
     const id=t.rounds.length+1;
     const round={id,policyId:POLICY.id,snapshotAt:reference.at,referenceQ:reference.priceQ,
-      fundedAt:now,claimableAt:now+(t.generation===4?POLICY.roundDelayMs:0),amount:result.distributed,cancelled:false,
+      fundedAt:now,claimableAt:t.generation===4?Math.ceil((now+POLICY.roundDelayMs)/POLICY.payoutIntervalMs)*POLICY.payoutIntervalMs:now,amount:result.distributed,cancelled:false,
       allocations:result.allocations.map(a=>({...a,paid:false,paidAt:null,transactionSignature:null}))};
     t.available-=result.distributed;t.reserved+=result.distributed;t.funded+=result.distributed;t.lastActivity=now;t.rounds.push(round);
     for(const a of round.allocations) positions.find(p=>p.wallet===a.wallet).funded+=a.amount;
@@ -145,7 +145,7 @@
   }
   function claim(t,positions,roundId,wallet,now) {
     timestamp(now); const r=t.rounds.find(r=>r.id===roundId);
-    invariant(r&&!r.cancelled,'Round unavailable');invariant(now>=r.claimableAt,'Round has a 10-minute correction wait');
+    invariant(r&&!r.cancelled,'Round unavailable');invariant(now>=r.claimableAt,'Hourly payout has not opened; correction wait is active');
     const a=r.allocations.find(a=>a.wallet===wallet); invariant(a&&!a.paid,'No unpaid award for this wallet');
     const p=positions.find(p=>p.wallet===wallet); invariant(p,'Position ledger missing');
     // Eligibility is not re-evaluated here: later sales cannot erase funded claims.

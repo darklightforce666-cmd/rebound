@@ -15,7 +15,7 @@
     t.positions=[a,b];
     E.collect(t.treasury,id+'-fees-1',unit*375n/1000n,now-2*3600000);
     const r=E.fund(t.treasury,t.positions,reference(t,now-90*60000),now-90*60000);
-    E.claim(t.treasury,t.positions,r.id,a.wallet,now-75*60000);E.claim(t.treasury,t.positions,r.id,b.wallet,now-75*60000);
+    E.claim(t.treasury,t.positions,r.id,a.wallet,r.claimableAt);E.claim(t.treasury,t.positions,r.id,b.wallet,r.claimableAt);
     E.collect(t.treasury,id+'-fees-2',unit*(150n+BigInt(index)*25n)/100n,now-3600000);
     t.trades=[{id:id+'-fixture-buy',side:'buy',wallet:'demo-holder',amount:5n*unit,quantity:30000n*1000000n,at:now-3*3600000,simulated:true}];
     return t;
