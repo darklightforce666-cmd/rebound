@@ -1,14 +1,14 @@
 {
   "name": "rebound-solana",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
-  "description": "REBOUND Solana prototype: 85% holder rewards and 15% operations",
+  "description": "Pump.fun launchpad development with live Solana data and creator-fee reward infrastructure",
   "scripts": {
-    "start": "node scripts/server.cjs",
+    "start": "node scripts/build.cjs && node scripts/server.cjs",
     "build": "node scripts/build.cjs",
     "test": "node scripts/test.cjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   }
 }

@@ -1,9 +1,15 @@
-const fs = require('node:fs');
-const path = require('node:path');
-const root = path.resolve(__dirname, '..');
-let html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
-html = html.replace(/<link rel="stylesheet" href="([^"]+)">/g, (_, file) => `<style>\n${fs.readFileSync(path.join(root, file), 'utf8')}\n</style>`);
-html = html.replace(/<script src="([^"]+)"><\/script>/g, (_, file) => `<script>\n${fs.readFileSync(path.join(root, file.split('?')[0]), 'utf8')}\n</script>`);
-fs.mkdirSync(path.join(root, 'preview'), {recursive: true});
-fs.writeFileSync(path.join(root, 'preview/REBOUND.html'), html);
-console.log('Built preview/REBOUND.html');
+const fs=require('node:fs'),path=require('node:path');
+const root=path.resolve(__dirname,'..'),dist=path.join(root,'dist');
+function build(){
+ // Only this fixed, generated directory may be cleared.
+ if(path.dirname(dist)!==root||path.basename(dist)!=='dist')throw Error('Invalid output path');
+ fs.rmSync(dist,{recursive:true,force:true});
+ const files=['index.html','src/mainnet-config.js','src/live-data.js','src/wallet.js','src/app.js','src/styles.css','src/solana.css','src/motion.css','src/live.css','src/motion.js'];
+ for(const file of files){
+  const target=path.join(dist,file);fs.mkdirSync(path.dirname(target),{recursive:true});fs.copyFileSync(path.join(root,file),target);
+ }
+ fs.cpSync(path.join(root,'assets'),path.join(dist,'assets'),{recursive:true});
+ console.log('Built dist with live interface assets. Server code and test data are excluded.');
+}
+if(require.main===module)build();
+module.exports={build};

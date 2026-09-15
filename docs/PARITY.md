@@ -27,3 +27,5 @@ State uses version 4 and `rebound.demo.holders.v4`. Older simulation keys remain
 The custom wallet popup follows the requested Rainbow-style layout and uses Solana Phantom/Solflare providers. It shares a public address only. Real balances, transaction signing, and transfers are not connected. Mock tests do not substitute for installed-extension testing.
 
 Trading is a fixed-price simulation with a 0.10% to 10% demo creator tax and a separate 1% demo venue fee. Only collected creator tax enters the allocation. These parameters do not assert current Pump.fun settings. The `contracts/` package prepares SOL custody, hourly payout commitments, and a sponsor worker. Token minting, live fee collection, validated activity indexing, production reference pricing, and deployment remain separate launch work. The website still uses the local ledger and does not send real transactions.
+> Historical accounting reference. The public website no longer loads the simulation described below. See [current mainnet status](MAINNET.md) for live features and remaining integrations. The reference ledger remains under test.
+

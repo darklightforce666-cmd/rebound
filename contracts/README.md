@@ -1,6 +1,6 @@
 # REBOUND hourly SOL rewards
 
-Deployment candidate source. No token, wallet, or program address is embedded in the binary. Nothing in this repository deploys or funds mainnet automatically. The website remains a simulation.
+Deployment candidate source. No token, wallet, or program address is embedded in the binary. Nothing in this repository deploys or funds mainnet automatically. The website reads live data; launches and reward payments remain unavailable until the integrations described in ../docs/MAINNET.md are completed.
 
 ## What this program does
 

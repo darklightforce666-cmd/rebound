@@ -8,3 +8,8 @@ contracts/deploy/prepared.json
 **/*keypair*.json
 **/__pycache__/
 .pytest_cache/
+dist/
+.netlify/
+.env
+.env.*
+!.env.example

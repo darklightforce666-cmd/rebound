@@ -1,2 +1,24 @@
+[build]
+  command = "node scripts/build.cjs"
+  publish = "dist"
+  functions = "netlify/functions"
+
 [build.environment]
   NODE_VERSION = "24"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+
+[[headers]]
+  for = "/src/*"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[redirects]]
+  from = "/preview/REBOUND.html"
+  to = "/"
+  status = 301
