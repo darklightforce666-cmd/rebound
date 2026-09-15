@@ -14,6 +14,13 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install locked JavaScript dependencies
+        run: |
+          npm install --global pnpm@11.19.0 --ignore-scripts
+          pnpm install --frozen-lockfile --ignore-scripts
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -37,6 +44,10 @@ jobs:
             python -m pip install solders==0.29.0 pytest==8.4.2
             python -m pytest contracts/v2/tests/test_svm.py -v
           fi
+      - name: Clone deployed Pump programs and execute local lifecycle
+        run: |
+          node scripts/rewards/clone-protocol.cjs
+          python -m pytest contracts/v2/tests/test_pump_lifecycle.py -v
       - name: Record build evidence
         if: always()
         run: |

@@ -10,5 +10,18 @@
   },
   "engines": {
     "node": ">=24"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "0.31.1",
+    "@netlify/blobs": "11.1.0",
+    "@pump-fun/pump-sdk": "2.0.0",
+    "@pump-fun/pump-swap-sdk": "1.20.0",
+    "@solana/spl-token": "0.4.14",
+    "@solana/web3.js": "1.99.0",
+    "pg": "8.23.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
+    "esbuild": "0.28.2"
   }
 }
