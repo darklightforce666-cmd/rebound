@@ -92,6 +92,7 @@ async function cycle(context,coin,round){
   const funded=await reserveRound(context,coin,round);
   const allocations=(await db.query('SELECT * FROM reward_allocations WHERE mint=$1 AND active>0 ORDER BY round_id,leaf_index',[coin.mint])).rows;
   const delivery=[];for(const a of allocations)delivery.push(await D.deliver({...context,mint:coin.mint,round:a.round_id,index:a.leaf_index}));
+  for(const row of (await db.query("SELECT round_id FROM reward_rounds WHERE mint=$1 AND state IN ('reserved','delivering')",[coin.mint])).rows){const actual=await accountState(connection,cfg.program,W.addresses(cfg.program,coin.mint,row.round_id).round,'round');if(actual&&actual.registered===actual.total)await db.query('UPDATE reward_rounds SET state=$3 WHERE mint=$1 AND round_id=$2',[coin.mint,row.round_id,actual.remaining===0n?'completed':'delivering']);}
   await reconcileCoin(db,connection,cfg,coin);return{state:delivery.some(r=>!['finalized','held'].includes(r.state))?'delivering':funded.state,operations,delivery};
  }finally{await releaseOperations(context,coin,round).catch(()=>{});await db.query('SELECT pg_advisory_unlock(hashtextextended($1,0))',[coin.mint]);}
 }
@@ -111,7 +112,7 @@ async function run({once=false,role=process.env.REWARDS_WORKER_ROLE||'scheduler'
     else{
      const payer=await C.keyFromFile('REWARDS_DELIVERY_PAYER_KEY_FILE'),publisher=await C.keyFromFile('REWARDS_PUBLISHER_KEY_FILE',cfg.publisher);
      for(const exit of (await db.query('SELECT mint,wallet FROM reward_disqualifications')).rows)await require('./exits.cjs').publish({db,connection,cfg,preflight,payer},exit.mint,exit.wallet);
-     const cutoffSlot=await connection.getSlot('finalized'),time=await connection.getBlockTime(cutoffSlot),round=Math.floor(time/1800);
+     const cutoffSlot=await connection.getSlot('finalized'),time=await connection.getBlockTime(cutoffSlot);if(!Number.isSafeInteger(time)||time<=0)throw Error('Finalized scheduling time unavailable');const round=Math.floor(time/1800);
      for(const coin of coins)await db.query("INSERT INTO reward_jobs(id,mint,kind,due_at) VALUES($1,$2,'cycle',now()) ON CONFLICT DO NOTHING",['cycle:'+coin.mint+':'+round,coin.mint]);
      const job=await DB.leaseJob(db,worker);if(job){const coin=coins.find(c=>c.mint===job.mint);const result=await cycle({db,connection,cfg,preflight,payer,publisher},coin,Number(job.id.split(':').at(-1)));await db.query("UPDATE reward_jobs SET state=$2,checkpoint=$3,due_at=now()+interval '15 seconds',lease_owner=null,lease_until=null WHERE id=$1",[job.id,['completed','reserved','dry-run'].includes(result.state)?'completed':'pending',P.stable(result)]);}
     }

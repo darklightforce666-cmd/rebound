@@ -48,7 +48,8 @@ const funding=()=>({purchase:{id:'buy',wallet:'B',cost:'1000000000',time:3000000
 test('split transfers aggregate into material dependent funding',()=>{const r=P.fundingEdges(funding());assert.equal(r.edges.length,1);assert.equal(r.edges[0].amount,800000000n);});
 test('dust, unsolicited gifts, services and reward recipients cannot merge holders',()=>{
  const x=funding();x.recipientHistory.independentFunds='2000000000';assert.equal(P.fundingEdges(x).edges.length,0);x.recipientHistory.independentFunds='0';x.transfers.forEach(t=>t.amount='1');assert.equal(P.fundingEdges(x).edges.length,0);
- const s=funding();s.services=[{address:'A',verified:true,evidence:'verified-service-account'}];assert.equal(P.fundingEdges(s).edges.length,0);
+ const s=funding();s.services=[{address:'A',classification:'exchange',verified:true,evidence:'verified-service-account'}];assert.equal(P.fundingEdges(s).edges.length,0);
+ s.services[0].classification='unknown';assert.equal(P.fundingEdges(s).edges.length,1,'unknown service labels never exempt a counterparty');
  const r=funding();r.transfers.forEach(t=>t.isReward=true);assert.equal(P.fundingEdges(r).edges.length,0);
 });
 test('unknown counterparties or incomplete funding history hold purchases, never assert control',()=>{

@@ -17,7 +17,9 @@ exports.handler=async event=>{
     const checkpoint=(await pool.query("SELECT through_slot,through_time,complete,incident,updated_at FROM reward_checkpoints WHERE name='finalized-blocks'")).rows[0];
     const coins=(await pool.query('SELECT mint,treasury,intake,status,blocked_reason,activation_slot,policy_hash FROM reward_coins ORDER BY created_at DESC LIMIT 100')).rows;
     const next=Math.floor(Date.now()/1800000)*1800+1800;
-    return reply(200,{available:true,transfersEnabled:cfg.enabled,launchesEnabled:cfg.enabled&&Boolean(cfg.program),state:cfg.enabled?'verification_required':'dry_run',policy:P.POLICY,policyHash:P.POLICY_HASH,operations:cfg.operations,program:cfg.program,checkpoint,coins,nextCycle:next,note:'Every allocation remains conditional until its fresh eligibility check and finalized payment.'});
+    const ready=cfg.enabled?(await C.preflight(cfg.rpc?new Connection(cfg.rpc,'finalized'):null,pool,cfg)).ready:false;
+    const jobs=(await pool.query('SELECT id,mint,kind,state,attempts,lease_until,due_at FROM reward_jobs ORDER BY due_at DESC LIMIT 30')).rows;
+    return reply(200,{available:true,transfersEnabled:ready,launchesEnabled:ready,state:ready?'fresh_verification_required':cfg.enabled?'deployment_blocked':'dry_run',reason:cfg.enabled&&!ready?'Deployment verification is incomplete. Reserved funds remain held.':null,policy:P.POLICY,policyHash:P.POLICY_HASH,operations:cfg.operations,program:cfg.program,checkpoint,coins,jobs,nextCycle:next,note:'Every allocation remains conditional until its fresh eligibility check and finalized payment.'});
    }
    if(action==='coin'){
     W.pk(query.mint);const coin=(await pool.query('SELECT c.*,a.* FROM reward_coins c LEFT JOIN reward_accounts a USING(mint) WHERE mint=$1',[query.mint])).rows[0];if(!coin)return reply(404,{message:'This coin has not enrolled in rebound rewards.'});

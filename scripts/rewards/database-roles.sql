@@ -11,6 +11,7 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO rebound_api,rebound_indexer,rebound_scheduler,rebound_verifier;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO rebound_indexer,rebound_scheduler,rebound_verifier;
 GRANT SELECT ON reward_coins,reward_accounts,reward_deployments,reward_rounds,reward_allocations,reward_position_views,reward_disqualifications,reward_events,reward_checkpoints,reward_launch_attempts,reward_challenges,reward_rate_limits TO rebound_api;
+GRANT SELECT ON reward_jobs TO rebound_api;
 GRANT INSERT,UPDATE ON reward_launch_attempts,reward_challenges,reward_rate_limits TO rebound_api;
 GRANT INSERT ON reward_coins,reward_accounts TO rebound_api;
 GRANT UPDATE(status,launch_slot,activation_slot,activation_evidence,current_creator,blocked_reason) ON reward_coins TO rebound_api;

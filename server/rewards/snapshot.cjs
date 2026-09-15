@@ -46,7 +46,7 @@ async function tokenAccounts(connection,wallet,mint){
 async function snapshot(db,connection,{mint,cutoff,program}){
  const coin=(await db.query('SELECT * FROM reward_coins WHERE mint=$1',[mint])).rows[0];if(!coin)return{complete:false,reason:'coin_not_enrolled'};
  const Pump=require('./pump.cjs'),addresses=W.addresses(program,mint);if(coin.intake!==addresses.intake.toBase58()||coin.treasury!==addresses.coin.toBase58()||coin.sharing_config!==Pump.SDK.feeSharingConfigPda(W.pk(mint)).toBase58()||coin.policy_hash!==P.POLICY_HASH)return{complete:false,reason:'coin_configuration_mismatch'};
- try{await Pump.verifyRouting(connection,program,mint);}catch{return{complete:false,reason:'current_fee_routing_unverified'};}
+ let routing;try{routing=await Pump.verifyRouting(connection,program,mint);}catch{return{complete:false,reason:'current_fee_routing_unverified'};}
  const replay=await replayCoin(db,coin,cutoff);if(!replay.complete)return replay;
  await require('./project.cjs').materialize(db,coin);
  const freshFunding=await require('./funding.cjs').refresh({db,rpc:new I.Rpc(process.env.HISTORY_RPC_URL||process.env.SOLANA_RPC_URL),coin,replay,cutoff});
@@ -60,7 +60,7 @@ async function snapshot(db,connection,{mint,cutoff,program}){
   const funding=freshFunding.wallets.find(f=>f.wallet===wallet);
   if(!funding?.complete||funding.checkedThrough<cutoff.slot){positions.push({wallet,outcome:'hold',reason:'fresh_funding_analysis_required',chain,tokens});continue;}
   const pos=P.position(replay.lots,{wallet,mint,cutoff:cutoff.time,priceQ:reference.q,paid:chain.paid,reserved:chain.active,disqualification:exit,coverage:{complete:true},holdings:tokens.quantity,linkHolds:links.filter(l=>l.status==='ambiguous').map(l=>l.purchase)});
-  positions.push({...pos,wallet,chain,tokens,linkedExclusion:linked,disqualification:exit});
+  positions.push({...pos,wallet,chain,tokens,mintDecimals:routing.mintDecimals,linkedExclusion:linked,disqualification:exit});
  }
  const account=await connection.getAccountInfoAndContext(W.addresses(program,mint).coin,'finalized');if(!account.value?.owner.equals(W.pk(program)))throw Error('Coin treasury unavailable');const treasury=W.decode(account.value.data,'coin');
  for(const p of positions)await db.query('INSERT INTO reward_position_views(mint,wallet,checked_slot,checked_time,view) VALUES($1,$2,$3,$4,$5) ON CONFLICT(mint,wallet) DO UPDATE SET checked_slot=EXCLUDED.checked_slot,checked_time=EXCLUDED.checked_time,view=EXCLUDED.view WHERE reward_position_views.checked_slot<=EXCLUDED.checked_slot',[mint,p.wallet,cutoff.slot,cutoff.time,P.stable({...p,reference,checkTime:cutoff.time})]);

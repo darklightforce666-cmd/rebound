@@ -17,6 +17,7 @@ async function submit({db,connection,cfg,preflight,job,instructions,payer,signer
  const prior=(await db.query("SELECT * FROM reward_chain_attempts WHERE job=$1 AND state IN ('prepared','broadcast','uncertain') ORDER BY created_at DESC LIMIT 1",[job])).rows[0];
  if(prior){const state=await reconcileAttempt(db,connection,prior,readSettlement);if(state.state!=='expired'&&state.state!=='failed')return state;return{state:'retry_requires_fresh_check'};}
  const current=await readSettlement();if(current?.settled)return{state:'finalized',settlement:current};
+ if(current?.uncertain)return{state:'held',reason:current.reason||'settlement_evidence_unavailable'};
  if(!cfg.enabled)return{state:'dry-run',job,instructions:instructions.length,context};
  Config.requireProduction(preflight,cfg);
  const blockhash=await connection.getLatestBlockhash('confirmed'),tx=prepare?await prepare(blockhash):new Transaction({feePayer:payer.publicKey,...blockhash}).add(...instructions);

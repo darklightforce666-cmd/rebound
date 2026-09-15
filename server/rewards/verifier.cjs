@@ -21,7 +21,7 @@ async function verifyManifest({db,connection,program,mint,round,cutoff,published
 async function authorizePayment({db,connection,rpc,program,verifier,mint,round,index}){
  const allocation=(await db.query('SELECT * FROM reward_allocations WHERE mint=$1 AND round_id=$2 AND leaf_index=$3',[mint,round,index])).rows[0];if(!allocation)return{outcome:'hold',reason:'allocation_not_registered'};
  if(BigInt(allocation.active)===0n)return{outcome:'settled',signature:allocation.settlement_signature};
- const pending=(await db.query("SELECT * FROM reward_payment_attempts WHERE mint=$1 AND round_id=$2 AND leaf_index=$3 AND state IN ('prepared','broadcast','uncertain')",[mint,round,index])).rows[0];if(pending)return{outcome:'hold',reason:'prior_broadcast_requires_reconciliation'};
+ const pending=(await db.query("SELECT * FROM reward_chain_attempts WHERE job=$1 AND state IN ('prepared','broadcast','uncertain')",['pay:'+mint+':'+round+':'+index])).rows[0];if(pending)return{outcome:'hold',reason:'prior_broadcast_requires_reconciliation'};
  let cutoff;try{cutoff=await S.finalizedCutoff(db,connection);}catch(e){return{outcome:'hold',reason:e.message};}const {slot:checkedThrough,time}=cutoff;
  const recorded=await S.chainPosition(connection,program,mint,allocation.wallet);
  if(recorded.disqualified){

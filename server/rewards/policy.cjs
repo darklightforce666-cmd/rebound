@@ -89,7 +89,8 @@ function paymentCheck(candidate,current,{nowSlot,checkedThrough,issuedSlot,polic
 }
 function fundingEdges({purchase,transfers,recipientHistory,services=[],policy=POLICY}){
  if(!recipientHistory.complete||recipientHistory.startTime>purchase.time-policy.fundingHistorySeconds)return{edges:[],holds:[{purchase:purchase.id,reason:'funding_history_incomplete'}]};
- const trustedServices=new Set(services.filter(s=>s.verified&&s.evidence&&s.classification!=='private-wallet-verified').map(s=>s.address));
+ const serviceClasses=new Set(['pool','router','exchange','bridge','custody','shared-fee-sponsor','rebound-payout']);
+ const trustedServices=new Set(services.filter(s=>s.verified&&s.evidence&&serviceClasses.has(s.classification)).map(s=>s.address));
  const groups=new Map();for(const t of transfers){
   if(t.to!==purchase.wallet||t.time>purchase.time||t.time<purchase.time-policy.fundingWindowSeconds||t.isReward||trustedServices.has(t.from)||trustedServices.has(t.to))continue;
   const list=groups.get(t.from)||[];list.push(t);groups.set(t.from,list);

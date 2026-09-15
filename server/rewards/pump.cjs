@@ -36,7 +36,7 @@ async function verifyRouting(connection,program,mint){
  if(!bc.creator.equals(sharing)||!sc.mint.equals(mint)||!sc.adminRevoked||sc.shareholders.length!==1||!sc.shareholders[0].address.equals(a.intake)||sc.shareholders[0].shareBps!==10000)throw Error('Fee destination is not the finalized per-coin intake');
  if(!sc.status.active)throw Error('Pump fee sharing is paused');
  if(bc.complete){const pool=await connection.getAccountInfo(SDK.canonicalPumpPoolPda(mint),'finalized');if(!pool||!pool.owner.equals(SDK.PUMP_AMM_PROGRAM_ID))throw Error('Graduated canonical pool unavailable');const state=SDK.getPumpAmmProgram(connection).coder.accounts.decode('pool',pool.data);if(!state.coinCreator.equals(sharing)||!state.baseMint.equals(mint)||!state.quoteMint.equals(NATIVE_MINT))throw Error('Graduated fee destination mismatch');}
- return{slot:result.context.slot,curve:bc,sharing:sc,addresses:a};
+ return{slot:result.context.slot,curve:bc,sharing:sc,addresses:a,mintDecimals:m.data[44]};
 }
 async function collect(mint,payer,sharing,{graduated=false}={}){
  mint=W.pk(mint);payer=W.pk(payer);const instructions=[];

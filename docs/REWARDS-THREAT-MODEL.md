@@ -10,6 +10,8 @@ The verifier attests purchase provenance, loss prices, maturity, complete histor
 
 The indexer and archival RPC must deliver complete finalized history and accurate instruction order. Missing data holds payments, but a dishonest provider claiming completeness can evade ordinary gap checks. Independent source verification and replay are required. A late event before a signed complete cutoff is an incident. The time between finalized verification and execution remains a sell-history race; onchain balances alone cannot detect every sell/rebuy.
 
+Apply the database role script. Publisher-maintained projections and audit caches are not eligibility authorities: funding decisions are reconstructed from archive RPC and receipt allocations from complete immutable indexer evidence. Only the separately governed database owner can correct inferred links or classify services. That owner and the indexer therefore remain trusted infrastructure roles. Runtime preflight rejects broad database write privileges; using one owner login for every service defeats the intended separation.
+
 ## Economic and identity threats
 
 Price pumping/dumping, illiquid trades, self-funding, transfers through unlabeled services, independent wallets and colluding people can evade a naive loss system. The implementation uses canonical markets, minimum real liquidity, complete time weighting, entry-impact and price-ratio circuit breakers, directional purchase funding, and conservative holds. These thresholds require calibration and adversarial review. They do not prove common ownership or eliminate manipulation. Public rewards distributions and fee sponsors are not identity links. Incoming gifts do not ban recipients.
@@ -20,4 +22,4 @@ Privileged API requests are server-only HMAC-authenticated with expiring nonces.
 
 ## Remaining assurance limits
 
-Passing unit tests, PostgreSQL WASM-engine tests, and locally executing cloned programs is not an audit or production acceptance. Full deployed-service/browser flows, busy-network index throughput, independent identity-data calibration, existing enrollment, pre-sharing graduation, router provenance, broader economic attacks, and lot-level correction accounting remain activation gates. Do not enable transfers merely by writing `passed: true` into an evidence file. The production deployment must be reviewed against the code and tests actually shipped.
+Passing unit tests, PostgreSQL WASM-engine tests, and locally executing cloned programs is not an audit or production acceptance. Full deployed-service/browser flows, busy-network index throughput, independent identity-data calibration, existing enrollment, router provenance, broader economic attacks, and lot-level correction accounting remain activation gates. Do not enable transfers merely by writing `passed: true` into an evidence file. The production deployment must be reviewed against the code and tests actually shipped.

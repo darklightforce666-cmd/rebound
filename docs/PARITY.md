@@ -1,5 +1,7 @@
 # Holder reward policy
 
+> Historical V1 policy. Superseded by [conditional rewards V2](REWARDS-V2.md). Its maturity, accounting and claim rules below are not the current product policy.
+
 ## Fees
 
 Each net collected creator-fee receipt allocates 85% to holder recovery and 15% to operations. Values are integer lamports. Both shares round down and any remaining lamport stays in a separate dust balance. A receipt identifier cannot be credited twice.
@@ -28,4 +30,3 @@ The custom wallet popup follows the requested Rainbow-style layout and uses Sola
 
 Trading is a fixed-price simulation with a 0.10% to 10% demo creator tax and a separate 1% demo venue fee. Only collected creator tax enters the allocation. These parameters do not assert current Pump.fun settings. The `contracts/` package prepares SOL custody, hourly payout commitments, and a sponsor worker. Token minting, live fee collection, validated activity indexing, production reference pricing, and deployment remain separate launch work. The website still uses the local ledger and does not send real transactions.
 > Historical accounting reference. The public website no longer loads the simulation described below. See [current mainnet status](MAINNET.md) for live features and remaining integrations. The reference ledger remains under test.
-

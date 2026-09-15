@@ -2,9 +2,9 @@ name: Conditional rewards V2
 on:
   push:
     branches: [main, rewards-v2-implementation]
-    paths: ['contracts/v2/**', 'server/**', 'scripts/rewards/**', 'tests/rewards/**', '.github/workflows/rewards-v2.yml', 'package.json', 'pnpm-lock.yaml']
+    paths: ['contracts/v2/**', 'server/**', 'scripts/**', 'tests/**', 'src/**', 'netlify/**', 'index.html', 'netlify.toml', '.github/workflows/rewards-v2.yml', 'package.json', 'pnpm-lock.yaml']
   pull_request:
-    paths: ['contracts/v2/**', 'server/**', 'scripts/rewards/**', 'tests/rewards/**', '.github/workflows/rewards-v2.yml']
+    paths: ['contracts/v2/**', 'server/**', 'scripts/**', 'tests/**', 'src/**', 'netlify/**', 'index.html', 'netlify.toml', '.github/workflows/rewards-v2.yml', 'package.json', 'pnpm-lock.yaml']
   workflow_dispatch:
 permissions:
   contents: read

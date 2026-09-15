@@ -28,11 +28,13 @@ A confirmed exit is retained permanently by wallet/mint and independently verifi
 
 Keep immutable raw blocks and parser/policy versions. Backfill all produced finalized blocks; skipped slots must be proved by the provider's block listing. New parser versions must run in a separate database or schema and compare manifests, purchases, exits, receipts and journal totals with the original before promoting a corrected projection. Never mutate raw evidence or delete confirmed exits. Resetting a cursor in place without an independently complete rebuild is unsafe. Export public audit data with `node scripts/rewards/manage.cjs export-audit MINT output.json` and preserve provider source evidence.
 
-For an inferred wallet-link error, retain the original edge and add a signed/reviewed correction with reason and evidence, setting the edge to revoked. Recompute affected future eligibility. Do not clear confirmed sales. Do not change completed payments or rewrite a historical manifest. Operator remediation of database projections is privileged and must be audited.
+For an inferred wallet-link error, retain the original edge and insert a reviewed revocation into `reward_link_corrections` as the separately governed schema owner, with edge ID, mint, reviewer, reason and evidence. The table is immutable and runtime roles cannot write it. Editing a generated link's status or a publisher audit record does not override fresh verification. The verifier reconstructs current links from independently reread chain history, then applies reviewed corrections. Do not clear confirmed sales, change completed payments or rewrite a historical manifest.
 
 ## Fees, gifts, and rent
 
 Reconcile native SOL, WSOL token balances, rent and unrelated deposits separately. The intake's 0.05 SOL launch setup funding is not a creator receipt. WSOL accrual is not spendable SOL until a verified unwrap reaches the proper Pump creator vault. Collection triggered by a third party is still indexed. Receipt attribution is bounded by actual mint-specific fee accrual; excess donations and any foreign-mint fees remain non-fee assets without eligibility rights. Do not percentage-split the treasury's total balance. Do not apply operations percentages to returned reservations.
+
+`reward_asset_observations` records finalized native treasury/intake and creator WSOL balances separately. Treasury `unrelated_deposits` is the current non-fee surplus above rent and unpaid liabilities, not cumulative creator income. Intake totals are explicitly unclassified until receipt attribution; setup, rent refunds and donations are not guessed from total balances. The receipt verifier rebuilds the complete chronological fee attribution before checking source transactions; a publisher cannot reuse an old accrual by changing its counters.
 
 ## Security operations
 

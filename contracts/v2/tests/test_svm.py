@@ -85,7 +85,7 @@ class Env:
         event=h(b'REBOUND:receipt:v2',sig,path,bytes(self.mint.pubkey()));self.receipt=pd(b'receipt-v2',bytes(self.coin),event)
         self.send([attestation(self.verifier,msg),ix(5,[m(self.admin.pubkey(),True,True),m(self.deployment),m(self.coin,True),m(self.intake,True),m(self.receipt,True),m(SYSTEM),m(IXSYS)],msg)],ok=ok)
     def fund(self,amount=2_000_000_000,wallet=None):
-        self.wallet=wallet or self.alice.pubkey();self.amount=amount;self.rid=self.svm.get_clock().unix_timestamp//1800
+        self.wallet=wallet or self.alice.pubkey();self.amount=amount;self.index=0;self.rid=self.svm.get_clock().unix_timestamp//1800
         self.round=pd(b'round-v2',bytes(self.coin),u(self.rid));self.position=pd(b'position-v2',bytes(self.coin),bytes(self.wallet));self.award=pd(b'award-v2',bytes(self.round),i(0))
         leaf=h(b'REBOUND:leaf:v2',bytes(PROGRAM),bytes(self.deployment),bytes(self.mint.pubkey()),b'\0',self.policy,u(self.rid),i(0),bytes(self.wallet),u(amount))
         self.send(ix(6,[m(self.admin.pubkey(),True,True),m(self.publisher.pubkey(),False,True),m(self.verifier.pubkey(),False,True),m(self.deployment),m(self.coin,True),m(self.round,True),m(SYSTEM)],u(self.rid),leaf,u(amount),u(self.svm.get_clock().slot),u(self.svm.get_clock().unix_timestamp),h(b'manifest')),self.publisher,self.verifier)
@@ -93,10 +93,10 @@ class Env:
         self.send(self.register_ix)
         self.token=Pubkey.new_unique();d=bytearray(165);d[:32]=bytes(self.mint.pubkey());d[32:64]=bytes(self.wallet);d[64:72]=u(1_000_000);d[108]=1
         self.svm.set_account(self.token,Account(2_100_000,bytes(d),TOKEN))
-    def payment(self,payable=None,outcome=0,cost=10_000_000_000,value=7_000_000_000,version=1,through=None,expires=None,recipient=None,verifier=None):
+    def payment(self,payable=None,outcome=0,cost=10_000_000_000,value=7_000_000_000,version=1,through=None,expires=None,recipient=None,verifier=None,epoch=1):
         slot=self.svm.get_clock().slot;payable=self.amount if payable is None else payable;through=slot if through is None else through;expires=slot+20 if expires is None else expires
         recipient=recipient or self.wallet
-        msg=b'RBD2PAY0'+bytes(PROGRAM)+bytes(self.deployment)+bytes(self.mint.pubkey())+b'\0'+u(self.rid)+i(0)+bytes(recipient)+b''.join(u(n) for n in [self.amount,payable,cost,value,1_000_000,through,slot,expires,version,1])+bytes([outcome])+h(b'fresh-evidence')
+        msg=b'RBD2PAY0'+bytes(PROGRAM)+bytes(self.deployment)+bytes(self.mint.pubkey())+b'\0'+u(self.rid)+i(self.index)+bytes(recipient)+b''.join(u(n) for n in [self.amount,payable,cost,value,1_000_000,through,slot,expires,version,epoch])+bytes([outcome])+h(b'fresh-evidence')
         return[attestation(verifier or self.verifier,msg),ix(8,[m(self.deployment),m(self.coin,True),m(self.round,True),m(self.position,True),m(self.award,True),m(recipient,True),m(IXSYS),m(self.token)],msg)]
     def balances(self):
         d=self.svm.get_account(self.coin).data;return struct.unpack_from('<6Q',d,169)
@@ -168,3 +168,26 @@ def test_altered_merkle_amount_and_cross_coin_accounts_fail(env):
     bad=ix(7,[m(e.admin.pubkey(),True,True),m(e.deployment),m(e.coin,True),m(e.round,True),m(e.position,True),m(pd(b'award-v2',bytes(e.round),i(1)),True),m(e.wallet),m(SYSTEM)],i(1),u(e.amount+1),i(0))
     e.send(bad,ok=False)
     instructions=e.payment();a=list(instructions[1].accounts);a[1]=m(Pubkey.new_unique(),True);instructions[1]=Instruction(PROGRAM,instructions[1].data,a);e.send(instructions,ok=False)
+
+def test_independent_funding_signer_and_budget_are_enforced():
+    e=Env();e.fixture_active();e.credit();rid=e.svm.get_clock().unix_timestamp//1800;round_address=pd(b'round-v2',bytes(e.coin),u(rid))
+    def proposal(verifier,amount):return ix(6,[m(e.admin.pubkey(),True,True),m(e.publisher.pubkey(),False,True),m(verifier.pubkey(),False,True),m(e.deployment),m(e.coin,True),m(round_address,True),m(SYSTEM)],u(rid),h(b'root'),u(amount),u(1000),u(e.svm.get_clock().unix_timestamp),h(b'manifest'))
+    before=e.balances();e.send(proposal(e.bob,1),e.publisher,e.bob,ok=False);e.send(proposal(e.verifier,8_500_000_001),e.publisher,e.verifier,ok=False);assert e.balances()==before
+
+def test_partial_delivery_and_later_exclusion_carry_release_to_next_round():
+    e=Env();e.fixture_active();e.credit();e.rid=e.svm.get_clock().unix_timestamp//1800;e.round=pd(b'round-v2',bytes(e.coin),u(e.rid))
+    wallets=[e.alice.pubkey(),e.bob.pubkey()];amounts=[1_000_000_000,2_000_000_000]
+    leaves=[h(b'REBOUND:leaf:v2',bytes(PROGRAM),bytes(e.deployment),bytes(e.mint.pubkey()),b'\0',e.policy,u(e.rid),i(n),bytes(wallets[n]),u(amounts[n])) for n in range(2)]
+    root=h(b'REBOUND:node:v2',leaves[0],u(amounts[0]),leaves[1],u(amounts[1]))
+    e.send(ix(6,[m(e.admin.pubkey(),True,True),m(e.publisher.pubkey(),False,True),m(e.verifier.pubkey(),False,True),m(e.deployment),m(e.coin,True),m(e.round,True),m(SYSTEM)],u(e.rid),root,u(sum(amounts)),u(1000),u(e.svm.get_clock().unix_timestamp),h(b'two-conditional-awards')),e.publisher,e.verifier)
+    positions=[]
+    for n in range(2):
+        position=pd(b'position-v2',bytes(e.coin),bytes(wallets[n]));award=pd(b'award-v2',bytes(e.round),i(n));token=Pubkey.new_unique();data=bytearray(165);data[:32]=bytes(e.mint.pubkey());data[32:64]=bytes(wallets[n]);data[64:72]=u(1_000_000);data[108]=1;e.svm.set_account(token,Account(2_100_000,bytes(data),TOKEN))
+        e.send(ix(7,[m(e.admin.pubkey(),True,True),m(e.deployment),m(e.coin,True),m(e.round,True),m(position,True),m(award,True),m(wallets[n]),m(SYSTEM)],i(n),u(amounts[n]),i(1),leaves[1-n],u(amounts[1-n])))
+        positions.append((position,award,token))
+    for n in range(2):
+        e.position,e.award,e.token=positions[n];e.wallet=wallets[n];e.amount=amounts[n];e.index=n
+        e.send(e.payment() if n==0 else e.payment(0,outcome=1))
+    assert e.balances()==(10_000_000_000,7_500_000_000,0,1_000_000_000,1_500_000_000,0)
+    e.set_clock(2000,e.svm.get_clock().unix_timestamp+1800);e.fund(1_000_000_000,wallet=wallets[0]);e.send(e.payment(version=3,epoch=2))
+    assert e.balances()==(10_000_000_000,6_500_000_000,0,2_000_000_000,1_500_000_000,0)
