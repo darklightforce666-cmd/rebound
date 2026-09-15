@@ -1,9 +1,5 @@
-name: Rewards program
+name: Legacy V1 archive (not deployable)
 on:
-  push:
-    paths: ['contracts/**', '.github/workflows/rewards.yml', 'src/engine.cjs']
-  pull_request:
-    paths: ['contracts/**', '.github/workflows/rewards.yml', 'src/engine.cjs']
   workflow_dispatch:
 permissions:
   contents: read
@@ -26,7 +22,7 @@ jobs:
           rustup update stable --no-self-update
       - name: Policy and proof tests
         run: |
-          node scripts/test.cjs
+          node tests/engine.test.cjs
           node --test contracts/tests/merkle.test.cjs
       - name: Compile program and run Rust tests
         working-directory: contracts

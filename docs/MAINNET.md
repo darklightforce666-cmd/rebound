@@ -1,5 +1,7 @@
 # Mainnet activation status
 
+> Superseded implementation notes: use [Conditional rewards V2](REWARDS-V2.md) for the current code, 30-minute policy, configuration and activation gates. Historical domain/mint checks below are dated observations, not present deployment verification. Do not deploy the archived V1 program described by older documents.
+
 The public interface contains no simulated markets, trades, wallet funds, token creation, claims, or payouts. It is a live-data interface while the launch and rewards integrations are unfinished. Publishing the website does not deploy a Solana program or create a token.
 
 ## Token and hosting

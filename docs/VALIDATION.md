@@ -1,5 +1,7 @@
 # Validation
 
+> Historical V1 validation. These results do not certify V2. Use [current implementation and validation](REWARDS-V2.md) and the latest Conditional rewards V2 workflow.
+
 ## Current update: 2026-09-15
 
 The website and banner wordmark no longer have a trailing dot. The footer separator after REBOUND is also removed. The standalone HTML and downloadable branding are rebuilt from the current sources. The latest repository title, favicon, and entry screen changes are preserved.

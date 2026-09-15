@@ -1,0 +1,75 @@
+name: Conditional rewards V2
+on:
+  push:
+    branches: [main, rewards-v2-implementation]
+    paths: ['contracts/v2/**', 'server/**', 'scripts/**', 'tests/**', 'src/**', 'netlify/**', 'index.html', 'netlify.toml', '.github/workflows/rewards-v2.yml', 'package.json', 'pnpm-lock.yaml']
+  pull_request:
+    paths: ['contracts/v2/**', 'server/**', 'scripts/**', 'tests/**', 'src/**', 'netlify/**', 'index.html', 'netlify.toml', '.github/workflows/rewards-v2.yml', 'package.json', 'pnpm-lock.yaml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  program:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install locked JavaScript dependencies
+        run: |
+          npm install --global pnpm@11.19.0 --ignore-scripts
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Build site and verify accounting, replay, database and wallet integration
+        run: pnpm test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned Solana toolchain
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 https://github.com/anza-xyz/agave/releases/download/v4.2.2/solana-release-x86_64-unknown-linux-gnu.tar.bz2 --output /tmp/solana.tar.bz2
+          printf '%s  %s\n' '5fc8684f7430038105fde953d4308ed56addf627f658daa61709f345448247ee' '/tmp/solana.tar.bz2' | sha256sum --check
+          tar -xjf /tmp/solana.tar.bz2 -C /tmp
+          echo /tmp/solana-release/bin >> "$GITHUB_PATH"
+          rustup update stable --no-self-update
+      - name: Compile candidate and run Rust tests
+        working-directory: contracts/v2
+        run: |
+          cargo +stable test --locked
+          cargo build-sbf
+          git diff --exit-code -- Cargo.lock
+      - name: Execute program integration tests when present
+        run: |
+          if test -f contracts/v2/tests/test_svm.py; then
+            python -m pip install solders==0.29.0 pytest==8.4.2
+            python -m pytest contracts/v2/tests/test_svm.py -v
+          fi
+      - name: Clone deployed Pump programs and execute local lifecycle
+        run: |
+          node scripts/rewards/clone-protocol.cjs
+          python -m pytest contracts/v2/tests/test_pump_lifecycle.py -v
+          PUMP_EXECUTION_FIXTURE=contracts/v2/artifact/pump-execution.json node tests/rewards/replay.test.cjs
+      - name: Record build evidence
+        if: always()
+        run: |
+          mkdir -p contracts/v2/artifact
+          cp contracts/v2/Cargo.lock contracts/v2/artifact/
+          if test -f contracts/v2/target/deploy/rebound_rewards_v2.so; then
+            cp contracts/v2/target/deploy/rebound_rewards_v2.so contracts/v2/artifact/
+            sha256sum contracts/v2/artifact/rebound_rewards_v2.so > contracts/v2/artifact/SHA256SUMS
+          fi
+          git rev-parse HEAD > contracts/v2/artifact/COMMIT
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rebound-rewards-v2-sbf
+          path: contracts/v2/artifact/
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: rebound-site-preview
+          path: dist/

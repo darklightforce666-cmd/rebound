@@ -13,3 +13,13 @@ dist/
 .env
 .env.*
 !.env.example
+contracts/v2/target/
+contracts/v2/artifact/
+contracts/v2/fixtures/mainnet/
+.venv/
+.test-deps/
+.pip-tmp/
+runtime-secrets/
+verifier-secrets/
+runtime-config/
+rewards-dry-run*.json

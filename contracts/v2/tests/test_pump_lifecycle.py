@@ -1,0 +1,91 @@
+"""Execute cloned mainnet Pump binaries with synthetic local wallets/trades.
+
+No mainnet transaction is sent. This verifies program compatibility, not live
+rewards activation, production price history, or wallet identity inference.
+"""
+import base64, json, subprocess, struct, pytest
+from pathlib import Path
+from solders.account import Account
+from solders.pubkey import Pubkey
+from solders.instruction import Instruction, AccountMeta
+from solders.compute_budget import set_compute_unit_limit
+from solders.system_program import transfer
+from test_svm import Env, PROGRAM, pd, h
+
+BASE=Path(__file__).parents[1]; FIXTURES=BASE/'fixtures/mainnet'
+PUMP=Pubkey.from_string('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P')
+AMM=Pubkey.from_string('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA')
+FEES=Pubkey.from_string('pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ')
+GLOBAL=Pubkey.from_string('4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf')
+
+@pytest.mark.parametrize('early_graduation',[False,True])
+def test_actual_pump_creation_sharing_and_collection(tmp_path,early_graduation):
+    manifest=json.loads((FIXTURES/'manifest.json').read_text());e=Env()
+    for program in manifest['programs']:
+        binary=(FIXTURES/program['file']).read_bytes();assert h(binary).hex()==program['sha256']
+        e.svm.add_program_from_file(Pubkey.from_string(program['id']),FIXTURES/program['file'])
+    for a in manifest['accounts']:
+        if not a.get('missing'):e.svm.set_account(Pubkey.from_string(a['id']),Account(int(a['lamports']),base64.b64decode(a['data']),Pubkey.from_string(a['owner']),a['executable']))
+    e.set_clock(manifest['programs'][0]['slot']+100,1_800_000_000);prepare=e.prepare(send=False)
+    curve=pd(b'bonding-curve',bytes(e.mint.pubkey()),program=PUMP);sharing=pd(b'sharing-config',bytes(e.mint.pubkey()),program=FEES)
+    def vector(action,**extra):
+        data={'program':str(PROGRAM),'mint':str(e.mint.pubkey()),'user':str(e.admin.pubkey()),'action':action,'global':base64.b64encode(e.svm.get_account(GLOBAL).data).decode(),**extra}
+        if e.svm.get_account(curve):data['curve']=base64.b64encode(e.svm.get_account(curve).data).decode()
+        if e.svm.get_account(sharing):data['sharing']=base64.b64encode(e.svm.get_account(sharing).data).decode()
+        pool_authority=pd(b'pool-authority',bytes(e.mint.pubkey()),program=PUMP)
+        wsol=Pubkey.from_string('So11111111111111111111111111111111111111112')
+        pool=pd(b'pool',bytes([0,0]),bytes(pool_authority),bytes(e.mint.pubkey()),bytes(wsol),program=AMM)
+        if e.svm.get_account(pool):data['pool']=base64.b64encode(e.svm.get_account(pool).data).decode()
+        amm_global=pd(b'global_config',program=AMM)
+        if e.svm.get_account(amm_global):data['ammGlobal']=base64.b64encode(e.svm.get_account(amm_global).data).decode()
+        if hasattr(e,'token') and e.svm.get_account(e.token):data['existing']=base64.b64encode(e.svm.get_account(e.token).data).decode()
+        source=tmp_path/'public-input.json';source.write_text(json.dumps(data))
+        result=subprocess.run(['node',str(BASE/'tests/pump-vector.cjs'),str(source)],capture_output=True,text=True)
+        assert result.returncode==0,result.stderr
+        vectors=json.loads(result.stdout)
+        # Protocol fee recipients already exist on mainnet. Supply their local
+        # System-account rent balances; these are NOT fabricated trade proceeds.
+        for v in vectors:
+            for recipient in v.get('testExistingFeeRecipients',[]):
+                key=Pubkey.from_string(recipient)
+                if e.svm.get_account(key) is None:e.svm.set_account(key,Account(10_000_000,b'',Pubkey.default()))
+        return [Instruction(Pubkey.from_string(v['program']),base64.b64decode(v['data']),[AccountMeta(Pubkey.from_string(k['key']),k['signer'],k['writable']) for k in v['keys']]) for v in vectors]
+    budget=set_compute_unit_limit(1_400_000)
+    # Execute the exact atomic preparation/create/setup sequence used by the
+    # wallet launch API. Env.send asserts the real signed packet fits 1232 bytes.
+    e.send([budget,prepare,*vector('create'),transfer({'from_pubkey':e.admin.pubkey(),'to_pubkey':e.intake,'lamports':50_000_000})],e.mint)
+    # First trade happens deliberately BEFORE sharing setup: creator was intake.
+    bc=e.svm.get_account(curve).data;assert bc[49:81]==bytes(e.intake)
+    e.send([budget,*vector('buy')])
+    initial_creator_vault=pd(b'creator-vault',bytes(e.intake),program=PUMP)
+    assert e.svm.get_balance(initial_creator_vault)>e.svm.minimum_balance_for_rent_exemption(0)
+    if early_graduation:
+        remaining=struct.unpack_from('<Q',e.svm.get_account(curve).data,24)[0]
+        e.send([budget,*vector('buy',amount=str(remaining))]);e.send([budget,*vector('migrate')]);e.send([budget,*vector('ammBuy')])
+    e.send([budget,*vector('sharing')]);e.send([budget,*vector('lock')])
+    sc=e.svm.get_account(sharing).data;assert sc[75]==1 and sc[80:112]==bytes(e.intake)
+    assert e.svm.get_account(curve).data[49:81]==bytes(sharing)
+    assert e.svm.get_account(e.coin).data[168]==1
+    if early_graduation:e.send([budget,*vector('collectInitialGraduated')])
+    initial=e.svm.get_balance(e.intake);e.send([budget,*vector('collectInitial')]);assert e.svm.get_balance(e.intake)>initial
+    if early_graduation:return
+    # A subsequent trade routes into the mint-scoped sharing vault.
+    e.send([budget,*vector('buy')]);before=e.svm.get_balance(e.intake)
+    e.send([budget,*vector('collect')]);assert e.svm.get_balance(e.intake)>before
+    collected=e.svm.get_balance(e.intake)-before;source_signature=e.last_signature
+    # Real collected SOL backs the program receipt. Pricing/eligibility remains
+    # an explicit verifier fixture here; policy and replay tests cover that layer.
+    e.credit(collected,source_signature=source_signature,instruction_path=h(b'1/0'))
+    e.fund(amount=max(1,collected*85//100),wallet=e.admin.pubkey())
+    token22=Pubkey.from_string('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');ata=Pubkey.from_string('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL')
+    e.token=pd(bytes(e.admin.pubkey()),bytes(token22),bytes(e.mint.pubkey()),program=ata)
+    e.send(e.payment());assert e.balances()[2]==0 and e.balances()[3]==e.amount
+    # Complete the real bonding curve then execute Pump's real migration.
+    remaining=struct.unpack_from('<Q',e.svm.get_account(curve).data,24)[0]
+    e.send([budget,*vector('buy',amount=str(remaining))]);assert e.svm.get_account(curve).data[48]==1
+    e.send([budget,*vector('migrate')])
+    e.send([budget,*vector('ammBuy')])
+    before=e.svm.get_balance(e.intake)
+    e.send([budget,*vector('collect',graduated=True)]);assert e.svm.get_balance(e.intake)>before
+    output=BASE/'artifact';output.mkdir(exist_ok=True)
+    (output/'pump-execution.json').write_text(json.dumps({'classification':'cloned-mainnet-programs-synthetic-local-trades','program':str(PROGRAM),'mint':str(e.mint.pubkey()),'intake':str(e.intake),'treasury':str(e.coin),'sharing_config':str(sharing),'protocol':manifest,'history':e.history}))

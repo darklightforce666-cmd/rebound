@@ -1,0 +1,18 @@
+[package]
+name = "rebound-rewards-v2"
+version = "2.0.0"
+edition = "2021"
+publish = false
+[lib]
+crate-type = ["cdylib", "lib"]
+[features]
+no-entrypoint = []
+custom-heap = []
+custom-panic = []
+[dependencies]
+solana-program = "=2.2.1"
+borsh = { version = "=1.5.7", features = ["derive"] }
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1

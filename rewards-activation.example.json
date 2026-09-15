@@ -1,0 +1,17 @@
+{
+  "program": null,
+  "genesis": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "policy": null,
+  "binarySha256": null,
+  "upgradeAuthority": null,
+  "checks": {
+    "pumpCurveLifecycle": { "passed": false, "evidence": null },
+    "pumpGraduatedLifecycle": { "passed": false, "evidence": null },
+    "receiptAttribution": { "passed": false, "evidence": null },
+    "historicalReplay": { "passed": false, "evidence": null },
+    "adversarialProgramTests": { "passed": false, "evidence": null },
+    "independentSecurityReview": { "passed": false, "evidence": null },
+    "fundingCalibration": { "passed": false, "evidence": null },
+    "governanceTimelock": { "passed": false, "evidence": null }
+  }
+}

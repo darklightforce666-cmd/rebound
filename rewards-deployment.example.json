@@ -1,0 +1,11 @@
+{
+  "network": "mainnet-beta",
+  "rewardAsset": "native-SOL",
+  "operations": "5toTaaYKbF12cXRf9J5soN41tyhCUmNjfdGYQ8JwUroM",
+  "program": null,
+  "publisher": null,
+  "verifier": null,
+  "guardian": null,
+  "governance": null,
+  "transfersEnabled": false
+}

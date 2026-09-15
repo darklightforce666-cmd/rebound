@@ -1,0 +1,31 @@
+services:
+  indexer:
+    build:
+      context: .
+      dockerfile: Dockerfile.rewards
+    env_file: .env
+    environment:
+      REWARDS_WORKER_ROLE: indexer
+      REWARDS_TRANSFERS_ENABLED: 'false'
+    restart: unless-stopped
+    profiles: [index]
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.rewards
+    env_file: .env
+    volumes: ['./runtime-secrets:/run/secrets:ro','./runtime-config:/config:ro']
+    restart: unless-stopped
+    profiles: [payments]
+  verifier:
+    build:
+      context: .
+      dockerfile: Dockerfile.rewards
+    command: [node, server/rewards/verifier-server.cjs]
+    env_file: .env
+    environment:
+      BIND_ADDRESS: 0.0.0.0
+      PORT: '8788'
+    volumes: ['./verifier-secrets:/run/secrets:ro','./runtime-config:/config:ro']
+    restart: unless-stopped
+    profiles: [verify, payments]
