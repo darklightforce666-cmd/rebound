@@ -23,6 +23,13 @@ async function authorizePayment({db,connection,rpc,program,verifier,mint,round,i
  if(BigInt(allocation.active)===0n)return{outcome:'settled',signature:allocation.settlement_signature};
  const pending=(await db.query("SELECT * FROM reward_payment_attempts WHERE mint=$1 AND round_id=$2 AND leaf_index=$3 AND state IN ('prepared','broadcast','uncertain')",[mint,round,index])).rows[0];if(pending)return{outcome:'hold',reason:'prior_broadcast_requires_reconciliation'};
  let cutoff;try{cutoff=await S.finalizedCutoff(db,connection);}catch(e){return{outcome:'hold',reason:e.message};}const {slot:checkedThrough,time}=cutoff;
+ const recorded=await S.chainPosition(connection,program,mint,allocation.wallet);
+ if(recorded.disqualified){
+  const a=W.addresses(program,mint,round,allocation.wallet,index),values=await connection.getMultipleAccountsInfo([a.coin,a.allocation],'finalized');if(values.some(x=>!x?.owner.equals(W.pk(program))))throw Error('Cancellation account mismatch');const coin=W.decode(values[0].data,'coin'),award=W.decode(values[1].data,'allocation');if(award.settled)return{outcome:'settled'};const issued=await connection.getSlot('confirmed');if(issued-checkedThrough>P.POLICY.indexLagSlots)return{outcome:'hold',reason:'index_lag'};
+  const check={outcome:'cancel',payable:0n,released:award.maximum,permanent:true},evidence={firstExit:recorded.firstExit,cutoff,positionVersion:recorded.version};
+  const auth={program,deployment:a.deployment.toBase58(),mint,round,index,wallet:allocation.wallet,maximum:award.maximum,payable:0,cost:0,value:0,holding:0,through:checkedThrough,issued,expires:issued+P.POLICY.authorizationSlots,version:recorded.version,epoch:coin.fundingEpoch,outcome:1,evidence:W.hash(P.stable(evidence))};
+  return issuePayment({db,verifier,auth,evidence,check,currentAccounts:[]});
+ }
  const snapshot=await S.snapshot(db,connection,{mint,cutoff:{slot:checkedThrough,time},program});if(!snapshot.complete)return{outcome:'hold',reason:snapshot.reason};
  const p=snapshot.positions.find(p=>p.wallet===allocation.wallet);if(!p)return{outcome:'hold',reason:'qualifying_position_unavailable'};
  const currentAccounts=p.tokens.accounts.map(x=>x.address);const historical=[...snapshot.replay.owners].filter(([,x])=>x.owner===allocation.wallet&&x.mint===mint).map(([address])=>address);
@@ -39,16 +46,20 @@ async function authorizePayment({db,connection,rpc,program,verifier,mint,round,i
  const check=P.paymentCheck({maximum:award.maximum},current,{nowSlot:issued,issuedSlot:issued,checkedThrough});if(check.outcome==='hold')return check;
  const evidence={inputDigest:snapshot.digest,check,positionVersion:pos.version,fundingEpoch:coin.fundingEpoch,cutoff:snapshot.cutoff};
  const auth={program,deployment:a.deployment.toBase58(),mint,round,index,wallet:allocation.wallet,maximum:award.maximum,payable:check.payable,cost:check.cost||0n,value:check.value||0n,holding:check.holding||0n,through:checkedThrough,issued,expires:issued+P.POLICY.authorizationSlots,version:pos.version,epoch:coin.fundingEpoch,outcome:check.permanent?1:p.linkedExclusion?3:check.outcome==='pass'?0:2,evidence:W.hash(P.stable(evidence))};
+ return issuePayment({db,verifier,auth,evidence,check,currentAccounts});
+}
+async function issuePayment({db,verifier,auth,evidence,check,currentAccounts}){
+ const {mint,wallet,round,index,version,epoch,through:checkedThrough,issued}=auth;
  const message=W.paymentMessage(auth),signature=sign(verifier,message),id=W.hash(message).toString('hex');
  return DB.transaction(db,async tx=>{
-  await DB.lockPosition(tx,mint,allocation.wallet);
-  let live=(await tx.query("SELECT * FROM reward_authorizations WHERE mint=$1 AND wallet=$2 AND position_version=$3 AND funding_epoch=$4 AND state='issued'",[mint,allocation.wallet,String(pos.version),String(coin.fundingEpoch)])).rows[0];
+  await DB.lockPosition(tx,mint,wallet);
+  let live=(await tx.query("SELECT * FROM reward_authorizations WHERE mint=$1 AND wallet=$2 AND position_version=$3 AND funding_epoch=$4 AND state='issued'",[mint,wallet,String(version),String(epoch)])).rows[0];
   if(live&&Number(live.expires_slot)<issued){await tx.query("UPDATE reward_authorizations SET state='expired' WHERE id=$1",[live.id]);live=null;}
   // One authorization per position snapshot. The same payload may be relayed;
   // conflicting allocations must wait for settlement or a new state nonce.
   if(live&&live.id!==id)return{outcome:'hold',reason:'position_authorization_already_issued',expires:Number(live.expires_slot)};
-  if(!live)await tx.query('INSERT INTO reward_authorizations(id,mint,wallet,round_id,leaf_index,position_version,funding_epoch,checked_through,expires_slot,payload,signature,evidence) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[id,mint,allocation.wallet,round,index,String(pos.version),String(coin.fundingEpoch),checkedThrough,auth.expires,P.stable({...auth,evidence:auth.evidence.toString('hex')}),signature.toString('base64'),P.stable(evidence)]);
+  if(!live)await tx.query('INSERT INTO reward_authorizations(id,mint,wallet,round_id,leaf_index,position_version,funding_epoch,checked_through,expires_slot,payload,signature,evidence) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[id,mint,wallet,round,index,String(version),String(epoch),checkedThrough,auth.expires,P.stable({...auth,evidence:auth.evidence.toString('hex')}),signature.toString('base64'),P.stable(evidence)]);
   return{...check,id,authorization:{...auth,evidence:auth.evidence.toString('hex')},message:message.toString('base64'),signature:signature.toString('base64'),verifier:verifier.publicKey.toBase58(),tokenAccounts:currentAccounts,evidence};
  });
 }
-module.exports={sign,manifestFor,verifyManifest,authorizePayment};
+module.exports={sign,manifestFor,verifyManifest,authorizePayment,issuePayment};

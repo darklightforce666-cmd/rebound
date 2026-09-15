@@ -3,7 +3,7 @@
 No mainnet transaction is sent. This verifies program compatibility, not live
 rewards activation, production price history, or wallet identity inference.
 """
-import base64, json, subprocess, struct
+import base64, json, subprocess, struct, pytest
 from pathlib import Path
 from solders.account import Account
 from solders.pubkey import Pubkey
@@ -18,7 +18,8 @@ AMM=Pubkey.from_string('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA')
 FEES=Pubkey.from_string('pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ')
 GLOBAL=Pubkey.from_string('4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf')
 
-def test_actual_pump_creation_sharing_and_collection(tmp_path):
+@pytest.mark.parametrize('early_graduation',[False,True])
+def test_actual_pump_creation_sharing_and_collection(tmp_path,early_graduation):
     manifest=json.loads((FIXTURES/'manifest.json').read_text());e=Env()
     for program in manifest['programs']:
         binary=(FIXTURES/program['file']).read_bytes();assert h(binary).hex()==program['sha256']
@@ -57,11 +58,16 @@ def test_actual_pump_creation_sharing_and_collection(tmp_path):
     e.send([budget,*vector('buy')])
     initial_creator_vault=pd(b'creator-vault',bytes(e.intake),program=PUMP)
     assert e.svm.get_balance(initial_creator_vault)>e.svm.minimum_balance_for_rent_exemption(0)
+    if early_graduation:
+        remaining=struct.unpack_from('<Q',e.svm.get_account(curve).data,24)[0]
+        e.send([budget,*vector('buy',amount=str(remaining))]);e.send([budget,*vector('migrate')]);e.send([budget,*vector('ammBuy')])
     e.send([budget,*vector('sharing')]);e.send([budget,*vector('lock')])
     sc=e.svm.get_account(sharing).data;assert sc[75]==1 and sc[80:112]==bytes(e.intake)
     assert e.svm.get_account(curve).data[49:81]==bytes(sharing)
     assert e.svm.get_account(e.coin).data[168]==1
+    if early_graduation:e.send([budget,*vector('collectInitialGraduated')])
     initial=e.svm.get_balance(e.intake);e.send([budget,*vector('collectInitial')]);assert e.svm.get_balance(e.intake)>initial
+    if early_graduation:return
     # A subsequent trade routes into the mint-scoped sharing vault.
     e.send([budget,*vector('buy')]);before=e.svm.get_balance(e.intake)
     e.send([budget,*vector('collect')]);assert e.svm.get_balance(e.intake)>before

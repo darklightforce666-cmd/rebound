@@ -138,3 +138,31 @@ def test_residual_finalized_gap_is_not_claimed_as_instantaneous(env):
     # Replaced token holdings and an unreported sell can pass the direct balance
     # check. This test explicitly records the offchain completeness trust limit.
     env.send(env.payment());assert env.balances()[3]==2_000_000_000
+
+def test_three_coins_have_isolated_fee_accounts():
+    e=Env();accounts=[]
+    for receipt,holders,ops in [(10_000_000_000,8_500_000_000,1_500_000_000),(800_000_000,680_000_000,120_000_000),(6_300_000_000,5_355_000_000,945_000_000)]:
+        e.fixture_active();e.credit(receipt,identity=bytes(e.mint.pubkey()));assert e.balances()==(receipt,holders,0,0,ops,0);accounts.append((e.coin,e.balances()))
+    assert len(set(a[0] for a in accounts))==3
+    for account,expected in accounts:assert struct.unpack_from('<6Q',e.svm.get_account(account).data,169)==expected
+
+def test_repeated_tiny_collections_preserve_fractional_split():
+    e=Env();e.fixture_active()
+    for n in range(100):e.credit(1,identity=u(n))
+    assert e.balances()==(100,85,0,0,15,0)
+
+def test_recorded_exit_invalidates_already_issued_payment(env):
+    e=env;old=e.payment();slot=e.svm.get_clock().slot
+    msg=b'RBD2EXIT'+bytes(PROGRAM)+bytes(e.deployment)+bytes(e.mint.pubkey())+b'\0'+u(0)+i(0)+bytes(e.wallet)+b''.join(u(n) for n in [0,0,0,0,0,slot,slot,slot+20,1,0])+b'\1'+h(b'confirmed-exit')
+    e.send([attestation(e.verifier,msg),ix(10,[m(e.admin.pubkey(),True,True),m(e.deployment),m(e.coin),m(e.position,True),m(SYSTEM),m(IXSYS)],msg)])
+    e.send(old,ok=False);assert e.balances()[2]==e.amount
+    e.send(e.payment(0,outcome=1,version=2));assert e.balances()[2]==0
+
+def test_paid_allocation_cannot_also_release(env):
+    e=env;cancel=e.payment(0,outcome=1);e.send(e.payment());before=e.balances();e.send(cancel,ok=False);assert e.balances()==before
+
+def test_altered_merkle_amount_and_cross_coin_accounts_fail(env):
+    e=env
+    bad=ix(7,[m(e.admin.pubkey(),True,True),m(e.deployment),m(e.coin,True),m(e.round,True),m(e.position,True),m(pd(b'award-v2',bytes(e.round),i(1)),True),m(e.wallet),m(SYSTEM)],i(1),u(e.amount+1),i(0))
+    e.send(bad,ok=False)
+    instructions=e.payment();a=list(instructions[1].accounts);a[1]=m(Pubkey.new_unique(),True);instructions[1]=Instruction(PROGRAM,instructions[1].data,a);e.send(instructions,ok=False)

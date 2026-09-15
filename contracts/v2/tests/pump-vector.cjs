@@ -11,13 +11,14 @@ const info=data=>({data:Buffer.from(data,'base64')});
 async function main(){
  let instructions;const action=input.action;
  if(action==='create')instructions=(await P.prepareLaunch({program,mint,user,name:'REBOUND local protocol test',symbol:'RTEST',uri:'https://example.org/rebound-fixture.json'})).instructions.slice(1);
- if(action==='sharing'||action==='lock'){const s=await P.sharingSteps(program,mint);instructions=[action==='sharing'?s.create:s.lock];}
+ if(action==='sharing'||action==='lock'){const s=await P.sharingSteps(program,mint,input.pool?P.SDK.canonicalPumpPoolPda(mint):null);instructions=[action==='sharing'?s.create:s.lock];}
  if(action==='buy'){
   const b=P.sdk.decodeBondingCurve(info(input.curve)),g=P.sdk.decodeGlobal(info(input.global));
   instructions=await P.sdk.buyV2Instructions({global:g,bondingCurveAccountInfo:info(input.curve),bondingCurve:b,associatedUserAccountInfo:input.existing?info(input.existing):null,mint,user,amount:new BN(input.amount||'1000000000'),quoteAmount:new BN(input.maxQuote||'200000000000'),slippage:0,tokenProgram:TOKEN_2022_PROGRAM_ID});
  }
  if(action==='collect')instructions=await P.collect(mint,user,P.sdk.decodeSharingConfig(info(input.sharing)),{graduated:!!input.graduated});
  if(action==='collectInitial')instructions=[await P.collectInitial(program,mint)];
+ if(action==='collectInitialGraduated')instructions=[await P.collectInitialGraduated(program,mint,user)];
  if(action==='migrate'){const g=P.sdk.decodeGlobal(info(input.global));instructions=[await P.sdk.migrateInstruction({withdrawAuthority:g.withdrawAuthority,mint,user,tokenProgram:TOKEN_2022_PROGRAM_ID})];}
  if(action==='ammBuy'){
   const poolInfo=info(input.pool),pool=AMM.PUMP_AMM_SDK.decodePool(poolInfo),globalConfig=AMM.PUMP_AMM_SDK.decodeGlobalConfig(info(input.ammGlobal));

@@ -14,6 +14,7 @@ async function collectFees(context,coin,cycle){
  const {db,connection,cfg,payer,preflight}=context;
  const routing=await Pump.verifyRouting(connection,cfg.program,coin.mint);
  const send=(label,instructions)=>T.submit({...context,job:'collect:'+coin.mint+':'+cycle+':'+label,instructions,context:{mint:coin.mint,cycle,kind:label},readSettlement:sig=>finalizedTransaction(connection,sig)});
+ if(routing.curve.complete){const{getAssociatedTokenAddressSync,NATIVE_MINT}=require('@solana/spl-token'),ata=getAssociatedTokenAddressSync(NATIVE_MINT,Pump.SDK.ammCreatorVaultPda(W.addresses(cfg.program,coin.mint).intake),true),info=await connection.getAccountInfo(ata,'finalized');if(info&&info.data.length>=72&&info.data.readBigUInt64LE(64)>0n){const r=await send('initial-amm-sweep',[await Pump.collectInitialGraduated(cfg.program,coin.mint,payer.publicKey)]);if(r.state!=='finalized')return r;}}
  const initialVault=Pump.SDK.creatorVaultPda(W.addresses(cfg.program,coin.mint).intake),initial=await connection.getAccountInfo(initialVault,'finalized');
  const rent=await connection.getMinimumBalanceForRentExemption(0);
  if(initial&&initial.lamports>rent){const result=await send('initial',[await Pump.collectInitial(cfg.program,coin.mint)]);if(!['finalized','dry-run'].includes(result.state))return result;}
@@ -42,6 +43,7 @@ async function reserveRound(context,coin,cycle){
  let row=(await db.query('SELECT * FROM reward_rounds WHERE mint=$1 AND round_id=$2',[coin.mint,cycle])).rows[0];
  if(!row?.manifest){
   const cutoff=await S.finalizedCutoff(db,connection),{slot,time}=cutoff;
+  if(Math.floor(time/1800)!==Number(cycle))return{state:'completed',reason:'superseded_unfunded_cycle'};
   const snap=await S.snapshot(db,connection,{mint:coin.mint,cutoff,program:cfg.program});if(!snap.complete)return{state:'blocked',reason:snap.reason};
   const proposal=V.manifestFor(snap,cfg.program,cycle);if(proposal.empty)return{state:'completed',reason:proposal.reason};
   await Internal.call('/manifest',{mint:coin.mint,round:cycle,cutoff,published:{hash:proposal.hash,manifest:proposal.manifest}});
