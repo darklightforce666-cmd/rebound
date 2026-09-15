@@ -80,3 +80,5 @@ def test_actual_pump_creation_sharing_and_collection(tmp_path):
     e.send([budget,*vector('ammBuy')])
     before=e.svm.get_balance(e.intake)
     e.send([budget,*vector('collect',graduated=True)]);assert e.svm.get_balance(e.intake)>before
+    output=BASE/'artifact';output.mkdir(exist_ok=True)
+    (output/'pump-execution.json').write_text(json.dumps({'classification':'cloned-mainnet-programs-synthetic-local-trades','program':str(PROGRAM),'mint':str(e.mint.pubkey()),'intake':str(e.intake),'treasury':str(e.coin),'sharing_config':str(sharing),'protocol':manifest,'history':e.history}))

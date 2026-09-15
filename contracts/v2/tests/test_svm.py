@@ -3,7 +3,7 @@
 Receipt attestations here are fixtures, not evidence of Pump collection. The
 separate test_pump_lifecycle executes the cloned deployed Pump programs.
 """
-import hashlib, json, os, struct, subprocess
+import hashlib, json, os, struct, subprocess, base64
 from pathlib import Path
 import pytest
 from solders.account import Account
@@ -34,6 +34,7 @@ def attestation(kp,msg):
     return Instruction(ED,data,[])
 class Env:
     def __init__(self):
+        self.history=[]
         self.svm=LiteSVM();self.svm.add_program_from_file(PROGRAM,Path(__file__).parents[1]/'target/deploy/rebound_rewards_v2.so')
         self.admin,self.publisher,self.verifier,self.guardian,self.ops,self.alice,self.bob=[Keypair() for _ in range(7)]
         for k in [self.admin,self.publisher,self.verifier,self.guardian,self.ops,self.alice,self.bob]:self.svm.airdrop(k.pubkey(),200_000_000_000)
@@ -55,8 +56,19 @@ class Env:
         keys={str(k.pubkey()):k for k in [payer,*signers]};tx=VersionedTransaction(message,list(keys.values()))
         self.last_signature=bytes(tx.signatures[0])
         assert len(bytes(tx))<=1232, len(bytes(tx))
+        def accounts():
+            rows=[]
+            for key in message.account_keys:
+                a=self.svm.get_account(key)
+                rows.append(None if a is None else {'address':str(key),'owner':str(a.owner),'lamports':a.lamports,'data':base64.b64encode(a.data).decode() if len(a.data)<4096 else None})
+            return rows
+        before=accounts()
         result=self.svm.send_transaction(tx)
         assert isinstance(result,TransactionMetadata if ok else FailedTransactionMetadata),str(result)
+        if ok:
+            def instruction(ci,depth=1):
+                return {'programId':str(message.account_keys[ci.program_id_index]),'accounts':[str(message.account_keys[x]) for x in ci.accounts],'data64':base64.b64encode(ci.data).decode(),'stackHeight':depth}
+            self.history.append({'signature':str(tx.signatures[0]),'slot':self.svm.get_clock().slot,'time':self.svm.get_clock().unix_timestamp,'packetBytes':len(bytes(tx)),'keys':[str(k) for k in message.account_keys],'instructions':[instruction(ci) for ci in message.instructions],'innerInstructions':[{'index':n,'instructions':[instruction(ci.instruction(),ci.stack_height()) for ci in group]} for n,group in enumerate(result.inner_instructions())],'before':before,'after':accounts(),'logs':result.logs()})
         return result
     def prepare(self):
         self.mint=Keypair();self.coin=pd(b'coin-v2',bytes(self.mint.pubkey()));self.intake=pd(b'intake-v2',bytes(self.mint.pubkey()))
