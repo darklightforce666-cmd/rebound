@@ -49,5 +49,5 @@ async function collectInitial(program,mint){
  // Its owner remains System Program, even after the curve points to sharing.
  return SDK.getPumpProgram(new Connection('http://127.0.0.1:8899')).methods.collectCreatorFeeV2().accountsPartial({creator,quoteMint:NATIVE_MINT,quoteTokenProgram:TOKEN_PROGRAM_ID}).instruction();
 }
-async function collectInitialGraduated(program,mint,payer){const creator=W.addresses(program,mint).intake;return SDK.getPumpAmmProgram(new Connection('http://127.0.0.1:8899')).methods.transferCreatorFeesToPumpV2().accountsPartial({payer:W.pk(payer),quoteMint:NATIVE_MINT,quoteTokenProgram:TOKEN_PROGRAM_ID,coinCreator:creator}).instruction();}
+async function collectInitialGraduated(program,mint,payer){const creator=W.addresses(program,mint).intake;return SDK.getPumpAmmProgram(new Connection('http://127.0.0.1:8899')).methods.transferCreatorFeesToPumpV2().accountsPartial({payer:W.pk(payer),quoteMint:NATIVE_MINT,tokenProgram:TOKEN_PROGRAM_ID,coinCreator:creator}).instruction();}
 module.exports={SDK,sdk,solMode,transaction,prepareLaunch,sharingSteps,verifyRouting,collect,collectInitial,collectInitialGraduated};

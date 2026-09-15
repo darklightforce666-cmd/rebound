@@ -9,6 +9,7 @@ async function reconcileCoin(db,connection,cfg,coin){
  if(!P.conserved(c))throw Error('Onchain accounting invariant failed');
  const recent=await connection.getSignaturesForAddress(W.addresses(cfg.program,coin.mint).coin,{limit:1},'finalized');if(!recent.length)return;
  await DB.journalChain(db,{mint:coin.mint,kind:'reconciliation',reference:String(c.slot)+':'+W.hash(P.stable(c)).toString('hex'),signature:recent[0].signature,slot:c.slot,account:c,evidence:{source:'program-account',note:'Rent and excess balances remain outside collected-fee accounting'}});
+ await require('./assets.cjs').reconcile(db,connection,cfg.program,coin.mint);
 }
 async function collectFees(context,coin,cycle){
  const {db,connection,cfg,payer,preflight}=context;

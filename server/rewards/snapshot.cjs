@@ -11,7 +11,8 @@ async function finalizedCutoff(db,connection){
 async function replayCoin(db,coin,cutoff){
  const checkpoint=(await db.query("SELECT * FROM reward_checkpoints WHERE name='finalized-blocks'")).rows[0];
  if(!checkpoint?.complete||checkpoint.incident||Number(checkpoint.through_slot)<cutoff.slot||Number(checkpoint.start_slot)>Number(coin.launch_slot)||coin.blocked_reason)return{complete:false,reason:coin.blocked_reason||'indexing_incomplete'};
- const rows=(await db.query('SELECT * FROM reward_raw_blocks WHERE slot>=$1 AND slot<=$2 ORDER BY slot',[coin.launch_slot,cutoff.slot])).rows;
+ const deployment=(await db.query('SELECT genesis FROM reward_deployments WHERE id=$1',[coin.deployment])).rows[0];if(!deployment)return{complete:false,reason:'deployment_genesis_unavailable'};
+ const rows=(await db.query('SELECT * FROM reward_raw_blocks WHERE genesis=$1 AND slot>=$2 AND slot<=$3 ORDER BY slot',[deployment.genesis,coin.launch_slot,cutoff.slot])).rows;
  if(!rows.length||Number(rows[0].slot)!==Number(coin.launch_slot))return{complete:false,reason:'launch_block_unavailable'};
  let owners=new Map(),prior=null;const events=[],holds=[];
  for(const row of rows){
@@ -48,15 +49,15 @@ async function snapshot(db,connection,{mint,cutoff,program}){
  try{await Pump.verifyRouting(connection,program,mint);}catch{return{complete:false,reason:'current_fee_routing_unverified'};}
  const replay=await replayCoin(db,coin,cutoff);if(!replay.complete)return replay;
  await require('./project.cjs').materialize(db,coin);
- await require('./funding.cjs').refresh({db,rpc:new I.Rpc(process.env.HISTORY_RPC_URL||process.env.SOLANA_RPC_URL),coin,replay,cutoff});
+ const freshFunding=await require('./funding.cjs').refresh({db,rpc:new I.Rpc(process.env.HISTORY_RPC_URL||process.env.SOLANA_RPC_URL),coin,replay,cutoff});
  const reference=P.price(replay.observations,cutoff.time,{complete:true,throughTime:replay.throughTime});if(reference.outcome!=='pass')return{complete:false,reason:reference.reason,replay};
- const links=(await db.query("SELECT * FROM reward_wallet_links WHERE mint=$1 AND status<>'revoked'",[mint])).rows;
+ const links=freshFunding.links;
  const positions=[];
  for(const wallet of [...new Set(replay.lots.map(l=>l.wallet))].sort()){
   const chain=await chainPosition(connection,program,mint,wallet),tokens=await tokenAccounts(connection,wallet,mint);
   if(replay.positionHolds.some(h=>h.wallet===wallet)){positions.push({wallet,outcome:'hold',reason:'holding_history_unresolved',chain,tokens});continue;}
   const exit=replay.exits.find(e=>e.wallet===wallet),linked=P.linkedExclusion(wallet,mint,links,replay.exits);
-  const funding=(await db.query("SELECT evidence FROM reward_audit WHERE mint=$1 AND wallet=$2 AND kind='funding_check' ORDER BY id DESC LIMIT 1",[mint,wallet])).rows[0]?.evidence;
+  const funding=freshFunding.wallets.find(f=>f.wallet===wallet);
   if(!funding?.complete||funding.checkedThrough<cutoff.slot){positions.push({wallet,outcome:'hold',reason:'fresh_funding_analysis_required',chain,tokens});continue;}
   const pos=P.position(replay.lots,{wallet,mint,cutoff:cutoff.time,priceQ:reference.q,paid:chain.paid,reserved:chain.active,disqualification:exit,coverage:{complete:true},holdings:tokens.quantity,linkHolds:links.filter(l=>l.status==='ambiguous').map(l=>l.purchase)});
   positions.push({...pos,wallet,chain,tokens,linkedExclusion:linked,disqualification:exit});

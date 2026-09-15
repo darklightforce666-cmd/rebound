@@ -113,6 +113,7 @@ class Rpc{
  async call(method,params=[]){const response=await fetch(this.url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:++this.id,method,params}),signal:AbortSignal.timeout(20000)});if(!response.ok)throw Error('RPC HTTP '+response.status);const r=await response.json();if(r.error)throw Error('RPC '+method+' error '+r.error.code);return r.result;}
 }
 async function indexBatch(db,rpc,{name='finalized-blocks',from,limit=32,genesis,coins}){
+ if(await rpc.call('getGenesisHash',[])!==genesis)throw Error('History endpoint network mismatch');
  const head=await rpc.call('getSlot',[{commitment:'finalized'}]);const checkpoint=(await db.query('SELECT * FROM reward_checkpoints WHERE name=$1',[name])).rows[0];
  const start=checkpoint?Number(checkpoint.through_slot)+1:from;if(!Number.isSafeInteger(start)||start<0)throw Error('Provable index start slot required');
  const end=Math.min(head,start+limit-1);if(end<start)return{through:head};

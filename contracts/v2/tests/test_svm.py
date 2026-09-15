@@ -70,9 +70,11 @@ class Env:
                 return {'programId':str(message.account_keys[ci.program_id_index]),'accounts':[str(message.account_keys[x]) for x in ci.accounts],'data64':base64.b64encode(ci.data).decode(),'stackHeight':depth}
             self.history.append({'signature':str(tx.signatures[0]),'slot':self.svm.get_clock().slot,'time':self.svm.get_clock().unix_timestamp,'packetBytes':len(bytes(tx)),'keys':[str(k) for k in message.account_keys],'instructions':[instruction(ci) for ci in message.instructions],'innerInstructions':[{'index':n,'instructions':[instruction(ci.instruction(),ci.stack_height()) for ci in group]} for n,group in enumerate(result.inner_instructions())],'before':before,'after':accounts(),'logs':result.logs()})
         return result
-    def prepare(self):
+    def prepare(self,send=True):
         self.mint=Keypair();self.coin=pd(b'coin-v2',bytes(self.mint.pubkey()));self.intake=pd(b'intake-v2',bytes(self.mint.pubkey()))
-        self.send(ix(1,[m(self.admin.pubkey(),True,True),m(self.deployment),m(self.coin,True),m(self.intake,True),m(self.mint.pubkey(),False,True),m(SYSTEM)]),self.mint)
+        instruction=ix(1,[m(self.admin.pubkey(),True,True),m(self.deployment),m(self.coin,True),m(self.intake,True),m(self.mint.pubkey(),False,True),m(SYSTEM)])
+        if send:self.send(instruction,self.mint)
+        return instruction
     def fixture_active(self):
         self.prepare();a=self.svm.get_account(self.coin);d=bytearray(a.data);d[168]=1;self.svm.set_account(self.coin,Account(a.lamports,bytes(d),PROGRAM))
         d=bytearray(82);d[44:46]=b'\6\1';self.svm.set_account(self.mint.pubkey(),Account(2_000_000,bytes(d),TOKEN))

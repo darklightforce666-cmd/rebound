@@ -3,6 +3,14 @@ const crypto=require('node:crypto'),bs58=require('bs58');
 const {Transaction,SystemProgram,ComputeBudgetProgram}=require('@solana/web3.js');
 const P=require('./policy.cjs'),W=require('./wire.cjs'),Pump=require('./pump.cjs'),DB=require('./db.cjs'),C=require('./config.cjs');
 const INTAKE_SETUP_LAMPORTS=50000000;
+async function locked(args,fn){
+ // Keep a session lock across preparation/submission, but commit the signed
+ // bytes BEFORE broadcast. A transaction lock spanning the send is unsafe.
+ const pool=args.db,db=typeof pool.connect==='function'&&typeof pool.release!=='function'?await pool.connect():pool;
+ const key='launch:'+args.wallet+':'+(args.payload.attempt||args.payload.mint);let acquired=false;
+ try{acquired=(await db.query('SELECT pg_try_advisory_lock(hashtextextended($1,0)) AS locked',[key])).rows[0].locked;if(!acquired)throw Error('Launch update already in progress; resume shortly');return await fn({...args,db});}
+ finally{try{if(acquired)await db.query('SELECT pg_advisory_unlock(hashtextextended($1,0))',[key]);}finally{if(db!==pool)db.release();}}
+}
 async function prepare({db,connection,cfg,wallet,payload}){
  C.requireProduction(await C.preflight(connection,db,cfg),cfg);W.pk(payload.mint);
  if(await connection.getAccountInfo(W.pk(payload.mint),'finalized'))throw Error('Mint already exists. Existing coins require authority and historical fee review.');
@@ -25,6 +33,8 @@ async function next({db,connection,cfg,wallet,payload}){
  // offered. Returning here never asks the wallet to unknowingly pay twice.
  for(const attempt of row.steps.transactions||[]){if(attempt.state!=='submitted')continue;const status=(await connection.getSignatureStatuses([attempt.signature],{searchTransactionHistory:true})).value[0];if(status?.confirmationStatus==='finalized'){attempt.state=status.err?'failed':'finalized';if(!status.err){attempt.slot=status.slot;if(attempt.step==='create')await db.query('UPDATE reward_coins SET launch_slot=$2 WHERE mint=$1',[row.mint,status.slot]);}}else if(!status&&await connection.getBlockHeight('finalized')>attempt.lastValidBlockHeight)attempt.state='expired';else return{state:'confirming',signature:attempt.signature,attempt:row.id};}
  await db.query('UPDATE reward_launch_attempts SET steps=$2,updated_at=now() WHERE id=$1',[row.id,P.stable(row.steps)]);
+ const pending=row.steps.pending;
+ if(pending&&await connection.getBlockHeight('finalized')<=pending.lastValidBlockHeight)return{attempt:row.id,state:'awaiting_wallet',step:pending.step,transaction:pending.transaction,mint:row.mint,bytes:Buffer.from(pending.transaction,'base64').length,lastValidBlockHeight:pending.lastValidBlockHeight};
  let instructions,step;
  if(!coin&&!mint){step='create';const p=await Pump.prepareLaunch({program:cfg.program,mint:row.mint,user:wallet,name:row.steps.name,symbol:row.steps.symbol,uri:row.metadata_uri});instructions=[...p.instructions,SystemProgram.transfer({fromPubkey:W.pk(wallet),toPubkey:a.intake,lamports:INTAKE_SETUP_LAMPORTS})];}
  else if(!coin||!mint)throw Error('Partial launch accounts require review');
@@ -54,4 +64,4 @@ async function submit({db,connection,cfg,wallet,payload}){
  try{await connection.sendRawTransaction(tx.serialize(),{skipPreflight:false,maxRetries:0});}catch{/* Persisted signature is reconciled before retry. */}
  return{state:'confirming',signature,attempt:row.id};
 }
-module.exports={INTAKE_SETUP_LAMPORTS,prepare,next,submit};
+module.exports={INTAKE_SETUP_LAMPORTS,prepare:args=>locked(args,prepare),next:args=>locked(args,next),submit:args=>locked(args,submit)};

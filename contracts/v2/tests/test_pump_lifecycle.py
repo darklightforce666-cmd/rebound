@@ -26,8 +26,7 @@ def test_actual_pump_creation_sharing_and_collection(tmp_path,early_graduation):
         e.svm.add_program_from_file(Pubkey.from_string(program['id']),FIXTURES/program['file'])
     for a in manifest['accounts']:
         if not a.get('missing'):e.svm.set_account(Pubkey.from_string(a['id']),Account(int(a['lamports']),base64.b64decode(a['data']),Pubkey.from_string(a['owner']),a['executable']))
-    e.set_clock(manifest['programs'][0]['slot']+100,1_800_000_000);e.prepare()
-    e.send(transfer({'from_pubkey':e.admin.pubkey(),'to_pubkey':e.intake,'lamports':50_000_000}))
+    e.set_clock(manifest['programs'][0]['slot']+100,1_800_000_000);prepare=e.prepare(send=False)
     curve=pd(b'bonding-curve',bytes(e.mint.pubkey()),program=PUMP);sharing=pd(b'sharing-config',bytes(e.mint.pubkey()),program=FEES)
     def vector(action,**extra):
         data={'program':str(PROGRAM),'mint':str(e.mint.pubkey()),'user':str(e.admin.pubkey()),'action':action,'global':base64.b64encode(e.svm.get_account(GLOBAL).data).decode(),**extra}
@@ -52,7 +51,9 @@ def test_actual_pump_creation_sharing_and_collection(tmp_path,early_graduation):
                 if e.svm.get_account(key) is None:e.svm.set_account(key,Account(10_000_000,b'',Pubkey.default()))
         return [Instruction(Pubkey.from_string(v['program']),base64.b64decode(v['data']),[AccountMeta(Pubkey.from_string(k['key']),k['signer'],k['writable']) for k in v['keys']]) for v in vectors]
     budget=set_compute_unit_limit(1_400_000)
-    e.send([budget,*vector('create')],e.mint)
+    # Execute the exact atomic preparation/create/setup sequence used by the
+    # wallet launch API. Env.send asserts the real signed packet fits 1232 bytes.
+    e.send([budget,prepare,*vector('create'),transfer({'from_pubkey':e.admin.pubkey(),'to_pubkey':e.intake,'lamports':50_000_000})],e.mint)
     # First trade happens deliberately BEFORE sharing setup: creator was intake.
     bc=e.svm.get_account(curve).data;assert bc[49:81]==bytes(e.intake)
     e.send([budget,*vector('buy')])

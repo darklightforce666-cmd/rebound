@@ -36,6 +36,13 @@ async function stageReceipts(db,coin,projection){
 async function authorizeReceipt({db,connection,program,verifier,receiptId}){
  const r=(await db.query('SELECT * FROM reward_receipts WHERE id=$1',[receiptId])).rows[0];if(!r||!['verified','submitted'].includes(r.state))throw Error('Receipt unavailable');
  const coin=(await db.query('SELECT * FROM reward_coins WHERE mint=$1',[r.mint])).rows[0];
+ // Rebuild the COMPLETE chronological attribution from immutable indexer
+ // evidence. Publisher-maintained counters alone could reuse an old accrual
+ // to label a later donation as fee revenue, despite unique receipt IDs.
+ const S=require('./snapshot.cjs'),cutoff=await S.finalizedCutoff(db,connection),replay=await S.replayCoin(db,coin,cutoff);
+ if(!replay.complete)throw Error('Complete receipt attribution history unavailable');
+ const expected=attribute(replay,replay.events).receipts.find(x=>x.id===r.id);
+ if(!expected||expected.amount!==BigInt(r.amount)||P.stable(expected.sources)!==P.stable(r.attestation.sources))throw Error('Independent full receipt attribution differs');
  const sourceIds=[r.event,...r.attestation.sources.flatMap(s=>[s.accrual,...s.conversions])];
  const raw=(await db.query('SELECT * FROM reward_events WHERE id=ANY($1::text[])',[sourceIds])).rows;
  if(sourceIds.some(id=>!raw.some(e=>e.id===id)))throw Error('Receipt source evidence missing');
