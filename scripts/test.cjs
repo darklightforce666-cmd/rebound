@@ -4,6 +4,7 @@ require('../tests/rewards/database.test.cjs');
 require('../tests/rewards/exits.test.cjs');
 require('../tests/rewards/transport.test.cjs');
 require('../tests/rewards/funding.test.cjs');
+require('../tests/rewards/config.test.cjs');
 require('../tests/copy.test.cjs');
 require('../tests/wallet.test.cjs');
 require('../tests/mainnet.test.cjs');
