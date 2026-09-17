@@ -1,31 +1,18 @@
 # rebound
 
-Pump.fun launchpad and creator-fee rewards project. The website now reads real market data and, when deployed on Netlify with its RPC secret, finalized Solana balances and mint accounts. No simulated markets, paper trades, generated rewards, or local token launches are loaded by the website.
+Pump.fun launchpad with mint-isolated, conditional loss-based SOL rewards. Creator fees actually collected are split **85% eligible holders / 15% platform operations**. Purchases mature after 30 minutes; automatic cycles start every 30 minutes. Every payout, retry and fallback delivery requires fresh eligibility verification.
 
-**This is not a functioning mainnet launch or payout service yet.** Pump.fun transaction construction, creator-fee routing, a deployed REBOUND reward program, a verified history/price indexer, and the reward publisher still need to be connected. The interface keeps these actions unavailable.
-
-## Run
-
-Node.js 24 or later. No package installation is needed.
+**Production launches and transfers are disabled.** The implementation candidate includes the Solana program, Pump adapters, finalized index/replay, PostgreSQL accounting, independent verifier, durable worker and existing-site UI integration. It is not an audited or activated mainnet system. See the [implementation and validation status](docs/REWARDS-V2.md), [runbook](docs/REWARDS-OPERATIONS.md), and [threat model](docs/REWARDS-THREAT-MODEL.md) for precise limits and missing production inputs.
 
 ```sh
-npm test
-npm start
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm test
+pnpm build
+pnpm start
 ```
 
-Open http://127.0.0.1:4173. The simple entry-screen password remains `1111`; this is a client-side screen, not server authentication. Charts require internet access. For local wallet/mint checks, set `SOLANA_RPC_URL` in your process environment or an ignored local environment file before starting the server. Never commit an RPC key.
+Use Node 24 and pnpm 11.19. The site retains its design, logo, Phantom/Solflare integration and market charts. Its requested entry-screen password is `1111`; privileged actions use independent server and wallet authentication. `dist/` contains browser assets only. Netlify hosts the API; continuous workers run on a separate server. `.env.example` includes public operations address `5toTaaYKbF12cXRf9J5soN41tyhCUmNjfdGYQ8JwUroM`, empty production configuration values and no secrets.
 
-`npm run build` creates `dist/`, containing only browser assets. Netlify builds from `main` using `netlify.toml`. The Node runtime reads the RPC URL at request time; the build never substitutes it into browser code.
+Current program: `contracts/v2/`. Current policy and services: `server/rewards/`. Current tests: `tests/rewards/` and `contracts/v2/tests/`. The former `contracts/` V1 program and `src/engine.cjs` are archived historical implementations; do not deploy them for this policy.
 
-## Live features
-
-- Phantom and Solflare public-address connection; no transaction signing.
-- Actual SOL and SPL Token / Token-2022 balances through a private read-only Netlify function.
-- Mainnet genesis verification and initialized token-mint lookup.
-- Public DEX Screener market data selected by exact mint and chain, with actual token chart embeds when a pair exists.
-- Official TradingView SOL/USD widget, clearly labeled separately from token charts.
-- Errors and missing markets remain unavailable, not replaced by sample prices or zero balances.
-
-The initial mint is `3SohGcVPEwv6HS4DcSCMBE6RKu623aVzZKh4oWFppump`. Configuration is not proof that a mint exists. At the September 15, 2026 check, mainnet returned no account and DEX Screener returned no pair for this address.
-
-See [mainnet activation](docs/MAINNET.md) and [the reward program](contracts/README.md). The accounting engine and fixtures remain test/reference code only; neither is included in the production build.
+Run the complete compiled-program and cloned-Pump test sequence from [REWARDS-V2.md](docs/REWARDS-V2.md). CI produces the SBF build, hashes, source commit, local protocol execution trace and site preview. Local trade/price fixtures are explicitly distinguished from production historical data. No production wallet private key is stored or requested.

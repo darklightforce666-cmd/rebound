@@ -1,0 +1,14 @@
+{
+  "network": "mainnet-beta",
+  "rewardAsset": "native-SOL",
+  "operations": "5toTaaYKbF12cXRf9J5soN41tyhCUmNjfdGYQ8JwUroM",
+  "program": null,
+  "publisher": "3dszcTGYJfFxqw3NXHasuqCvwmhdEFuj3DjaVWxSdvPp",
+  "verifier": "EU7W4cvVkeaZq6dZDC95BvG86rSB5uRUCyWuXAKeW188",
+  "guardian": "EddksGhxNWgh7ECR92XEKPzumuEoWgThR4yf51Tv3G4d",
+  "governance": "GVbkjSXm8TodYnfRSd2rMw1pDZVgyN5YyNSdqKJwKamF",
+  "governanceVerified": false,
+  "deliveryPayer": "8JeVgRsPf6VtCDDkhWUcn8mWKErjdzDAamdnA23CspMA",
+  "claimPayer": "7BGWVAHxfd8Sw2pWhZvg54xfdQRMkDax8bazdGfLPRGd",
+  "transfersEnabled": false
+}
