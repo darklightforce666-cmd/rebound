@@ -110,7 +110,7 @@ async function run({once=false,role=process.env.REWARDS_WORKER_ROLE||'scheduler'
     const preflight=await C.preflight(connection,db,cfg);
     if(!preflight.ready){await DB.audit(db,'worker_held',{blockers:preflight.blockers,mode:cfg.mode});}
     else{
-     const payer=await C.keyFromFile('REWARDS_DELIVERY_PAYER_KEY_FILE'),publisher=await C.keyFromFile('REWARDS_PUBLISHER_KEY_FILE',cfg.publisher);
+     const payer=await C.keyFromFile('REWARDS_DELIVERY_PAYER_KEY_FILE',cfg.deliveryPayer),publisher=await C.keyFromFile('REWARDS_PUBLISHER_KEY_FILE',cfg.publisher);
      for(const exit of (await db.query('SELECT mint,wallet FROM reward_disqualifications')).rows)await require('./exits.cjs').publish({db,connection,cfg,preflight,payer},exit.mint,exit.wallet);
      const cutoffSlot=await connection.getSlot('finalized'),time=await connection.getBlockTime(cutoffSlot);if(!Number.isSafeInteger(time)||time<=0)throw Error('Finalized scheduling time unavailable');const round=Math.floor(time/1800);
      for(const coin of coins)await db.query("INSERT INTO reward_jobs(id,mint,kind,due_at) VALUES($1,$2,'cycle',now()) ON CONFLICT DO NOTHING",['cycle:'+coin.mint+':'+round,coin.mint]);

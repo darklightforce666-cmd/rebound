@@ -29,7 +29,7 @@ async function start(){
    if(req.url==='/claim'){
     // Independently available fallback relay. It uses the same fresh check and
     // operations-funded fee payer as scheduled delivery, with fixed recipients.
-    const payer=await C.keyFromFile('REWARDS_CLAIM_PAYER_KEY_FILE');
+    const payer=await C.keyFromFile('REWARDS_CLAIM_PAYER_KEY_FILE',cfg.claimPayer);
     const result=await Delivery.deliver({db,connection,cfg,preflight,payer,mint:data.mint,round:data.round,index:data.index,verify:async(route,payload)=>{if(route!=='/payment')throw Error('Unsupported verifier request');return V.authorizePayment({db,connection,rpc,program:cfg.program,verifier,mint:payload.mint,round:payload.round,index:payload.index});}});return reply(200,result);
    }
    reply(404,{message:'Unknown endpoint'});
