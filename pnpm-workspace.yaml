@@ -1,0 +1,4 @@
+# Lambda disables synchronous require(ESM). rpc-websockets uses uuid.v1 via
+# CommonJS; uuid 12+ no longer ships CommonJS. Keep this override scoped.
+overrides:
+  'rpc-websockets@9.3.9>uuid': '11.1.0'

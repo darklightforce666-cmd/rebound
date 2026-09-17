@@ -16,6 +16,7 @@
   "engines": {
     "node": ">=24"
   },
+  "packageManager": "pnpm@11.19.0",
   "dependencies": {
     "@coral-xyz/anchor": "0.31.1",
     "@netlify/blobs": "11.1.0",
