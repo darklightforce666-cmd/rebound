@@ -2,4 +2,6 @@
 # CommonJS; uuid 12+ no longer ships CommonJS. Keep this override scoped.
 ignoreScripts: true
 overrides:
-  'rpc-websockets@9.3.9>uuid': '11.1.0'
+  'rpc-websockets@9.3.9>uuid': '11.1.1'
+  'jayson@4.3.0>uuid': '11.1.1'
+  '@coral-xyz/anchor@0.31.1>toml': '4.2.0'
