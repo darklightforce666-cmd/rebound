@@ -14,11 +14,19 @@ This is a disabled deployment candidate. Passing software tests does not authori
 
 The deployed preview crashed before invoking its rewards handler: CommonJS `rpc-websockets@9.3.9` required ESM-only `uuid@14`. Ordinary Node 24 execution hid the problem because it enabled synchronous `require(ESM)`, whereas the deployed Lambda runtime disabled it.
 
-`pnpm-workspace.yaml` now pins only that dependency edge to CommonJS-compatible `uuid@11.1.0`; all other SDK versions remain unchanged. The lockfile and Docker dependency-copy step include this setting. `scripts/check-functions.cjs` loads the function modules with `--no-experimental-require-module` and exercises disabled health/launch/RPC behavior without network access or secrets. The standard test suite runs this regression in a separate process.
+`pnpm-workspace.yaml` pins that dependency edge to CommonJS-compatible `uuid@11.1.1`, including the published buffer-bounds security fix. Jayson's UUID dependency is pinned to the same release and Anchor's TOML parser to 4.2.0 for published parser fixes. The official SDK versions remain unchanged. The lockfile and Docker dependency-copy step include these settings. Install scripts are disabled explicitly, matching the verified CI installation instead of failing Netlify's default strict install. `scripts/check-functions.cjs` loads the function modules with `--no-experimental-require-module` and exercises disabled health/launch/RPC behavior without network access or secrets. The standard test suite runs this regression in a separate process.
 
 Set `NODE_VERSION=24`, `PNPM_VERSION=11.19.0`, and `AWS_LAMBDA_JS_RUNTIME=nodejs24.x` in Netlify, then deploy the candidate again. The runtime override must be in Netlify environment settings, not `netlify.toml`. These three public settings and all supplied public role addresses were saved in the project during this readiness pass. Existing RPC secret values were not read or replaced. Function-scoped settings become effective on a new deploy.
 
 References: [Netlify function configuration](https://docs.netlify.com/build/functions/configuration/), [uuid CommonJS support](https://github.com/uuidjs/uuid), [pnpm settings](https://pnpm.io/settings).
+
+The legacy Netlify function packager also failed to resolve a transitive `@babel/runtime` dependency under pnpm's layout. `netlify.toml` selects the documented esbuild function bundler; the hosted function must still be checked after a successful deploy, not just after the static build.
+
+## External blockers found in this pass
+
+Public DNS checks at 2026-09-17 17:20 UTC returned NXDOMAIN for both `reboundpad.fun` and `www.reboundpad.fun`, with authority at the `.fun` zone. HTTPS could not resolve either hostname. GoDaddy required user sign-in, so the registrar status could not be inspected or repaired. Do not assume this is only an incorrect A record; verify registration, domain status and nameserver delegation first. No registrar or DNS records were changed.
+
+The production dependency audit initially reported five advisories. UUID and TOML fixes reduce that to two: [bigint-buffer native overflow](https://github.com/advisories/GHSA-3gc7-fjrx-p6mg) and [stream-json filter resource exhaustion](https://github.com/advisories/GHSA-528h-pc64-c93x). The audit's suggested `bigint-buffer@1.1.6` and `stream-json@3.4.1` versions returned 404 from the npm registry during verification; they must not be treated as installed fixes. Install scripts remain disabled and the tested bigint path reports its pure-JavaScript fallback. This is not a completed native-path or whole-dependency security assessment. Production activation requires a reviewed mitigation, a compatible published patch/replacement, or a documented reachability assessment for these remaining advisories. No audit exclusions were added to hide them.
 
 ## Reproduce checks
 
