@@ -3,6 +3,10 @@ const fs=require('node:fs/promises'),path=require('node:path'),{Connection}=requ
 const DB=require('../../server/rewards/db.cjs'),C=require('../../server/rewards/config.cjs'),P=require('../../server/rewards/policy.cjs'),S=require('../../server/rewards/snapshot.cjs'),V=require('../../server/rewards/verifier.cjs');
 async function main(){const command=process.argv[2],cfg=C.settings();
  if(command==='policy'){console.log(P.stable({policy:P.POLICY,hash:P.POLICY_HASH}));return;}
+ if(command==='preflight'){
+  const blockers=C.configurationBlockers(cfg);if(!process.env.DATABASE_URL)blockers.push('DATABASE_URL not configured');
+  if(blockers.length){console.log(P.stable({mode:cfg.mode,ready:false,blockers}));process.exitCode=2;return;}
+ }
  if(command==='dry-run'&&process.argv.includes('--fixtures')){const {replay}=require('../../tests/rewards/replay.test.cjs'),R=require('../../server/rewards/receipts.cjs'),p=replay(),ledger=R.attribute(p,p.events);console.log(P.stable({mode:'dry-run',classification:'captured-real-SBF-execution-with-synthetic-local-trades',qualifyingLots:p.lots,heldPurchases:p.holds,creatorFeeReceipts:ledger.receipts,transfers:0}));return;}
  const db=DB.connect();try{
   if(command==='migrate'){await DB.migrate(db);console.log('Rewards database migrations applied.');return;}
