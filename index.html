@@ -34,6 +34,7 @@ body:not(.rebound-unlocked) > :not(#rebound-entry) { display:none !important; }
 #rebound-entry button:focus-visible { outline:2px solid #fff; outline-offset:3px; }
 #rebound-entry .entry-error { min-height:24px; margin:8px 0; color:#ffb1b1; font-size:14px; }
 body.rebound-unlocked #rebound-entry { display:none; }
+#rebound-entry.checking .entry-card { visibility:hidden; }
 </style>
 </head>
 <body>
@@ -84,6 +85,24 @@ body.rebound-unlocked #rebound-entry { display:none; }
   var form = document.getElementById('rebound-entry-form');
   var password = document.getElementById('rebound-entry-password');
   var error = document.getElementById('rebound-entry-error');
+  function unlock() {
+    if (document.body.classList.contains('rebound-unlocked')) return;
+    password.value = '';
+    document.body.classList.add('rebound-unlocked');
+    window.dispatchEvent(new Event('rebound:unlocked'));
+    var entry = document.getElementById('rebound-entry');
+    if (entry) entry.remove();
+    document.getElementById('main').focus();
+  }
+  // The administrator can open the site to everyone (admin dashboard → Site access).
+  var entryBox = document.getElementById('rebound-entry');
+  entryBox.classList.add('checking');
+  var reveal = function () { entryBox.classList.remove('checking'); };
+  var timer = setTimeout(reveal, 4000);
+  fetch('/.netlify/functions/rewards?action=config', { headers: { accept: 'application/json' } })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (c) { clearTimeout(timer); if (c && c.siteSettings && c.siteSettings.open) unlock(); else reveal(); })
+    .catch(function () { clearTimeout(timer); reveal(); });
   form.addEventListener('submit', function (event) {
     event.preventDefault();
     if (password.value !== '1111') {
@@ -93,11 +112,7 @@ body.rebound-unlocked #rebound-entry { display:none; }
       password.select();
       return;
     }
-    password.value = '';
-    document.body.classList.add('rebound-unlocked');
-    window.dispatchEvent(new Event('rebound:unlocked'));
-    document.getElementById('rebound-entry').remove();
-    document.getElementById('main').focus();
+    unlock();
   });
   password.addEventListener('input', function () {
     error.textContent = '';

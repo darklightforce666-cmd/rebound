@@ -71,26 +71,76 @@ async function pause(db,actor,{namespace,paused,reason}){
  * Register the PRIMARY coin and its dedicated dev funding wallet (manual mode by default).
  * The funding wallet must be one of the caller's verified REBOUND wallets (ownership proven by sign-in).
  */
+const OPEN_CYCLE="state NOT IN ('complete','skipped_no_funds','skipped_no_eligible_holders','missed','expired','failed_action_required')";
+/**
+ * Register (or switch) the namespace's primary REBOUND token and its dev fee wallet. Not one-off:
+ * the admin may point the site at another mint or wallet later. A switch retires the previous
+ * primary / wallet only when it has no round in progress, so funded awards are never orphaned.
+ * Registering spends nothing: every deposit still needs the dev wallet's own signature (manual) or
+ * its imported key on the scheduler host (automatic), and execution stays under the mode gates.
+ */
 async function registerPrimary(db,actor,session,{namespace,mint,fundingWallet}){
  namespace=NS(namespace);mint=address(mint,'mint');fundingWallet=address(fundingWallet,'funding wallet');
- if(namespace==='production'&&process.env.REWARDS_ALLOW_PRODUCTION!=='true')fail('PRODUCTION_LOCKED','The production primary cannot be registered on this host (REWARDS_ALLOW_PRODUCTION). Use mainnet_test for a private test.',409);
- if(!(session.reboundWallets||[]).includes(fundingWallet))fail('FORBIDDEN','Sign in with the dev funding wallet as well (it must prove control), then register it.',403);
  const plat=(await db.query('SELECT * FROM reward_platform WHERE namespace=$1',[namespace])).rows[0];
  const policyHash=P3.hashOf(P3.policy(plat.policy_version));
+ const proven=(session?.reboundWallets||[]).includes(fundingWallet);
+ const busy=async(t,m)=>(await t.query(`SELECT 1 FROM reward_cycles WHERE mint=$1 AND ${OPEN_CYCLE} LIMIT 1`,[m])).rows.length>0;
+ let replaced=null;
  await DB.transaction(db,async t=>{
-  const existing=(await t.query("SELECT kind,namespace FROM reward_coins WHERE mint=$1",[mint])).rows[0];if(existing&&existing.kind!=='primary')fail('MINT_EXISTS','This mint is registered as a third-party coin',409);
+  const existing=(await t.query("SELECT kind,namespace,status FROM reward_coins WHERE mint=$1",[mint])).rows[0];
+  if(existing&&existing.kind!=='primary')fail('MINT_EXISTS','This mint is registered as a third-party coin',409);
   if(existing&&existing.namespace!==namespace)fail('NAMESPACE','This mint is already the primary of the '+existing.namespace+' namespace',409);
-  const current=plat.primary_mint&&plat.primary_mint!==mint?(await t.query("SELECT status FROM reward_coins WHERE mint=$1",[plat.primary_mint])).rows[0]:null;
-  if(current&&current.status==='active')fail('PRIMARY_ACTIVE','This namespace already has an active primary; it cannot be replaced from the dashboard',409);
-  await t.query("INSERT INTO reward_coins(mint,policy_hash,status,kind,namespace,program_version,policy_version) VALUES($1,$2,'registered','primary',$3,'v3',$4) ON CONFLICT(mint) DO NOTHING",[mint,policyHash,namespace,plat.policy_version]);
+  if(plat.primary_mint&&plat.primary_mint!==mint){
+   if(await busy(t,plat.primary_mint))fail('PRIMARY_BUSY','The current token still has a round in progress; wait until it completes (or expires), then switch.',409);
+   await t.query("UPDATE reward_coins SET status='retired',updated_at=now() WHERE mint=$1 AND kind='primary' AND status<>'retired'",[plat.primary_mint]);
+   await t.query("UPDATE reward_funding_wallets SET status='retired',retired_at=now() WHERE mint=$1 AND status<>'retired'",[plat.primary_mint]);
+   replaced=plat.primary_mint;
+  }
+  await t.query(`INSERT INTO reward_coins(mint,policy_hash,status,kind,namespace,program_version,policy_version) VALUES($1,$2,'registered','primary',$3,'v3',$4)
+   ON CONFLICT(mint) DO UPDATE SET status=CASE WHEN reward_coins.status='retired' THEN 'registered' ELSE reward_coins.status END,updated_at=now()`,[mint,policyHash,namespace,plat.policy_version]);
   const live=(await t.query("SELECT * FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired'",[mint])).rows[0];
-  if(live&&live.address!==fundingWallet)fail('FUNDING_WALLET_EXISTS','Retire the current funding wallet first',409);
-  if(!live)await t.query("INSERT INTO reward_funding_wallets(id,namespace,mint,address,mode,ownership_proof) VALUES($1,$2,$3,$4,'manual',$5)",[crypto.randomUUID(),namespace,mint,fundingWallet,stable({method:'supabase_siws_session',userId:session.userId,wallet:fundingWallet,at:new Date().toISOString()})]);
+  if(live&&live.address!==fundingWallet){
+   if(await busy(t,mint))fail('PRIMARY_BUSY','A round is in progress for this token; change the fee wallet after it completes.',409);
+   await t.query("UPDATE reward_funding_wallets SET status='retired',retired_at=now() WHERE id=$1",[live.id]);
+  }
+  const other=(await t.query("SELECT mint FROM reward_funding_wallets WHERE address=$1 AND status<>'retired' AND mint<>$2",[fundingWallet,mint])).rows[0];
+  if(other)fail('FUNDING_WALLET_EXISTS','This wallet already funds another token ('+other.mint+')',409);
+  if(!live||live.address!==fundingWallet)await t.query("INSERT INTO reward_funding_wallets(id,namespace,mint,address,mode,ownership_proof) VALUES($1,$2,$3,$4,'manual',$5)",
+   [crypto.randomUUID(),namespace,mint,fundingWallet,stable(proven?{method:'supabase_siws_session',userId:session.userId,wallet:fundingWallet,at:new Date().toISOString()}:{method:'admin_declared',by:actor,at:new Date().toISOString()})]);
   await t.query('UPDATE reward_platform SET primary_mint=$2,config_version=config_version+1,updated_at=now() WHERE namespace=$1',[namespace,mint]);
  });
- await audit(db,actor,'admin_register_primary',{namespace,mint,fundingWallet});
- await Logs.log(db,{severity:'warn',component:'admin',eventType:'primary_registered',namespace,mint,message:`Primary ${mint} registered with dev wallet ${fundingWallet} (manual funding) by ${actor}`});
- return{mint,fundingWallet,policy:plat.policy_version,policyHash};
+ await audit(db,actor,'admin_register_primary',{namespace,mint,fundingWallet,proven,replaced});
+ await Logs.log(db,{severity:'warn',component:'admin',eventType:'primary_registered',namespace,mint,message:`Primary ${mint} with dev wallet ${fundingWallet} (${proven?'proven':'declared'}, manual funding) set by ${actor}`+(replaced?`; replaced ${replaced}`:'')});
+ return{mint,fundingWallet,policy:plat.policy_version,policyHash,proven,replaced};
+}
+
+// ---------------- site settings (public; admin + consent) ----------------
+async function site(db){return(await db.query('SELECT site_open,primary_mint,primary_name,primary_symbol,fee_wallet,namespace,privy_app_id,updated_at FROM reward_site WHERE id=1')).rows[0]||null;}
+async function setSite(db,actor,{open,privyAppId}){
+ const sets=[],args=[];
+ if(open!==undefined){if(typeof open!=='boolean')fail('INVALID_BODY','open must be true or false');args.push(open);sets.push('site_open=$'+args.length);}
+ if(privyAppId!==undefined){const v=privyAppId===null||privyAppId===''?null:String(privyAppId).trim();if(v!==null&&!/^[A-Za-z0-9_-]{8,64}$/.test(v))fail('INVALID_BODY','That does not look like a Privy App ID');args.push(v);sets.push('privy_app_id=$'+args.length);}
+ if(!sets.length)fail('INVALID_BODY','Nothing to change');
+ args.push(actor);await db.query(`UPDATE reward_site SET ${sets.join(',')},updated_by=$${args.length},updated_at=now() WHERE id=1`,args);
+ await audit(db,actor,'admin_site',{open,privyAppId});
+ await Logs.log(db,{severity:'warn',component:'admin',eventType:'site_settings_changed',message:`Site settings changed by ${actor}`+(open!==undefined?` · site ${open?'open to everyone':'password-protected'}`:'')+(privyAppId!==undefined?' · Privy App ID '+(privyAppId?'set':'cleared'):'')});
+ return site(db);
+}
+// Token name/symbol from the mint's Token-2022 metadata extension (Pump create_v2); best effort.
+async function tokenMeta(connection,mint){
+ try{const info=await connection.getParsedAccountInfo(new PublicKey(mint),'confirmed');const p=info.value?.data?.parsed;if(!p||p.type!=='mint')return{exists:false};
+  const md=(p.info.extensions||[]).find(e=>e.extension==='tokenMetadata')?.state;return{exists:true,name:md?.name?String(md.name).slice(0,64):null,symbol:md?.symbol?String(md.symbol).slice(0,16):null};}
+ catch{return{exists:null};}
+}
+/** "Launch" from the dashboard: set the site's REBOUND token + dev fee wallet and register it as the primary. */
+async function launch(db,actor,session,{mint,feeWallet,namespace='production'},{connection=null}={}){
+ mint=address(mint,'token contract');feeWallet=address(feeWallet,'fee wallet');namespace=NS(namespace);
+ const r=await registerPrimary(db,actor,session,{namespace,mint,fundingWallet:feeWallet});
+ const meta=connection?await tokenMeta(connection,mint):{exists:null};
+ await db.query('UPDATE reward_site SET primary_mint=$1,primary_name=$2,primary_symbol=$3,fee_wallet=$4,namespace=$5,updated_by=$6,updated_at=now() WHERE id=1',[mint,meta.name||null,meta.symbol||null,feeWallet,namespace,actor]);
+ await db.query('UPDATE reward_coins SET name=COALESCE($2,name),symbol=COALESCE($3,symbol),updated_at=now() WHERE mint=$1',[mint,meta.name||null,meta.symbol||null]).catch(()=>{});
+ await Logs.log(db,{severity:'warn',component:'admin',eventType:'site_token_changed',namespace,mint,message:`Site token set to ${meta.name||mint} (${mint}); fee wallet ${feeWallet}`+(meta.exists===false?' — no mint exists at this address yet':'')});
+ return{...r,exists:meta.exists,name:meta.name||null,symbol:meta.symbol||null,site:await site(db)};
 }
 
 /**
@@ -189,4 +239,4 @@ async function revokeAdmin(db,actor,{wallet}){wallet=address(wallet,'wallet');if
  const left=(await db.query('SELECT count(*)::int n FROM reward_admin_wallets WHERE revoked_at IS NULL AND wallet<>$1',[wallet])).rows[0].n;if(!left)fail('FORBIDDEN','At least one admin must remain',409);
  await db.query('UPDATE reward_admin_wallets SET revoked_at=now(),revoked_by=$2 WHERE wallet=$1',[wallet,actor]);await audit(db,actor,'admin_revoke',{wallet});return{wallet,revoked:true};}
 
-module.exports={overview,setMode,testConfig,pause,registerPrimary,openingCredit,applyOpeningRequests,syncPrimary,chainPrepare,chainSubmit,addAdmin,revokeAdmin,CHAIN_ACTIONS};
+module.exports={overview,setMode,testConfig,pause,registerPrimary,site,setSite,launch,tokenMeta,openingCredit,applyOpeningRequests,syncPrimary,chainPrepare,chainSubmit,addAdmin,revokeAdmin,CHAIN_ACTIONS};

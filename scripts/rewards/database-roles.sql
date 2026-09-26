@@ -79,3 +79,7 @@ GRANT USAGE,SELECT ON SEQUENCE reward_audit_id_seq,reward_logs_id_seq TO rebound
 GRANT USAGE,SELECT ON SEQUENCE reward_config_versions_id_seq TO rebound_api;
 -- Helper functions used by server code.
 GRANT EXECUTE ON FUNCTION reward_user_wallets(uuid) TO rebound_api;
+
+-- ---------- site settings (011) ----------
+GRANT SELECT, UPDATE(site_open,primary_mint,primary_name,primary_symbol,fee_wallet,namespace,privy_app_id,updated_by,updated_at) ON reward_site TO rebound_api;
+GRANT SELECT ON reward_site TO rebound_indexer, rebound_scheduler, rebound_verifier;

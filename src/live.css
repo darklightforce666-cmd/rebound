@@ -18,3 +18,17 @@ tr.sev-warn td{color:#eec191}tr.sev-error td,tr.sev-critical td{color:#ffb1b1}
 [hidden]{display:none!important}
 /* Chart controls: labels above, selects and button on one baseline with equal heights */
 .token-chart-card .token-chart-controls{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}.token-chart-card .token-chart-controls label{display:flex;flex-direction:column;gap:6px;margin:0;font-size:12px;line-height:1;color:#a6b4aa}.token-chart-card .token-chart-controls select{width:auto;min-width:96px;height:41px;margin:0;padding:0 34px 0 12px;box-sizing:border-box}.token-chart-card .token-chart-controls .btn{height:41px;min-height:41px;margin:0;box-sizing:border-box}
+/* Copyable contract address on the REBOUND token card */
+.copy-address{display:inline-flex;align-items:center;gap:10px;max-width:100%;margin:10px 0 16px;padding:8px 12px;border:1px solid #2c4437;border-radius:8px;background:#101c15;color:#dfeae3;cursor:pointer;text-align:left;font-size:14px}
+.copy-address span{overflow-wrap:anywhere}.copy-address .ui-icon{flex:none;width:16px;height:16px;color:#a6b4aa}
+.copy-address:hover{border-color:#4d6f5b}.copy-address:hover .ui-icon{color:#badd94}.copy-address:focus-visible{outline:2px solid #badd94;outline-offset:3px}
+/* Admin: launch panel */
+.adm-launch .adm-current{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:14px 0 20px}
+.adm-launch .adm-current div{padding:12px 14px;border:1px solid #243a2e;border-radius:10px;background:#0f1913}.adm-launch .adm-current span{display:block;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#8fa296}
+.adm-launch .adm-current b{display:block;margin-top:6px;font-family:ui-monospace,monospace;font-size:13px;font-weight:500;overflow-wrap:anywhere;color:#e5eee8}
+.adm-steps{list-style:none;margin:18px 0 0;padding:0;display:grid;gap:8px}.adm-steps li{display:flex;gap:10px;align-items:flex-start;font-size:14px;color:#c9d6ce}
+.adm-steps li i{flex:none;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-style:normal;font-size:12px;background:#243a2e;color:#8fa296}
+.adm-steps li.ok i{background:#2f5a3c;color:#badd94}.adm-steps li small{display:block;color:#8fa296;font-size:12px}
+.adm-form{display:grid;gap:12px;max-width:640px}.adm-form label{display:grid;gap:6px;font-size:13px;color:#a6b4aa}
+.adm-form input,.adm-form select{height:44px;padding:0 12px;border:1px solid #31463d;border-radius:8px;background:#111c17;color:#e5eee8;font:inherit}
+.adm-switch{display:flex;align-items:center;gap:14px;flex-wrap:wrap}.adm-switch strong{font-size:15px}.adm-advanced>summary{cursor:pointer;margin:26px 0 6px;font-weight:600;color:#c9d6ce}

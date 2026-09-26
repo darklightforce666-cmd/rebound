@@ -198,6 +198,17 @@ cloned from mainnet (`scripts/rewards/clone-protocol.cjs contracts/v3/fixtures/m
       page errors, no horizontal overflow
 - [ ] Live wallet flows with Privy on the deployed preview (needs `PRIVY_APP_ID` and a wallet extension)
 
+## Admin launch panel (owner request, 2026-09-26)
+
+- [x] `#admin` → **Launch**: token contract + dev fee wallet (+ namespace); switchable at any time (previous primary /
+      wallet retired only when no round is in progress); checklist (token on mainnet, program deployed, registered on
+      chain, worker online, payouts live); **Site access** (open / password); **Privy App ID**; live **Logs** on top;
+      technical sections under *Advanced*
+- [x] `reward_site` (migration 011, applied live): public settings row, Realtime; API-only writes (admin + consent)
+- [x] Site follows the setting live: password gate skipped when open; token card name + copy-on-click address and
+      the chart switch to the configured mint without reload (Realtime, 60 s poll fallback)
+- [ ] Owner: first admin wallet address; Privy App ID; the real token mint
+
 ## M6 — deployment and capped mainnet acceptance — tooling done and rehearsed; mainnet run waits for the owner
 
 - [x] Release artifact `contracts/v3/release/` (SBPF v0, sha256 `3e169837…`, BUILD.md with the SIMD-0500 finding:
@@ -288,3 +299,4 @@ cloned from mainnet (`scripts/rewards/clone-protocol.cjs contracts/v3/fixtures/m
 | 2026-09-26 | M6 local | migrations 001–010 on a fresh PostgreSQL 16 + `database-roles.sql` | version 10; API cannot update opening columns; indexer cannot write funding ledgers |
 | 2026-09-26 | M6 live | migration 010 on Supabase | applied; privileges verified; no advisor findings in schema `rebound` |
 | 2026-09-26 | M6 preview | Netlify branch deploy `a0d5132`, requests from an authenticated browser | health/config/tokens 200 (dry_run, worker offline, no primary); admin-overview 401; `pnpm test` 151 tests: 148 pass, 3 skipped |
+| 2026-09-26 | Admin launch panel | `pnpm test`; browser render with mocked wallet/session/API; migration 011 live | 154 tests: 151 pass, 3 skipped; gate skipped when open; panel renders desktop/mobile, no overflow; anon read-only, RLS on, Realtime on |

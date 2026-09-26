@@ -32,17 +32,57 @@ test('test configuration validates addresses and caps; pause/resume',async()=>{
  }finally{await db.close();}
 });
 
-test('primary registration requires the dev wallet to be proven by the session; policy follows the namespace',async()=>{
- const {db,api}=await setup();const admin=key(),dev=key(),mint=key();try{
-  await assert.rejects(api.registerPrimary(db,admin,{userId:crypto.randomUUID(),reboundWallets:[admin]},{namespace:'mainnet_test',mint,fundingWallet:dev}),e=>e.code==='FORBIDDEN');
+test('primary registration: a proven dev wallet is recorded as proven, a typed one as declared; policy follows the namespace',async()=>{
+ const {db,api}=await setup();const admin=key(),dev=key(),mint=key(),mint2=key(),dev2=key();try{
   const r=await api.registerPrimary(db,admin,{userId:crypto.randomUUID(),reboundWallets:[admin,dev]},{namespace:'mainnet_test',mint,fundingWallet:dev});
+  assert.equal(r.proven,true);
   const plat=(await db.query("SELECT * FROM reward_platform WHERE namespace='mainnet_test'")).rows[0];
   assert.equal(plat.primary_mint,mint);assert.equal(r.policyHash,P3.hashOf(P3.policy(plat.policy_version)));
   const coin=(await db.query('SELECT * FROM reward_coins WHERE mint=$1',[mint])).rows[0];assert.equal(coin.kind,'primary');assert.equal(coin.status,'registered');
-  assert.equal((await db.query("SELECT mode FROM reward_funding_wallets WHERE mint=$1",[mint])).rows[0].mode,'manual');
+  const fw=(await db.query("SELECT mode,ownership_proof FROM reward_funding_wallets WHERE mint=$1",[mint])).rows[0];assert.equal(fw.mode,'manual');assert.equal(fw.ownership_proof.method,'supabase_siws_session');
+  const r2=await api.registerPrimary(db,admin,{userId:crypto.randomUUID(),reboundWallets:[admin]},{namespace:'production',mint:mint2,fundingWallet:dev2});   // spending stays gated by the execution mode
+  assert.equal(r2.proven,false);assert.equal((await db.query("SELECT ownership_proof FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired'",[mint2])).rows[0].ownership_proof.method,'admin_declared');
+  await assert.rejects(api.registerPrimary(db,admin,{reboundWallets:[]},{namespace:'mainnet_test',mint:mint2,fundingWallet:dev2}),e=>e.code==='NAMESPACE');
   const o=await api.overview(db);assert.ok(o.coins.some(c=>c.mint===mint));assert.equal(o.productionAllowed,false);
   assert.ok(o.signers.every(s=>!('ciphertext' in s)),'no signer secrets');
   await assert.rejects(api.revokeAdmin(db,admin,{wallet:admin}),e=>e.code==='FORBIDDEN');
+ }finally{await db.close();}
+});
+
+test('the primary token and fee wallet can be switched later, but never while a round is in progress',async()=>{
+ const {db,api}=await setup();const admin=key(),dev=key(),dev2=key(),mint=key(),mint2=key();try{
+  const s={reboundWallets:[]};
+  await api.registerPrimary(db,admin,s,{namespace:'production',mint,fundingWallet:dev});
+  await api.registerPrimary(db,admin,s,{namespace:'production',mint,fundingWallet:dev2});                         // new fee wallet, same token
+  const ws=(await db.query("SELECT address,status FROM reward_funding_wallets WHERE mint=$1 ORDER BY created_at",[mint])).rows;
+  assert.deepEqual(ws.map(w=>w.address),[dev,dev2]);assert.equal(ws[0].status,'retired');assert.notEqual(ws[1].status,'retired');
+  const r=await api.registerPrimary(db,admin,s,{namespace:'production',mint:mint2,fundingWallet:dev});              // switch token; old wallet may be reused
+  assert.equal(r.replaced,mint);
+  assert.equal((await db.query('SELECT status FROM reward_coins WHERE mint=$1',[mint])).rows[0].status,'retired');
+  assert.equal((await db.query("SELECT primary_mint FROM reward_platform WHERE namespace='production'")).rows[0].primary_mint,mint2);
+  await db.query("INSERT INTO reward_cycles(id,mint,cycle_number,namespace,policy_version,config_version,anchor,cycle_start,scheduled_end,cutoff_time,state,due_at,funding_mode) VALUES('c1',$1,1,'production','rebound-v3.0',0,0,0,1800,1740,'snapshotting',1800,'manual')",[mint2]);
+  await assert.rejects(api.registerPrimary(db,admin,s,{namespace:'production',mint,fundingWallet:dev2}),e=>e.code==='PRIMARY_BUSY');
+  await assert.rejects(api.registerPrimary(db,admin,s,{namespace:'production',mint:mint2,fundingWallet:dev2}),e=>e.code==='PRIMARY_BUSY');
+  await db.query("UPDATE reward_cycles SET state='complete' WHERE id='c1'");
+  await api.registerPrimary(db,admin,s,{namespace:'production',mint,fundingWallet:dev2});                          // switching back re-registers the retired coin
+  assert.equal((await db.query('SELECT status FROM reward_coins WHERE mint=$1',[mint])).rows[0].status,'registered');
+ }finally{await db.close();}
+});
+
+test('site settings and launch: open/close the site, Privy App ID, token + fee wallet with name from chain metadata',async()=>{
+ const {db,api}=await setup();const admin=key(),dev=key(),mint=key();try{
+  let st=await api.setSite(db,admin,{open:true});assert.equal(st.site_open,true);
+  await assert.rejects(api.setSite(db,admin,{privyAppId:'bad id!'}),e=>e.code==='INVALID_BODY');
+  st=await api.setSite(db,admin,{privyAppId:'clabcdefgh12345678'});assert.equal(st.privy_app_id,'clabcdefgh12345678');
+  st=await api.setSite(db,admin,{privyAppId:null});assert.equal(st.privy_app_id,null);
+  await assert.rejects(api.setSite(db,admin,{}),e=>e.code==='INVALID_BODY');
+  const connection={async getParsedAccountInfo(){return{value:{data:{parsed:{type:'mint',info:{extensions:[{extension:'tokenMetadata',state:{name:'Rebound',symbol:'RBND'}}]}}}}};}};
+  const r=await api.launch(db,admin,{reboundWallets:[]},{mint,feeWallet:dev,namespace:'production'},{connection});
+  assert.equal(r.name,'Rebound');assert.equal(r.site.primary_mint,mint);assert.equal(r.site.fee_wallet,dev);assert.equal(r.site.primary_symbol,'RBND');
+  const missing={async getParsedAccountInfo(){return{value:null};}};
+  const mint2=key();const r2=await api.launch(db,admin,{reboundWallets:[]},{mint:mint2,feeWallet:dev,namespace:'production'},{connection:missing});
+  assert.equal(r2.exists,false);assert.equal(r2.site.primary_mint,mint2);assert.equal(r2.site.primary_name,null);
+  assert.ok((await db.query("SELECT 1 FROM reward_logs WHERE event_type='site_token_changed'")).rows.length>=2);
  }finally{await db.close();}
 });
 
@@ -103,13 +143,10 @@ test('primary activation: the scheduler marks a registered primary active only a
  }finally{await db.close();}
 });
 
-test('review fixes: production primary locked, active primary not replaced, API cannot rewind spend or opening credit',async()=>{
+test('review fixes: API cannot rewind the test spend total or the opening credit',async()=>{
  const {db,api}=await setup();const admin=key(),dev=key(),dev2=key(),mint=key(),mint2=key();try{
   const s={userId:crypto.randomUUID(),reboundWallets:[dev,dev2]};
-  await assert.rejects(api.registerPrimary(db,admin,s,{namespace:'production',mint,fundingWallet:dev}),e=>e.code==='PRODUCTION_LOCKED');
   await api.registerPrimary(db,admin,s,{namespace:'mainnet_test',mint,fundingWallet:dev});
-  await db.query("UPDATE reward_coins SET status='active' WHERE mint=$1",[mint]);
-  await assert.rejects(api.registerPrimary(db,admin,s,{namespace:'mainnet_test',mint:mint2,fundingWallet:dev2}),e=>e.code==='PRIMARY_ACTIVE');
   await db.query("UPDATE reward_platform SET spent_total_lamports=500 WHERE namespace='mainnet_test'");
   await db.query('SET ROLE rebound_api');try{
    await db.query("UPDATE reward_platform SET spent_total_lamports=600 WHERE namespace='mainnet_test'");                 // increments are allowed (execution gate)

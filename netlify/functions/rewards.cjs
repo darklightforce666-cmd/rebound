@@ -28,15 +28,17 @@ const fail=(status,code,message,retryable=false,extra)=>{throw new ApiError(stat
 const effective=mode=>{const R={dry_run:0,mainnet_test:1,production:2},c=require('../../server/rewards/execution.cjs').ceiling();return R[mode]<=R[c]?mode:c;};
 async function publicConfig(db){
  const platform=db?(await db.query('SELECT namespace,execution_mode,policy_version,primary_mint,paused FROM reward_platform ORDER BY namespace')).rows:[];
+ const s=db?await Admin.site(db).catch(()=>null):null;
  return{
+  siteSettings:{open:!!s?.site_open,primaryMint:s?.primary_mint||null,name:s?.primary_name||null,symbol:s?.primary_symbol||null,namespace:s?.namespace||null,updatedAt:s?.updated_at||null},
   site:process.env.PUBLIC_SITE_ORIGIN||'https://rebound.wtf',
   supabase:{url:process.env.SUPABASE_URL||null,publishableKey:process.env.SUPABASE_PUBLISHABLE_KEY||null},
-  privy:{appId:process.env.PRIVY_APP_ID||null},
+  privy:{appId:process.env.PRIVY_APP_ID||s?.privy_app_id||null},
   policy:{version:P3.POLICY.version,hash:P3.POLICY_HASH,holdersBps:P3.POLICY.holdersBps,otherBps:P3.POLICY.otherBps,cycleSeconds:P3.POLICY.cycleSeconds,cutoffLeadSeconds:P3.POLICY.cutoffLeadSeconds,lossUnit:P3.POLICY.lossUnit,asset:P3.POLICY.asset,referencePrice:P3.POLICY.referencePrice,priceWindowSeconds:P3.POLICY.priceWindowSeconds},
   namespaces:platform.map(p=>({namespace:p.namespace,executionMode:effective(p.execution_mode),policyVersion:p.policy_version,primaryMint:p.primary_mint,paused:p.paused})),
   ...(()=>{const by=Object.fromEntries(platform.map(p=>[p.namespace,p]));const ok=(ns,mode)=>by[ns]&&!by[ns].paused&&effective(by[ns].execution_mode)===mode&&by[ns].primary_mint;
    const launchNamespace=ok('production','production')?'production':ok('mainnet_test','mainnet_test')?'mainnet_test':null;
-   return{launchNamespace,primaryMint:by.production?.primary_mint||by.mainnet_test?.primary_mint||null,
+   return{launchNamespace,primaryMint:s?.primary_mint||by.production?.primary_mint||by.mainnet_test?.primary_mint||null,
     features:{launches:!!launchNamespace,rewards:platform.some(p=>effective(p.execution_mode)!=='dry_run'),buyback:!!launchNamespace,privateTest:launchNamespace==='mainnet_test'}};})(),
  };
 }
@@ -49,6 +51,7 @@ function chain(db){
   chainPorts={connection,program:new PublicKey(process.env.REWARDS_PROGRAM_ID),now:async()=>connection.getBlockTime(await connection.getSlot('finalized'))};}
  return{...chainPorts,db};
 }
+let rpcOnly;const rpcConnection=()=>{if(!process.env.SOLANA_RPC_URL)return null;if(!rpcOnly){const {Connection}=require('@solana/web3.js');rpcOnly=new Connection(process.env.SOLANA_RPC_URL,'confirmed');}return rpcOnly;};
 const PLAN_ERRORS={FORBIDDEN:403,PLAN_STALE:409,PLAN_EXPIRED:409,INVALID_TRANSACTION:400,TRANSACTION_TOO_LARGE:400,INVALID_BODY:400};
 async function planCall(fn){try{return await fn();}catch(e){if(PLAN_ERRORS[e.code])fail(PLAN_ERRORS[e.code],e.code,e.message);if(e.status&&e.code&&/^[A-Z_]+$/.test(e.code))fail(e.status,e.code,e.message,e.status>=500);throw e;}}
 const uuid=v=>{if(typeof v!=='string'||!/^[0-9a-f-]{36}$/.test(v))fail(400,'INVALID_BODY','Invalid id');return v;};
@@ -96,7 +99,8 @@ const handlers={
   },
   async 'launch-status'({db,event,q}){const s=await Session.authenticate(db,event.headers);return planCall(()=>Launch.status(launchPorts(db),{session:s,attemptId:uuid(q.id)}));},
   async 'admin-overview'({db,event}){await Session.authenticate(db,event.headers,{need:'admin'});
-   const ports=process.env.SOLANA_RPC_URL&&process.env.REWARDS_PROGRAM_ID?chain(db):{};return Admin.overview(db,{connection:ports.connection,program:ports.program});},
+   const ports=process.env.SOLANA_RPC_URL&&process.env.REWARDS_PROGRAM_ID?chain(db):{};const o=await Admin.overview(db,{connection:ports.connection,program:ports.program});
+   const st=await Admin.site(db);const meta=st?.primary_mint&&rpcConnection()?await Admin.tokenMeta(rpcConnection(),st.primary_mint):null;return{...o,site:st,siteToken:meta};},
   // Public, chain-derived: a wallet's fixed awards and their payment evidence.
   async 'wallet-rewards'({db,q}){try{W.pk(q.wallet);}catch{fail(400,'INVALID_BODY','Invalid wallet');}
    const rows=(await db.query("SELECT a.cycle_id,a.leaf_index,a.mint,a.amount_lamports,a.state,a.settlement_signature,a.settled_slot,a.receipt_address,c.cycle_number,c.scheduled_end,c.cutoff_time FROM reward_awards a JOIN reward_cycles c ON c.id=a.cycle_id WHERE a.recipient=$1 ORDER BY c.cutoff_time DESC LIMIT 100",[q.wallet])).rows;
@@ -142,6 +146,7 @@ const handlers={
   ...Object.fromEntries([['admin-set-mode',(db,a,d)=>Admin.setMode(db,a,d)],['admin-test-config',(db,a,d)=>Admin.testConfig(db,a,d)],
    ['admin-pause',(db,a,d)=>Admin.pause(db,a,{...d,paused:true})],['admin-resume',(db,a,d)=>Admin.pause(db,a,{...d,paused:false})],
    ['admin-register-primary',(db,a,d,s)=>Admin.registerPrimary(db,a,s,d)],['admin-opening-credit',(db,a,d)=>Admin.openingCredit(db,a,d)],
+   ['admin-site',(db,a,d)=>Admin.setSite(db,a,d)],['admin-launch',(db,a,d,s)=>Admin.launch(db,a,s,d,{connection:rpcConnection()})],
    ['admin-add-admin',(db,a,d)=>Admin.addAdmin(db,a,d)],['admin-revoke-admin',(db,a,d)=>Admin.revokeAdmin(db,a,d)]].map(([name,fn])=>[name,async({db,event,data,origin})=>{
    const s=await Session.authenticate(db,event.headers,{need:'admin'});const wallet=String(data.wallet||'');
    if(!s.adminWallets.includes(wallet))fail(403,'FORBIDDEN','Approve with your administrator wallet');

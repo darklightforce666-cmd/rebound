@@ -7,7 +7,7 @@ const DB=require('../../server/rewards/db.cjs'),Session=require('../../server/re
 const Logs=require('../../server/rewards/logs.cjs'),Metadata=require('../../server/rewards/metadata.cjs'),S=require('../../server/rewards/storage.cjs');
 const wallet=()=>Keypair.generate();
 function signWith(key,text){const pk=crypto.createPrivateKey({key:Buffer.concat([Buffer.from('302e020100300506032b657004220420','hex'),Buffer.from(key.secretKey.subarray(0,32))]),format:'der',type:'pkcs8'});return crypto.sign(null,Buffer.from(text),pk).toString('base64');}
-const PUBLIC_TABLES=['reward_public_tokens','reward_public_cycles'];
+const PUBLIC_TABLES=['reward_public_tokens','reward_public_cycles','reward_site'];   // reward_site: public site settings (011)
 
 async function tables(db){return(await db.query("SELECT c.relname,c.relrowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='rebound' AND c.relkind='r' ORDER BY 1")).rows;}
 async function seedLog(db,message='cycle 1 snapshot stored'){await Logs.log(db,{severity:'info',component:'scheduler',eventType:'snapshot',message});}
@@ -164,5 +164,14 @@ test('metadata uploads are validated, content-addressed and never overwrite a di
   for(const bad of [{name:''},{name:'x'.repeat(33)},{symbol:'TOOLONGTICKER'},{imageBase64:Buffer.from('GIF89a'+'x'.repeat(40)).toString('base64')},{website:'http://insecure.example'},{twitter:'https://evil.example/x.com'}])
    assert.throws(()=>Metadata.validate({...input,...bad}));
   await assert.rejects(Metadata.upload(db,{...input,cfg:{...cfg,configured:false}},fetchImpl),/not configured/);
+ }finally{await db.close();}
+});
+
+test('site settings: everyone reads them; nobody but the API role (for admins) can change them',async()=>{
+ const db=await supabaseDb();try{
+  await as(db,'anon',null,async()=>{const r=(await db.query('SELECT site_open,primary_mint,privy_app_id FROM rebound.reward_site')).rows;assert.equal(r.length,1);assert.equal(r[0].site_open,false);
+   await assert.rejects(db.query('UPDATE rebound.reward_site SET site_open=true'),/permission denied/);});
+  await as(db,'authenticated',{sub:crypto.randomUUID(),role:'authenticated'},()=>assert.rejects(db.query('UPDATE rebound.reward_site SET site_open=true'),/permission denied/));
+  await db.query('SET ROLE rebound_indexer');try{await assert.rejects(db.query('UPDATE reward_site SET site_open=true'),/permission denied/);}finally{await db.query('RESET ROLE');}
  }finally{await db.close();}
 });
