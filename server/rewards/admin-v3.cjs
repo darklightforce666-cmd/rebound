@@ -147,7 +147,7 @@ async function tokenMeta(connection,mint){
  */
 const FEE_MARGIN=10_000_000n,CYCLE_FEE_MARGIN=50_000_000n,TOTAL_FEE_MARGIN=250_000_000n,INCOME_RESERVE=10_000_000n;
 function budgetBps(pct){const n=Number(pct);if(!Number.isFinite(n)||n<=0||n>100)fail('INVALID_BODY','Budget must be between 0.01 and 100 percent');const bps=Math.round(n*100);if(bps<1)fail('INVALID_BODY','Budget must be at least 0.01 percent');return bps;}
-async function launch(db,actor,session,{mint,feeWallet,namespace='production',fundingModel='balance_budget',budgetPercent=50,startTest=false},{connection=null,program=null}={}){
+async function launch(db,actor,session,{mint,feeWallet,namespace='production',fundingModel='balance_budget',budgetPercent=50,startTest=false,newBudget=false},{connection=null,program=null}={}){
  mint=address(mint,'token contract');feeWallet=address(feeWallet,'fee wallet');namespace=NS(namespace);
  if(!['balance_budget','income'].includes(fundingModel))fail('INVALID_BODY','Unknown funding model');
  const bps=fundingModel==='balance_budget'?budgetBps(budgetPercent):null;
@@ -158,11 +158,22 @@ async function launch(db,actor,session,{mint,feeWallet,namespace='production',fu
  // A key already imported on the worker for this wallet keeps deposits automatic after a token switch.
  if(fw.mode==='manual'){const sg=(await db.query("SELECT id FROM reward_signers WHERE role='primary_dev' AND address=$1 AND status='ready' ORDER BY created_at DESC LIMIT 1",[feeWallet])).rows[0];
   if(sg){await db.query("UPDATE reward_funding_wallets SET mode='automatic',signer=$2 WHERE id=$1",[fw.id,sg.id]);fw.mode='automatic';}}
- if(fundingModel==='balance_budget')await db.query("UPDATE reward_funding_wallets SET funding_model='balance_budget',budget_bps=$2,budget_requested_at=now() WHERE id=$1",[fw.id,bps]);
- else{await db.query("UPDATE reward_funding_wallets SET funding_model='income',budget_bps=NULL,budget_requested_at=NULL WHERE id=$1",[fw.id]);
-  if(fw.opening_slot==null)await openingCredit(db,actor,{mint,requestedCreditLamports:'0',operationalReserveLamports:String(INCOME_RESERVE)});}   // only fees arriving from now on count
+ // The budget is a cumulative commitment of this fee wallet: saving again keeps it (and what was already
+ // paid). The percentage can be lowered at any time; a NEW budget from the current balance is measured
+ // only on the first budget launch or when the admin explicitly asks for one (audited).
+ let budgetAction=null;
+ if(fundingModel==='balance_budget'){
+  const measured=fw.funding_model==='balance_budget'&&fw.budget_requested_at;
+  if(!measured||newBudget){await db.query("UPDATE reward_funding_wallets SET funding_model='balance_budget',budget_bps=$2,budget_requested_at=now() WHERE id=$1",[fw.id,bps]);budgetAction='new';}
+  else if(bps!==fw.budget_bps){if(bps>fw.budget_bps)fail('BUDGET_RAISE','Raising the percentage needs a new budget: tick “Fix a new budget from the current balance”.',409);
+   await db.query('UPDATE reward_funding_wallets SET budget_bps=$2 WHERE id=$1',[fw.id,bps]);budgetAction='lowered';}
+  else budgetAction='kept';
+ }else{
+  if(fw.funding_model==='balance_budget'||fw.budget_requested_at)fail('MODEL_SWITCH','This fee wallet was used with a budget. To fund holders from 85 % of new fees, launch with a different fee wallet.',409);
+  if(fw.opening_slot==null)await openingCredit(db,actor,{mint,requestedCreditLamports:'0',operationalReserveLamports:String(INCOME_RESERVE)});   // only fees arriving from now on count
+ }
  let balance=null;if(connection)try{balance=BigInt(await connection.getBalance(new PublicKey(feeWallet),'confirmed'));}catch{}
- const estimate=bps!=null&&balance!=null?balance*BigInt(bps)/10000n:null;
+ const estimate=budgetAction==='new'&&balance!=null?balance*BigInt(bps)/10000n:null;   // caps move only with a new budget
  let test=null;
  if(namespace==='mainnet_test'){
   const p=(await db.query('SELECT * FROM reward_platform WHERE namespace=$1',[namespace])).rows[0];
@@ -177,10 +188,10 @@ async function launch(db,actor,session,{mint,feeWallet,namespace='production',fu
  const meta=connection?await tokenMeta(connection,mint):{exists:null};
  await db.query('UPDATE reward_site SET primary_mint=$1,primary_name=$2,primary_symbol=$3,fee_wallet=$4,namespace=$5,updated_by=$6,updated_at=now() WHERE id=1',[mint,meta.name||null,meta.symbol||null,feeWallet,namespace,actor]);
  await db.query('UPDATE reward_coins SET name=COALESCE($2,name),symbol=COALESCE($3,symbol),updated_at=now() WHERE mint=$1',[mint,meta.name||null,meta.symbol||null]).catch(()=>{});
- const how=fundingModel==='balance_budget'?`budget ${bps/100}% of the current fee-wallet balance`+(estimate!=null?` (≈${estimate} lamports)`:''):'85% of new creator fees';
- await audit(db,actor,'admin_launch',{namespace,mint,feeWallet,fundingModel,budgetBps:bps,test});
+ const how=fundingModel==='balance_budget'?(budgetAction==='new'?`NEW budget ${bps/100}% of the current fee-wallet balance`+(estimate!=null?` (≈${estimate} lamports)`:''):budgetAction==='lowered'?`budget lowered to ${bps/100}%`:`budget kept (${bps/100}%)`):'85% of new creator fees';
+ await audit(db,actor,'admin_launch',{namespace,mint,feeWallet,fundingModel,budgetBps:bps,budgetAction,test});
  await Logs.log(db,{severity:'warn',component:'admin',eventType:'site_token_changed',namespace,mint,message:`Site token set to ${meta.name||mint} (${mint}); fee wallet ${feeWallet}; funding: ${how}`+(test?`; private test: any holder, mode ${test.mode}`:'')+(meta.exists===false?' — no mint exists at this address yet':'')});
- return{...r,fundingMode:fw.mode,fundingModel,budgetBps:bps,balance:balance==null?null:String(balance),budgetEstimate:estimate==null?null:String(estimate),test,exists:meta.exists,name:meta.name||null,symbol:meta.symbol||null,
+ return{...r,fundingMode:fw.mode,fundingModel,budgetBps:bps,budgetAction,balance:balance==null?null:String(balance),budgetEstimate:estimate==null?null:String(estimate),test,exists:meta.exists,name:meta.name||null,symbol:meta.symbol||null,
   onChain:program&&connection?await primaryChainStatus(connection,program,mint,feeWallet):null,site:await site(db)};
 }
 /** What the admin wallet still has to sign on chain for this primary (register → start, or fix the fee wallet). */

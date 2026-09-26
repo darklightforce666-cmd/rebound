@@ -6,7 +6,9 @@
 // funding wallet switches to automatic deposits. The inbox row is wiped whatever the outcome.
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const {Keypair}=require('@solana/web3.js'),bs58=require('bs58');
-const Seal=require('./inbox-seal.cjs'),Signer=require('./signer.cjs'),Logs=require('./logs.cjs');
+const Seal=require('./inbox-seal.cjs'),Signer=require('./signer.cjs'),Logs=require('./logs.cjs'),DB=require('./db.cjs');
+// web3.js' Keypair.secretKey getter returns a copy; wipe the internal buffer (best effort).
+const wipeKeypair=kp=>{try{kp?._keypair?.secretKey?.fill(0);}catch{}};
 
 function writeSecret(file,content){fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});fs.writeFileSync(file,content,{mode:0o600,flag:'wx'});fs.chmodSync(file,0o600);}
 /** Load (or create once) the inbox key. Returns the private JWK, or null when not configured. */
@@ -17,8 +19,15 @@ async function inboxKey(env=process.env){
  const j=JSON.parse(fs.readFileSync(file,'utf8'));if(j.kty!=='OKP'||j.crv!=='X25519'||!j.d||!j.x)throw Object.assign(Error('Inbox key file is not an X25519 JWK'),{code:'INBOX_INVALID'});
  return j;
 }
-/** Create the signer master key once if its path is configured but the file does not exist yet. */
-function ensureMasterKey(env=process.env){const f=env.REWARDS_SIGNER_MASTER_KEY_FILE;if(f&&!fs.existsSync(f))writeSecret(f,crypto.randomBytes(32).toString('hex'));}
+/** Create the signer master key only on a host that has never encrypted a signer; a missing file with
+ *  existing signers means the secrets volume is missing — never silently replace the key then. */
+async function ensureMasterKey(db,env=process.env){
+ const f=env.REWARDS_SIGNER_MASTER_KEY_FILE;if(!f)return{ok:false,reason:'REWARDS_SIGNER_MASTER_KEY_FILE is not set on the worker'};
+ if(fs.existsSync(f))return{ok:true};
+ const n=(await db.query("SELECT count(*)::int n FROM reward_signers WHERE storage='encrypted_local' AND status<>'revoked'")).rows[0].n;
+ if(n>0)return{ok:false,reason:'the worker cannot find its signer master key file (existing imported keys depend on it)'};
+ writeSecret(f,crypto.randomBytes(32).toString('hex'));return{ok:true};
+}
 
 async function publish(db,jwk,worker){
  await db.query(`INSERT INTO reward_worker_keys(id,inbox_public_key,worker,updated_at) VALUES(1,$1,$2,now())
@@ -28,9 +37,14 @@ const WIPE="ephemeral_public_key=NULL,iv=NULL,ciphertext=NULL,processed_at=now()
 async function finish(db,id,state,reason){await db.query(`UPDATE reward_key_inbox SET state=$2,reason=$3,${WIPE} WHERE id=$1 AND state='pending'`,[id,state,reason||null]);}
 
 /** Process pending inbox rows. Never logs or returns key material. */
-async function processInbox(db,{env=process.env,worker}={}){
+async function processInbox(db,{env=process.env,worker='worker'}={}){
  const jwk=await inboxKey(env);if(!jwk)return{configured:false};
- ensureMasterKey(env);await publish(db,jwk,worker);
+ await publish(db,jwk,worker);await ensureMasterKey(db,env);
+ const rows=(await db.query("SELECT id FROM reward_key_inbox WHERE state='pending' LIMIT 1")).rows;if(!rows.length)return{configured:true,publicKey:jwk.x,processed:[]};
+ return DB.withLease(db,'key-inbox',worker,()=>processPending(db,jwk,env),{seconds:60,busy:()=>({configured:true,publicKey:jwk.x,processed:[],busy:true})});
+}
+async function processPending(db,jwk,env){
+ const master=await ensureMasterKey(db,env);
  const rows=(await db.query("SELECT * FROM reward_key_inbox WHERE state='pending' ORDER BY created_at")).rows;const out=[];
  for(const r of rows){
   let secret=null;
@@ -38,19 +52,23 @@ async function processInbox(db,{env=process.env,worker}={}){
    const fw=(await db.query('SELECT * FROM reward_funding_wallets WHERE id=$1',[r.funding_wallet])).rows[0];
    if(!fw||fw.status==='retired')throw Object.assign(Error('This fee wallet is no longer registered; paste the key again for the current one'),{code:'WALLET_RETIRED'});
    if(fw.address!==r.address)throw Object.assign(Error('The key was sent for another wallet'),{code:'WALLET_MISMATCH'});
+   if(!master.ok)throw Object.assign(Error('Not imported: '+master.reason),{code:'SIGNER_UNCONFIGURED'});
    if(r.inbox_public_key!==jwk.x)throw Object.assign(Error('The key was sealed to an older worker key; paste it again'),{code:'INBOX_KEY_CHANGED'});
    try{secret=await Seal.open({ephemeralPublicKey:r.ephemeral_public_key,iv:r.iv,ciphertext:r.ciphertext},jwk,{fundingWallet:r.funding_wallet,address:r.address});}
    catch{throw Object.assign(Error('The sealed key could not be opened by this worker'),{code:'INBOX_DECRYPT'});}
    if(secret.length!==64)throw Object.assign(Error('Not a 64-byte Solana secret key'),{code:'SIGNER_FORMAT'});
-   let kp;try{kp=Keypair.fromSecretKey(secret);}catch{throw Object.assign(Error('Not a valid Solana secret key'),{code:'SIGNER_FORMAT'});}
-   const addr=kp.publicKey.toBase58();kp.secretKey.fill(0);
+   let kp;try{kp=Keypair.fromSecretKey(Uint8Array.from(secret));}   // copy: fromSecretKey keeps a reference, which is wiped below
+  catch{throw Object.assign(Error('Not a valid Solana secret key'),{code:'SIGNER_FORMAT'});}
+   const addr=kp.publicKey.toBase58();wipeKeypair(kp);
    if(addr!==fw.address)throw Object.assign(Error('The key does not belong to the fee wallet '+fw.address),{code:'SIGNER_MISMATCH'});
-   // One live signer per wallet: retire the previous one (and its ciphertext) before importing.
-   for(const old of (await db.query("SELECT id FROM reward_signers WHERE role='primary_dev' AND address=$1 AND status<>'revoked'",[addr])).rows)await Signer.revoke(db,old.id);
-   const text=bs58.encode(secret);
-   const imported=await Signer.importSigner(db,{role:'primary_dev',secretText:text,expectedAddress:addr,env});
-   await db.query("UPDATE reward_funding_wallets SET mode='automatic',signer=$2 WHERE id=$1",[fw.id,imported.id]);
-   await finish(db,r.id,'imported',null);
+   // Atomic swap: retire the previous signer, import the new one and point the wallet at it — all or nothing,
+   // so a failed import never leaves the wallet on a revoked signer.
+   await DB.transaction(db,async tx=>{
+    for(const old of (await tx.query("SELECT id FROM reward_signers WHERE role='primary_dev' AND address=$1 AND status<>'revoked'",[addr])).rows)await Signer.revoke(tx,old.id);
+    const imported=await Signer.importSigner(tx,{role:'primary_dev',secretText:bs58.encode(secret),expectedAddress:addr,env});
+    await tx.query("UPDATE reward_funding_wallets SET mode='automatic',signer=$2 WHERE id=$1",[fw.id,imported.id]);
+    await tx.query(`UPDATE reward_key_inbox SET state='imported',reason=NULL,${WIPE} WHERE id=$1 AND state='pending'`,[r.id]);
+   },{serializable:false});
    await Logs.log(db,{severity:'warn',component:'scheduler',eventType:'fee_wallet_key_imported',mint:fw.mint,message:`Fee wallet ${addr} key imported on the worker (encrypted at rest); holder deposits are now automatic`});
    out.push({id:r.id,state:'imported',address:addr});
   }catch(e){
@@ -80,4 +98,4 @@ async function submit(db,actor,{mint,address,inboxPublicKey,ephemeralPublicKey,i
  await Logs.log(db,{severity:'warn',component:'admin',eventType:'fee_wallet_key_sealed',mint:fw.mint,message:`Sealed fee-wallet key for ${fw.address} handed to the worker by ${actor} (the server cannot read it)`});
  return{id,fundingWallet:fw.id,state:'pending'};
 }
-module.exports={inboxKey,ensureMasterKey,publish,processInbox,submit};
+module.exports={inboxKey,ensureMasterKey,publish,processInbox,submit,wipeKeypair};

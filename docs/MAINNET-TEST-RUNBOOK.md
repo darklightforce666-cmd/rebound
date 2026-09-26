@@ -22,8 +22,9 @@ database only ever hold ciphertext they cannot open.
   is paid at the end of the round.
 - **Budget:** when you press *Save and launch*, the worker measures the fee wallet's finalized balance once and
   fixes `budget = 50 % × balance`. Every round deposits at most what is left of it, counted from the program's own
-  deposit counter, and 0.01 SOL always stays in the wallet. Pressing *Save and launch* again fixes a new budget
-  from the balance at that moment.
+  deposit counter, and 0.01 SOL always stays in the wallet. Saving again keeps the budget and
+  what was already paid; the percentage can only be lowered, unless you tick *Fix a new budget from the current
+  balance* (audited).
 - Paid awards are one bit in the round account; when every award is paid the round account is closed and its
   rent returns to the fee payer.
 
@@ -107,7 +108,8 @@ resume has a 24 h on-chain delay.
    (or on the Mac: `$G register-primary --mint <MINT> --funding-wallet <FEE_WALLET>` and `$G start-primary --mint <MINT>`).
    For a new fee wallet on an already registered token the button reads *set this fee wallet on chain*.
 3. **Fee wallet key** card: paste the fee wallet's private key (Phantom → Export private key, base58) and press
-   *Encrypt and send to the worker*. The browser checks that it belongs to the fee wallet, encrypts it to the
+   *Encrypt and send to the worker*. First compare the worker key shown on the card with the `key-inbox` line
+   keygen printed on the Mac. The browser checks that it belongs to the fee wallet, encrypts it to the
    worker's `inbox.jwk` key and clears the field. The worker imports it within seconds and the Launch checklist
    shows *Fee wallet key on the worker ✓*. Without it, each round waits for a manual signature (Advanced).
 
@@ -129,7 +131,8 @@ match the deployment and nothing is signed.
 1. With `REWARDS_MAX_EXECUTION_MODE=dry_run` the worker calculates every round (Rounds table, live log) and
    signs nothing. Check the underwater list and amounts.
 2. [owner] Ready: set `REWARDS_MAX_EXECUTION_MODE=mainnet_test` in `.env.worker` and restart the worker; tick
-   *Start real payouts now* and *Save and launch* again (this also fixes a fresh budget).
+   *Start real payouts now* and *Save and launch* again (the budget stays as fixed; tick *Fix a new budget* only if
+   you mean to commit a new share of the current balance).
 3. Each round: `funding_budget_set` (once) → snapshot → `holder_deposit` → `Fund` → `Pay` per holder →
    round closed. Solscan links are in the log; `spent_total_lamports` stays within the caps.
 4. Stop: `#admin → Advanced → Pause test namespace` stops all signing at once. The on-chain pause (`$G pause`)

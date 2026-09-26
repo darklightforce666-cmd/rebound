@@ -7,6 +7,8 @@
 const crypto=require('node:crypto'),fs=require('node:fs/promises');
 const {Keypair}=require('@solana/web3.js'),bs58=require('bs58');
 const ROLES=new Set(['primary_dev','fee_payer','publisher','verifier']);
+// Keypair.secretKey returns a copy in web3.js 1.9x; wipe the internal buffer (best effort).
+const wipe=kp=>{try{(kp?._keypair?.secretKey||kp?.secretKey)?.fill(0);}catch{}};
 
 async function masterKey(env=process.env){
  const file=env.REWARDS_SIGNER_MASTER_KEY_FILE;if(!file)throw Object.assign(Error('Signer master key is not configured on this host'),{code:'SIGNER_UNCONFIGURED'});
@@ -37,7 +39,7 @@ async function importSigner(db,{role,secretText,expectedAddress,env=process.env}
   const id=crypto.randomUUID(),enc=encrypt(master,kp.secretKey,aadFor(role,address,id));
   await db.query("INSERT INTO reward_signers(id,address,role,storage,ciphertext,iv,auth_tag,key_version,status) VALUES($1,$2,$3,'encrypted_local',$4,$5,$6,1,'ready')",[id,address,role,enc.ciphertext,enc.iv,enc.tag]);
   return{id,address,status:'ready'};
- }finally{kp.secretKey.fill(0);master.fill(0);}
+ }finally{wipe(kp);master.fill(0);}
 }
 // Load for signing (scheduler only). Verifies decrypted key → address, and that it is not revoked.
 async function load(db,id,{env=process.env}={}){
@@ -51,7 +53,7 @@ async function load(db,id,{env=process.env}={}){
 }
 // Health: prove we can decrypt and that the address matches, without exposing anything.
 async function health(db,id,opts){
- let ok=false,code=null;try{const kp=await load(db,id,opts);kp.secretKey.fill(0);ok=true;}catch(e){code=e.code||'SIGNER_ERROR';}
+ let ok=false,code=null;try{const kp=await load(db,id,opts);wipe(kp);ok=true;}catch(e){code=e.code||'SIGNER_ERROR';}
  await db.query('UPDATE reward_signers SET last_health_at=now(),last_health_ok=$2 WHERE id=$1',[id,ok]);return{ok,code};
 }
 async function revoke(db,id){await db.query("UPDATE reward_signers SET status='revoked',revoked_at=now(),ciphertext=NULL,iv=NULL,auth_tag=NULL,storage='managed',external_reference='revoked' WHERE id=$1",[id]);}

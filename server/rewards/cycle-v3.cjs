@@ -184,12 +184,12 @@ async function fundingStep(ports,coinRow,c,row,t,{signer,deposit}){
  }
  // Publisher builds, independent verifier recomputes and co-signs, then Fund.
  const cur=(await db.query('SELECT * FROM reward_cycles WHERE id=$1',[row.id])).rows[0];const [rootHash,rootSum]=cur.root.split(':');
- const count=(await db.query('SELECT count(*)::int n FROM reward_awards WHERE cycle_id=$1',[row.id])).rows[0].n;
+ const recipients=(await db.query('SELECT recipient FROM reward_awards WHERE cycle_id=$1 ORDER BY leaf_index',[row.id])).rows.map(r=>r.recipient),count=recipients.length;
  const ix=W3.I.fund(program,{payer:ports.feePayer.publicKey,publisher:ports.publisher.publicKey,verifier:ports.verifierKey,mint,cycle:n,root:{hash:rootHash,sum:rootSum},count,cutoffSlot:cur.cutoff_slot,snapshot:cur.snapshot_hash,manifest:cur.manifest_hash});
  const r=await T.submit({db,connection,job:'fund:'+row.id,kind:'round_fund',signerRole:'publisher',feePayer:ports.feePayer,signers:[ports.publisher],instructions:[ix],
   cosign:tx=>ports.verifier.cosign(tx,{cycleId:row.id,snapshotHash:cur.snapshot_hash,manifestHash:cur.manifest_hash,root:cur.root}),
   readSettlement:async()=>{const rd=await chainRound(connection,program,mint,n);return rd?{settled:true}:{definitivelyUnsettled:true};},
-  spend:{namespace:coinRow.namespace,mint,recipients:[],lamports:'0',fees:'10000',cycleId:row.id,kind:'round_fund'},context:{cycle:n}});
+  spend:{namespace:coinRow.namespace,mint,recipients,lamports:'0',fees:'10000',cycleId:row.id,kind:'round_fund'},context:{cycle:n}});   // Pay is permissionless: the test allowlist is enforced on the funded award set
  if(r.state==='finalized'){await markFunded(db,row,await chainRound(connection,program,mint,n));return{cycle:n,state:'funded'};}
  if(row.state!=='funding_pending')await setState(db,row.id,'funding_pending',{},{mint,cycle:n});
  return{cycle:n,state:'funding_pending',fund:r.state,code:r.code};

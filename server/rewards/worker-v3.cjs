@@ -148,13 +148,15 @@ async function primaryAwaiting(db,mint,cutoff){
 // moment; usage afterwards is read from the chain (Coin.deposits), never from database rows.
 const BUDGET_FEE_RESERVE=10_000_000n;   // keep 0.01 SOL in the fee wallet
 async function applyBudgetRequests(db,{connection,program}){
- const rows=(await db.query("SELECT * FROM reward_funding_wallets WHERE status<>'retired' AND funding_model='balance_budget' AND budget_requested_at IS NOT NULL AND (budget_set_at IS NULL OR budget_set_at<budget_requested_at)")).rows;const out=[];
+ const rows=(await db.query("SELECT *,budget_requested_at::text AS requested_text FROM reward_funding_wallets WHERE status<>'retired' AND funding_model='balance_budget' AND budget_requested_at IS NOT NULL AND (budget_set_at IS NULL OR budget_set_at<budget_requested_at)")).rows;const out=[];
  for(const fw of rows){
   const bal=await connection.getBalanceAndContext(new PublicKey(fw.address),'finalized');
   const info=program?await connection.getAccountInfo(W3.addresses(program,new PublicKey(fw.mint)).coin,'finalized'):null;
   const deposits=info&&program&&info.owner.equals(program)?b(W3.decode('coin',info.data).deposits):0n;
   const budget=b(bal.value)*BigInt(fw.budget_bps)/10000n;
-  await db.query('UPDATE reward_funding_wallets SET budget_balance_lamports=$2,budget_lamports=$3,budget_start_deposits=$4,budget_set_at=now() WHERE id=$1',[fw.id,String(bal.value),String(budget),String(deposits)]);
+  // Guarded: a request the admin made meanwhile (e.g. a lower percentage) is never marked as satisfied here.
+  const u=await db.query('UPDATE reward_funding_wallets SET budget_balance_lamports=$2,budget_lamports=$3,budget_start_deposits=$4,budget_set_at=greatest(now(),budget_requested_at) WHERE id=$1 AND budget_bps=$5 AND budget_requested_at::text=$6',[fw.id,String(bal.value),String(budget),String(deposits),fw.budget_bps,fw.requested_text]);
+  if(!(u.rowCount??u.affectedRows))continue;
   await Logs.log(db,{severity:'warn',component:'scheduler',eventType:'funding_budget_set',mint:fw.mint,message:`Holder budget fixed: ${budget} lamports = ${fw.budget_bps/100}% of the fee wallet balance ${bal.value} (finalized slot ${bal.context.slot}); rounds deposit only what is left of it`,metadata:{wallet:fw.address,budget:String(budget),balance:String(bal.value),startDeposits:String(deposits)}});
   out.push({mint:fw.mint,budget:String(budget)});
  }
@@ -166,7 +168,9 @@ async function budgetAvailable(db,connection,mint,chainCoin){
  if(!fw||fw.funding_model!=='balance_budget')return null;
  if(!fw.budget_set_at||(fw.budget_requested_at&&new Date(fw.budget_set_at)<new Date(fw.budget_requested_at)))return 0n;   // not measured yet
  const used=b(chainCoin?.deposits??0)-b(fw.budget_start_deposits??0);
- const left=b(fw.budget_lamports)-(used>0n?used:0n);if(left<=0n)return 0n;
+ // A percentage lowered after measurement applies at once: budget = min(fixed, measured balance × current %).
+ const lowered=b(fw.budget_balance_lamports??0)*BigInt(fw.budget_bps)/10000n,budget=lowered<b(fw.budget_lamports)?lowered:b(fw.budget_lamports);
+ const left=budget-(used>0n?used:0n);if(left<=0n)return 0n;
  const bal=b(await connection.getBalance(new PublicKey(fw.address),'finalized'))-BUDGET_FEE_RESERVE;
  const v=left<bal?left:bal;return v>0n?v:0n;
 }

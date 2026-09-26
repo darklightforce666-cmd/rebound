@@ -34,14 +34,22 @@ test('launch (private test, budget): allowlist + any holder + caps from the budg
   assert.equal(p.spend_cap_action_lamports,String(1_100_000_000n+10_000_000n));assert.equal(p.spend_cap_total_lamports,String(1_100_000_000n+250_000_000n));
   const fw=(await db.query("SELECT * FROM reward_funding_wallets WHERE mint=$1",[mint])).rows[0];
   assert.equal(fw.funding_model,'balance_budget');assert.equal(fw.budget_bps,5000);assert.ok(fw.budget_requested_at);assert.equal(fw.budget_lamports,null);
-  const r2=await api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',budgetPercent:50,startTest:true},{connection:conn(2_000_000_000)});
-  assert.equal(r2.test.mode,'mainnet_test');
+  const r2=await api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',budgetPercent:50,startTest:true},{connection:conn(9_000_000_000)});
+  assert.equal(r2.test.mode,'mainnet_test');assert.equal(r2.budgetAction,'kept');assert.equal(r2.budgetEstimate,null);
+  // Saving again neither re-measures the budget nor raises the caps.
+  const p2=(await db.query("SELECT * FROM reward_platform WHERE namespace='mainnet_test'")).rows[0];assert.equal(p2.spend_cap_total_lamports,p.spend_cap_total_lamports);
+  assert.equal((await db.query("SELECT budget_requested_at::text t FROM reward_funding_wallets WHERE mint=$1",[mint])).rows[0].t,(await db.query("SELECT budget_requested_at::text t FROM reward_funding_wallets WHERE mint=$1",[mint])).rows[0].t);
+  await assert.rejects(api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',budgetPercent:60},{connection:conn(1)}),e=>e.code==='BUDGET_RAISE');
+  assert.equal((await api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',budgetPercent:40},{connection:conn(1)})).budgetAction,'lowered');
+  await assert.rejects(api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',fundingModel:'income'},{connection:conn(1)}),e=>e.code==='MODEL_SWITCH');
+  const r3=await api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',budgetPercent:50,newBudget:true},{connection:conn(4_000_000_000)});
+  assert.equal(r3.budgetAction,'new');assert.equal(r3.budgetEstimate,'2000000000');
   // Any holder of the allowlisted mint may be paid; other mints and the caps still bind.
   const stranger=key();
   await db.query('BEGIN');const ok=await X.authorize(db,{namespace:'mainnet_test',mint,recipients:[stranger],lamports:'0',fees:'5000',kind:'payout'},{env:{REWARDS_MAX_EXECUTION_MODE:'mainnet_test'}});await db.query('ROLLBACK');
   assert.equal(ok.mode,'mainnet_test');
   await db.query('BEGIN');await assert.rejects(X.authorize(db,{namespace:'mainnet_test',mint:key(),recipients:[stranger],lamports:'0',fees:'5000'},{env:{REWARDS_MAX_EXECUTION_MODE:'mainnet_test'}}),e=>e.code==='TEST_MINT_NOT_ALLOWED');await db.query('ROLLBACK');
-  await db.query('BEGIN');await assert.rejects(X.authorize(db,{namespace:'mainnet_test',mint,recipients:[],lamports:'2000000000',fees:'5000'},{env:{REWARDS_MAX_EXECUTION_MODE:'mainnet_test'}}),e=>e.code==='SPEND_CAP_ACTION');await db.query('ROLLBACK');
+  await db.query('BEGIN');await assert.rejects(X.authorize(db,{namespace:'mainnet_test',mint,recipients:[],lamports:'5000000000',fees:'5000'},{env:{REWARDS_MAX_EXECUTION_MODE:'mainnet_test'}}),e=>e.code==='SPEND_CAP_ACTION');await db.query('ROLLBACK');
   // Income model: only fees from now on (opening credit 0 requested for the scheduler).
   const mint2=key(),dev2=key();
   await api(A.launch)(db,'admin (password)',{},{mint:mint2,feeWallet:dev2,namespace:'production',fundingModel:'income'},{connection:conn(5)});
@@ -62,6 +70,17 @@ test('budget: the scheduler fixes 50 % of the finalized balance; rounds take onl
   assert.equal(await sch(Wk.budgetAvailable)(db,conn(505_000_000),mint,{deposits:300_000_000n}),200_000_000n);
   assert.equal(await sch(Wk.budgetAvailable)(db,conn(5_000_000),mint,{deposits:0n}),0n);   // balance below the fee reserve
   assert.equal(await sch(Wk.budgetAvailable)(db,conn(900_000_000),mint,{deposits:500_000_000n}),0n);   // budget used up
+  // Saving again keeps the budget; lowering the percentage applies at once to what is left.
+  await api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',budgetPercent:50},{connection:conn(9_000_000_000)});
+  assert.deepEqual(await sch(Wk.applyBudgetRequests)(db,{connection:conn(9_000_000_000),program:null}),[]);
+  assert.equal(await sch(Wk.budgetAvailable)(db,conn(900_000_000),mint,{deposits:100_000_000n}),400_000_000n);
+  await api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',budgetPercent:30},{connection:conn(1)});
+  assert.equal(await sch(Wk.budgetAvailable)(db,conn(900_000_000),mint,{deposits:100_000_000n}),200_000_000n);   // 30 % of 1 SOL − 0.1 paid
+  // A request made while the scheduler measured is not swallowed.
+  await api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',budgetPercent:50,newBudget:true},{connection:conn(1)});
+  const racing={...conn(2_000_000_000),getBalanceAndContext:async()=>{await db.query('RESET ROLE');await db.query("UPDATE reward_funding_wallets SET budget_bps=1000,budget_requested_at=now()+interval '1 second' WHERE mint=$1",[mint]);await db.query('SET ROLE rebound_scheduler');return{value:2_000_000_000,context:{slot:1}};}};
+  assert.deepEqual(await sch(Wk.applyBudgetRequests)(db,{connection:racing,program:null}),[]);
+  assert.deepEqual(await sch(Wk.applyBudgetRequests)(db,{connection:conn(2_000_000_000),program:null}),[{mint,budget:'200000000'}]);
   assert.ok((await db.query("SELECT 1 FROM reward_logs WHERE event_type='funding_budget_set'")).rows.length);
   // Income-ledger wallets are not budgeted.
   assert.equal(await sch(Wk.budgetAvailable)(db,conn(1),key(),{deposits:0n}),null);
@@ -102,6 +121,19 @@ test('key inbox: sealed in the browser, imported by the scheduler only for the r
   s=await Seal.seal(dev.secretKey,{fundingWallet:fw.id,address:fw.address,inboxPublicKey:wk});await api(Inbox.submit)(db,'admin',{mint,address:fw.address,inboxPublicKey:wk,...s});
   out=await sch(Inbox.processInbox)(db,{env,worker:'test'});assert.equal(out.processed[0].state,'imported');
   assert.equal((await db.query("SELECT count(*)::int n FROM reward_signers WHERE address=$1 AND status='ready'",[fw.address])).rows[0].n,1);
+  // A failed import (master key unreadable) keeps the working signer and the wallet untouched.
+  const before=(await db.query("SELECT signer FROM reward_funding_wallets WHERE mint=$1",[mint])).rows[0].signer;
+  fs.chmodSync(env.REWARDS_SIGNER_MASTER_KEY_FILE,0o644);
+  s=await Seal.seal(dev.secretKey,{fundingWallet:fw.id,address:fw.address,inboxPublicKey:wk});await api(Inbox.submit)(db,'admin',{mint,address:fw.address,inboxPublicKey:wk,...s});
+  out=await sch(Inbox.processInbox)(db,{env,worker:'test'});assert.equal(out.processed[0].state,'failed');
+  fs.chmodSync(env.REWARDS_SIGNER_MASTER_KEY_FILE,0o600);
+  assert.equal((await db.query("SELECT signer FROM reward_funding_wallets WHERE mint=$1",[mint])).rows[0].signer,before);
+  assert.equal((await db.query("SELECT status FROM reward_signers WHERE id=$1",[before])).rows[0].status,'ready');
+  // A missing master key file is never silently replaced while imported keys depend on it.
+  const moved=env.REWARDS_SIGNER_MASTER_KEY_FILE+'.bak';fs.renameSync(env.REWARDS_SIGNER_MASTER_KEY_FILE,moved);
+  s=await Seal.seal(dev.secretKey,{fundingWallet:fw.id,address:fw.address,inboxPublicKey:wk});await api(Inbox.submit)(db,'admin',{mint,address:fw.address,inboxPublicKey:wk,...s});
+  out=await sch(Inbox.processInbox)(db,{env,worker:'test'});assert.equal(out.processed[0].code,'SIGNER_UNCONFIGURED');assert.ok(!fs.existsSync(env.REWARDS_SIGNER_MASTER_KEY_FILE));
+  fs.renameSync(moved,env.REWARDS_SIGNER_MASTER_KEY_FILE);
   // A token switch with the same fee wallet keeps automatic deposits.
   const mint2=key();await api(A.launch)(db,'admin (password)',{},{mint:mint2,feeWallet:fw.address,namespace:'mainnet_test'},{connection:conn(1)});
   assert.equal((await db.query("SELECT mode FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired'",[mint2])).rows[0].mode,'automatic');
