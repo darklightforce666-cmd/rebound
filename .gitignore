@@ -23,3 +23,5 @@ runtime-secrets/
 verifier-secrets/
 runtime-config/
 rewards-dry-run*.json
+contracts/v3/target/
+contracts/v3/artifact/
