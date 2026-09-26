@@ -4,12 +4,10 @@ const {Transaction,SystemProgram,ComputeBudgetProgram}=require('@solana/web3.js'
 const P=require('./policy.cjs'),W=require('./wire.cjs'),Pump=require('./pump.cjs'),DB=require('./db.cjs'),C=require('./config.cjs');
 const INTAKE_SETUP_LAMPORTS=50000000;
 async function locked(args,fn){
- // Keep a session lock across preparation/submission, but commit the signed
- // bytes BEFORE broadcast. A transaction lock spanning the send is unsafe.
- const pool=args.db,db=typeof pool.connect==='function'&&typeof pool.release!=='function'?await pool.connect():pool;
- const key='launch:'+args.wallet+':'+(args.payload.attempt||args.payload.mint);let acquired=false;
- try{acquired=(await db.query('SELECT pg_try_advisory_lock(hashtextextended($1,0)) AS locked',[key])).rows[0].locked;if(!acquired)throw Error('Launch update already in progress; resume shortly');return await fn({...args,db});}
- finally{try{if(acquired)await db.query('SELECT pg_advisory_unlock(hashtextextended($1,0))',[key]);}finally{if(db!==pool)db.release();}}
+ // Durable row lease (pooler-safe) across preparation/submission. Signed bytes are
+ // committed BEFORE broadcast; no database transaction spans the network send.
+ const key='launch:'+args.wallet+':'+(args.payload.attempt||args.payload.mint);
+ return DB.withLease(args.db,key,'api:'+crypto.randomUUID(),()=>fn(args),{seconds:120,busy:()=>{throw Error('Launch update already in progress; resume shortly');}});
 }
 async function prepare({db,connection,cfg,wallet,payload}){
  C.requireProduction(await C.preflight(connection,db,cfg),cfg);W.pk(payload.mint);

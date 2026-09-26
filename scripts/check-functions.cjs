@@ -9,13 +9,15 @@ async function main(){
  const rewards=require('../netlify/functions/rewards.cjs');
  const chain=require('../netlify/functions/chain.cjs');
  const charts=require('../netlify/functions/charts.cjs');
- for(const name of ['launch','metadata','pump','worker','verifier-server'])require('../server/rewards/'+name+'.cjs');
+ for(const name of ['launch','metadata','pump','worker','verifier-server','session','consent','logs','storage','policy-v3'])require('../server/rewards/'+name+'.cjs');
  assert.equal(typeof charts.handler,'function');
  const health=await rewards.handler({httpMethod:'GET',queryStringParameters:{action:'health'}});
  assert.equal(health.statusCode,200);
  const body=JSON.parse(health.body);assert.equal(body.transfersEnabled,false);assert.equal(body.state,'setup_required');
- const launch=await rewards.handler({httpMethod:'POST',queryStringParameters:{action:'launch-prepare'},headers:{},body:'{}'});
- assert.equal(launch.statusCode,503);
+ const session=await rewards.handler({httpMethod:'POST',queryStringParameters:{action:'session'},headers:{origin:'https://rebound.wtf'},body:'{}'});
+ assert.equal(session.statusCode,503);assert.equal(JSON.parse(session.body).code,'SETUP_REQUIRED');
+ const config=await rewards.handler({httpMethod:'GET',queryStringParameters:{action:'config'}});
+ assert.equal(config.statusCode,200);assert.equal(JSON.parse(config.body).policy.cycleSeconds,1800);
  const status=await chain.handler({httpMethod:'GET',queryStringParameters:{action:'status'}});
  assert.equal(status.statusCode,503);assert.equal(JSON.parse(status.body).error,'RPC_NOT_CONFIGURED');
  console.log('All function modules load under Lambda-compatible CommonJS; missing setup fails closed.');

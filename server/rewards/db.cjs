@@ -2,18 +2,34 @@
 const {Pool}=require('pg'),fs=require('node:fs/promises'),path=require('node:path');
 const {stable,conserved,int}=require('./policy.cjs');
 const W=require('./wire.cjs');
-function connect(url=process.env.DATABASE_URL){if(!url)throw Error('DATABASE_URL is required');return new Pool({connectionString:url,max:6,application_name:'rebound-rewards-v2',statement_timeout:20000,connectionTimeoutMillis:10000});}
+const SCHEMA='rebound';
+// Every REBOUND object lives in schema "rebound" (not exposed by the Supabase Data API).
+// search_path is also set as a role default by scripts/rewards/database-roles.sql, which is
+// what applies behind the Supabase transaction pooler; the startup option covers direct and
+// session connections. No session-level state (advisory locks, LISTEN, temp tables) is
+// relied upon anywhere: coordination uses durable row leases (reward_leases).
+function connect(url=process.env.DATABASE_URL,{max=6,name='rebound-rewards-v3'}={}){
+ if(!url)throw Error('DATABASE_URL is required');
+ return new Pool({connectionString:url,max,application_name:name,statement_timeout:20000,connectionTimeoutMillis:10000,options:`-c search_path=${SCHEMA},public`});
+}
 async function transaction(db,fn,{serializable=true}={}){
  const client=typeof db.connect==='function'&&typeof db.release!=='function'?await db.connect():db;
  try{await client.query(serializable?'BEGIN ISOLATION LEVEL SERIALIZABLE':'BEGIN');const result=await fn(client);await client.query('COMMIT');return result;}
  catch(e){await client.query('ROLLBACK').catch(()=>{});throw e;}finally{if(client!==db)client.release();}
 }
-async function migrate(db){
- await db.query('CREATE TABLE IF NOT EXISTS reward_schema_migrations(version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())');
- for(const file of (await fs.readdir(path.join(__dirname,'migrations'))).filter(x=>/^\d+.*\.sql$/.test(x)).sort()){
-  const version=Number(file.split('_')[0]);if((await db.query('SELECT version FROM reward_schema_migrations WHERE version=$1',[version])).rows.length)continue;
-  const sql=await fs.readFile(path.join(__dirname,'migrations',file),'utf8');if(db.exec)await db.exec(sql);else await db.query(sql);
- }
+async function migrate(db,{emulateSupabase=false}={}){
+ // One dedicated connection so the search_path applies to every statement.
+ const client=typeof db.connect==='function'&&typeof db.release!=='function'&&!db.exec?await db.connect():db;
+ const run=sql=>client.exec?client.exec(sql):client.query(sql);
+ try{
+  if(emulateSupabase)await run(await fs.readFile(path.join(__dirname,'../../scripts/rewards/supabase-emulation.sql'),'utf8'));
+  await run(`CREATE SCHEMA IF NOT EXISTS ${SCHEMA}; SET search_path TO ${SCHEMA}, public;`);
+  await client.query('CREATE TABLE IF NOT EXISTS reward_schema_migrations(version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())');
+  for(const file of (await fs.readdir(path.join(__dirname,'migrations'))).filter(x=>/^\d+.*\.sql$/.test(x)).sort()){
+   const version=Number(file.split('_')[0]);if((await client.query('SELECT version FROM reward_schema_migrations WHERE version=$1',[version])).rows.length)continue;
+   await run(await fs.readFile(path.join(__dirname,'migrations',file),'utf8'));
+  }
+ }finally{if(client!==db)client.release();}
 }
 async function audit(db,kind,evidence,{mint=null,wallet=null,actor='worker'}={}){await db.query('INSERT INTO reward_audit(kind,mint,wallet,actor,evidence) VALUES($1,$2,$3,$4,$5)',[kind,mint,wallet,actor,stable(evidence)]);}
 async function lockPosition(db,mint,wallet){
@@ -53,4 +69,19 @@ async function settleAllocation(db,{mint,round,index,paid,released,signature,slo
 async function leaseJob(db,worker,seconds=120){
  return transaction(db,async tx=>{const r=(await tx.query("SELECT * FROM reward_jobs WHERE due_at<=now() AND (state='pending' OR (state='running' AND lease_until<now())) ORDER BY due_at,id FOR UPDATE SKIP LOCKED LIMIT 1")).rows[0];if(!r)return null;await tx.query("UPDATE reward_jobs SET state='running',lease_owner=$2,lease_until=now()+($3::text||' seconds')::interval,attempts=attempts+1 WHERE id=$1",[r.id,worker,seconds]);return r;},{serializable:false});
 }
-module.exports={connect,transaction,migrate,audit,lockPosition,journalChain,settleAllocation,leaseJob};
+// Durable row lease with a fencing token. Atomic single statement; safe with poolers.
+async function acquireLease(db,resource,owner,seconds=60){
+ const r=(await db.query(`INSERT INTO reward_leases(resource,owner,lease_until) VALUES($1,$2,now()+make_interval(secs=>$3))
+  ON CONFLICT(resource) DO UPDATE SET owner=EXCLUDED.owner,lease_until=EXCLUDED.lease_until,fencing=reward_leases.fencing+1,acquired_at=now()
+  WHERE reward_leases.lease_until<now() OR reward_leases.owner=EXCLUDED.owner RETURNING fencing`,[resource,owner,seconds])).rows[0];
+ return r?BigInt(r.fencing):null;
+}
+async function renewLease(db,resource,owner,fencing,seconds=60){
+ return(await db.query('UPDATE reward_leases SET lease_until=now()+make_interval(secs=>$4) WHERE resource=$1 AND owner=$2 AND fencing=$3 AND lease_until>=now() RETURNING resource',[resource,owner,String(fencing),seconds])).rows.length===1;
+}
+async function releaseLease(db,resource,owner,fencing){await db.query("UPDATE reward_leases SET lease_until=now()-interval '1 second' WHERE resource=$1 AND owner=$2 AND fencing=$3",[resource,owner,String(fencing)]);}
+async function withLease(db,resource,owner,fn,{seconds=60,busy=()=>{throw Error('Resource busy; resume shortly');}}={}){
+ const fencing=await acquireLease(db,resource,owner,seconds);if(fencing===null)return busy();
+ try{return await fn({fencing,renew:()=>renewLease(db,resource,owner,fencing,seconds)});}finally{await releaseLease(db,resource,owner,fencing).catch(()=>{});}
+}
+module.exports={SCHEMA,connect,transaction,migrate,audit,lockPosition,journalChain,settleAllocation,leaseJob,acquireLease,renewLease,releaseLease,withLease};

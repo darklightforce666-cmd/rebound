@@ -80,8 +80,7 @@ async function reserveRound(context,coin,cycle){
 }
 async function cycle(context,coin,round){
  const {db,connection,cfg}=context;
- const lock=(await db.query('SELECT pg_try_advisory_lock(hashtextextended($1,0)) AS locked',[coin.mint])).rows[0].locked;if(!lock)return{state:'busy'};
- try{
+ return DB.withLease(db,'cycle:'+coin.mint,context.worker||'worker:'+process.pid,async()=>{try{
   const collection=await collectFees(context,coin,round);await reconcileCoin(db,connection,cfg,coin);
   if(!['finalized','dry-run'].includes(collection.state))return collection;
   const cutoff=await S.finalizedCutoff(db,connection),replay=await S.replayCoin(db,coin,cutoff);
@@ -94,14 +93,14 @@ async function cycle(context,coin,round){
   const delivery=[];for(const a of allocations)delivery.push(await D.deliver({...context,mint:coin.mint,round:a.round_id,index:a.leaf_index}));
   for(const row of (await db.query("SELECT round_id FROM reward_rounds WHERE mint=$1 AND state IN ('reserved','delivering')",[coin.mint])).rows){const actual=await accountState(connection,cfg.program,W.addresses(cfg.program,coin.mint,row.round_id).round,'round');if(actual&&actual.registered===actual.total)await db.query('UPDATE reward_rounds SET state=$3 WHERE mint=$1 AND round_id=$2',[coin.mint,row.round_id,actual.remaining===0n?'completed':'delivering']);}
   await reconcileCoin(db,connection,cfg,coin);return{state:delivery.some(r=>!['finalized','held'].includes(r.state))?'delivering':funded.state,operations,delivery};
- }finally{await releaseOperations(context,coin,round).catch(()=>{});await db.query('SELECT pg_advisory_unlock(hashtextextended($1,0))',[coin.mint]);}
+ }finally{await releaseOperations(context,coin,round).catch(()=>{});}
+ },{seconds:600,busy:()=>({state:'busy'})});
 }
 async function releaseOperations(context,coin,round){const{connection,cfg}=context;return T.submit({...context,job:'operations:'+coin.mint+':'+round,instructions:[W.operations(cfg.program,coin.mint,cfg.operations)],context:{mint:coin.mint,round,kind:'operations'},readSettlement:async()=>{const c=await accountState(connection,cfg.program,W.addresses(cfg.program,coin.mint).coin,'coin');return c&&(c.lastOperationsCycle>=BigInt(round)||c.operationsPayable===0n)?{settled:true,...c}:{definitivelyUnsettled:true};}});}
 async function run({once=false,role=process.env.REWARDS_WORKER_ROLE||'scheduler'}={}){
  const cfg=C.settings(),pool=DB.connect(),connection=new Connection(cfg.rpc,'finalized'),rpc=new I.Rpc(cfg.historyRpc||cfg.rpc),worker=crypto.randomUUID();
  let stopped=false;process.on('SIGTERM',()=>{stopped=true;});process.on('SIGINT',()=>{stopped=true;});
  do{
-  // Dedicated session keeps advisory locks on one PostgreSQL connection.
   const db=await pool.connect();try{
    const coins=(await db.query("SELECT * FROM reward_coins WHERE status='active' ORDER BY mint")).rows;
    if(role==='indexer'){
@@ -114,7 +113,7 @@ async function run({once=false,role=process.env.REWARDS_WORKER_ROLE||'scheduler'
      for(const exit of (await db.query('SELECT mint,wallet FROM reward_disqualifications')).rows)await require('./exits.cjs').publish({db,connection,cfg,preflight,payer},exit.mint,exit.wallet);
      const cutoffSlot=await connection.getSlot('finalized'),time=await connection.getBlockTime(cutoffSlot);if(!Number.isSafeInteger(time)||time<=0)throw Error('Finalized scheduling time unavailable');const round=Math.floor(time/1800);
      for(const coin of coins)await db.query("INSERT INTO reward_jobs(id,mint,kind,due_at) VALUES($1,$2,'cycle',now()) ON CONFLICT DO NOTHING",['cycle:'+coin.mint+':'+round,coin.mint]);
-     const job=await DB.leaseJob(db,worker);if(job){const coin=coins.find(c=>c.mint===job.mint);const result=await cycle({db,connection,cfg,preflight,payer,publisher},coin,Number(job.id.split(':').at(-1)));await db.query("UPDATE reward_jobs SET state=$2,checkpoint=$3,due_at=now()+interval '15 seconds',lease_owner=null,lease_until=null WHERE id=$1",[job.id,['completed','reserved','dry-run'].includes(result.state)?'completed':'pending',P.stable(result)]);}
+     const job=await DB.leaseJob(db,worker);if(job){const coin=coins.find(c=>c.mint===job.mint);const result=await cycle({db,connection,cfg,preflight,payer,publisher,worker},coin,Number(job.id.split(':').at(-1)));await db.query("UPDATE reward_jobs SET state=$2,checkpoint=$3,due_at=now()+interval '15 seconds',lease_owner=null,lease_until=null WHERE id=$1",[job.id,['completed','reserved','dry-run'].includes(result.state)?'completed':'pending',P.stable(result)]);}
     }
    }
   }catch(e){await DB.audit(db,'worker_error',{role,reason:e.message.replace(/https?:\/\/\S+/g,'[endpoint]')}).catch(()=>{});}finally{db.release();}
