@@ -1,0 +1,7 @@
+{
+  "name": "bigint-buffer",
+  "version": "1.1.5-rebound.0",
+  "description": "Pure-JS drop-in for bigint-buffer (no native addon). Netlify's function packager treats the upstream package as native (binding.gyp) and omits it from the bundle; the upstream native path also carries CVE-2025-3194.",
+  "main": "index.js",
+  "license": "MIT"
+}

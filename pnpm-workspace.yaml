@@ -5,3 +5,5 @@ overrides:
   'rpc-websockets@9.3.9>uuid': '11.1.1'
   'jayson@4.3.0>uuid': '11.1.1'
   '@coral-xyz/anchor@0.31.1>toml': '4.2.0'
+  # Pure-JS bigint-buffer: the upstream native addon is omitted by Netlify's packager (and has CVE-2025-3194).
+  'bigint-buffer': 'link:./vendor/bigint-buffer'
