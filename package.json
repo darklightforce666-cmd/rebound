@@ -31,8 +31,10 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.8",
+    "@solana/kit": "8.3.0",
     "esbuild": "0.28.2",
     "https-proxy-agent": "7.0.6",
+    "litesvm": "1.4.1",
     "ws": "8.21.3"
   }
 }
