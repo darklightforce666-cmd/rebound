@@ -8,5 +8,6 @@ require('../tests/rewards/config.test.cjs');
 require('../tests/rewards/supabase-access.test.cjs');
 require('../tests/copy.test.cjs');
 require('../tests/wallet.test.cjs');
+require('../tests/wallet-session.test.cjs');
 require('../tests/mainnet.test.cjs');
 require('../tests/charts.test.cjs');

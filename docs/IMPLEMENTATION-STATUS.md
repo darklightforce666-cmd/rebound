@@ -36,17 +36,37 @@ no newer work needed merging. PR #1 (`rewards-v2-implementation`) is still open 
       (PumpSwap) needed for the buyback. Pyth SOL/USD feed id verified on Hermes.
 - [x] Created `rebound-v3-implementation`. No legacy funds/state removed.
 
-## M1 — Supabase, authentication, data boundaries
+## M1 — Supabase, authentication, data boundaries — implemented; 2 external steps open
 
-- [ ] Migration `005_v3.sql` (additive schema for V3 ledger, lots, cycles, credits, buyback, logs, roles)
-- [ ] Migration `006_supabase_access.sql` (RLS on every table, public projections, admin-log policy, Realtime publication, Storage buckets)
-- [ ] `db.cjs`: pooler-safe row leases; no session advisory locks
-- [ ] Supabase JWT verification + server-controlled roles in Netlify functions; admin bootstrap script
-- [ ] Web3 wallet sign-in spike (Supabase `signInWithWeb3`, exact wallet adapter)
-- [ ] Metadata/images → Supabase Storage with stable immutable URLs; Blobs read compatibility
-- [ ] Structured redacted logs (`logs.cjs`)
-- [ ] Unauthorized-access tests (anon/creator/admin) against local Postgres with Supabase roles
-- [ ] Apply to the real Supabase project and verify RLS + Realtime publish
+Supabase project (owner decision, final): **`zuvefozubbgstyljfxjh`** ("Chainlets" → to be renamed
+"REBOUND"), eu-central-1, Pro. It still runs PokeDrop (see `LEGACY-CHAINLETS-CLEANUP.md`); REBOUND is
+isolated in schema `rebound` and nothing legacy was changed.
+
+- [x] Migrations `005_v3.sql` (V3 data model), `006_supabase_access.sql` (RLS/grants/realtime/buckets),
+      `007_harden_functions.sql` (advisor 0011) — applied to the live project; fingerprint identical
+      to the locally tested DB (`scripts/rewards/schema-fingerprint.sql`, 11/11 categories)
+- [x] Runtime roles `rebound_api|indexer|scheduler|verifier` (`scripts/rewards/database-roles.sql`), applied
+- [x] Policy rows `rebound-v3.0` (`cf61e965…`) and `rebound-v3.0-test` (`dc12b800…`); hash re-verified in SQL
+- [x] `db.cjs`: `rebound` schema, pooler-safe connection, durable row leases with fencing; advisory locks removed
+      from `worker.cjs` and `launch.cjs`
+- [x] `session.cjs` (Supabase Auth verification, server-controlled identities, domain-bound admin),
+      `consent.cjs` (one-time action consent), `logs.cjs` (redacted, persisted-first), `storage.cjs` +
+      `metadata.cjs` (immutable content-addressed Supabase Storage; Blobs read-compat)
+- [x] API router `netlify/functions/rewards.cjs` with error contract (`docs/API-V3.md`)
+- [x] Browser session module `src/auth/wallet-session.js` (session bound to the exact selected wallet)
+- [x] Tests: `tests/rewards/supabase-access.test.cjs` (10), `tests/wallet-session.test.cjs` (3)
+- [x] Live checks on the real project: anon reads only 2 projections / writes nothing; PokeDrop user is
+      not admin; anonymous Realtime received INSERT+UPDATE of a public row in ~350 ms; anonymous
+      subscriber to admin logs got only `Error 401: Unauthorized` without row data
+- [ ] **External:** Auth → Redirect URLs `https://rebound.wtf/**`, `https://www.rebound.wtf/**`. Live
+      evidence: SIWS for rebound.wtf is rejected ("URI which is not allowed on this server"). Re-run
+      `.probe/web3-spike.cjs` after the change.
+- [ ] **External:** `SUPABASE_SECRET_KEY` + scoped `DATABASE_URL` in Netlify env, then a live metadata upload
+- [ ] **External:** admin wallet address(es) from the owner → `reward_admin_wallets`
+- [ ] Rename project display name to "REBOUND" (dashboard only)
+
+Note: this build container cannot reach `*.supabase.co` or Solana RPC (egress policy 403); live probes run
+from the owner's Mac (`Desktop/Projects/Rebound/.probe/`), database changes through the Supabase MCP.
 
 ## M2 — finalized history and loss engine
 
@@ -92,8 +112,11 @@ no newer work needed merging. PR #1 (`rewards-v2-implementation`) is still open 
 
 | Item | Needed by | Status |
 |---|---|---|
-| Supabase project for REBOUND (only project visible: "Chainlets", eu-central-1) | M1 | **Decision needed** |
-| Supabase: Auth Web3 (Solana) provider enabled, site URL `https://rebound.wtf` | M1 | pending |
+| Supabase project | M1 | **Decided**: repurpose `zuvefozubbgstyljfxjh` (Chainlets) |
+| Supabase: Web3 (Solana) enabled ✓; Redirect URLs `https://rebound.wtf/**` | M1 | **pending (dashboard)** |
+| Supabase secret key for Netlify (Storage uploads) and scoped DB logins | M1/M5 | pending |
+| Admin wallet public addresses | M1 | **requested from owner** |
+| PokeDrop cleanup approval (see LEGACY-CHAINLETS-CLEANUP.md) | any | awaiting owner |
 | Privy app ID (public) + allowed origins `https://rebound.wtf`, previews, localhost | M5 | pending |
 | Netlify site (historical: `tourmaline-melomakarona-72b603`) access, linked branch, env vars | M1/M5 | pending |
 | Mainnet RPC (HTTP+WS) with archival history (e.g. Helius/Triton) — set in Netlify/worker env | M2 | pending |
@@ -112,3 +135,9 @@ no newer work needed merging. PR #1 (`rewards-v2-implementation`) is still open 
 | 2026-09-26 | V2 SBF | `cargo build-sbf` (Agave 4.2.2, platform-tools v1.54) | built |
 | 2026-09-26 | V2 compiled program | `pytest contracts/v2/tests/test_svm.py` | 18 pass |
 | 2026-09-26 | Cloned Pump lifecycle | `clone-protocol.cjs` | **skipped**: needs mainnet RPC; public RPC not reachable from the build container |
+| 2026-09-26 | M1 local | `pnpm test` | 70 pass, 3 skipped (same protocol-capture skips) |
+| 2026-09-26 | M1 local | migrations on PostgreSQL 16.13 + emulation, single transaction | 58 tables, 0 without RLS |
+| 2026-09-26 | M1 live | fingerprint local vs Supabase | identical (11 categories) |
+| 2026-09-26 | M1 live | anon/authenticated RLS probe (rolled back) | anon reads 2 projections only; 0 writable; PokeDrop user not admin |
+| 2026-09-26 | M1 live | Realtime probe from owner Mac | INSERT+UPDATE received ~350 ms; logs → 401 without data |
+| 2026-09-26 | M1 live | SIWS for rebound.wtf | rejected: redirect URL not allowed (external step) |
