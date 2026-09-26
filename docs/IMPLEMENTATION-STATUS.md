@@ -229,7 +229,8 @@ cloned from mainnet (`scripts/rewards/clone-protocol.cjs contracts/v3/fixtures/m
       primary not replaceable, governance submit bound to the preparing admin, SOL/USD backfill no longer
       retries the same times every loop, consent display lines derived from the hashed payload.
       Not changed: receipt guard (009) does not freeze `state` against a compromised indexer login (noted)
-- [ ] Netlify deploy preview of this branch, then production publish after the owner's OK
+- [x] Netlify branch deploy `rebound-v3-implementation--tourmaline-melomakarona-72b603.netlify.app` (behind Netlify team login): API live against Supabase (`health`, `config`, `tokens` 200; admin 401 without session); first build crashed on `bigint-buffer` (native module omitted by Netlify's packager) → vendored pure-JS shim, verified with `@netlify/zip-it-and-ship-it`
+- [ ] Production publish (merge to `main`, 15 credits per production deploy) after the owner's OK
 - [ ] Program deployed + initialized on mainnet, dry run, capped `mainnet_test` (runbook §3–§8) with evidence
 
 ## External setup required (no secrets in chat or repository)
@@ -286,3 +287,4 @@ cloned from mainnet (`scripts/rewards/clone-protocol.cjs contracts/v3/fixtures/m
 | 2026-09-26 | M6 local | `pnpm test` after review fixes | 150 tests: 147 pass, 3 skipped (protocol-capture replay, as before) |
 | 2026-09-26 | M6 local | migrations 001–010 on a fresh PostgreSQL 16 + `database-roles.sql` | version 10; API cannot update opening columns; indexer cannot write funding ledgers |
 | 2026-09-26 | M6 live | migration 010 on Supabase | applied; privileges verified; no advisor findings in schema `rebound` |
+| 2026-09-26 | M6 preview | Netlify branch deploy `a0d5132`, requests from an authenticated browser | health/config/tokens 200 (dry_run, worker offline, no primary); admin-overview 401; `pnpm test` 151 tests: 148 pass, 3 skipped |
