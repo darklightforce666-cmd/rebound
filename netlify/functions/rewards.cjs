@@ -8,7 +8,7 @@ const crypto=require('node:crypto');
 const DB=require('../../server/rewards/db.cjs'),P=require('../../server/rewards/policy.cjs'),P3=require('../../server/rewards/policy-v3.cjs');
 const W=require('../../server/rewards/wire.cjs'),Auth=require('../../server/rewards/auth.cjs'),Session=require('../../server/rewards/session.cjs');
 const Consent=require('../../server/rewards/consent.cjs'),Logs=require('../../server/rewards/logs.cjs'),Metadata=require('../../server/rewards/metadata.cjs');
-const Cycle=require('../../server/rewards/cycle-v3.cjs');
+const Cycle=require('../../server/rewards/cycle-v3.cjs'),Launch=require('../../server/rewards/launch-v3.cjs');
 
 let pool;
 const MAX_BODY=3000000;
@@ -46,7 +46,10 @@ function chain(db){
  return{...chainPorts,db};
 }
 const PLAN_ERRORS={FORBIDDEN:403,PLAN_STALE:409,PLAN_EXPIRED:409,INVALID_TRANSACTION:400,TRANSACTION_TOO_LARGE:400};
-async function planCall(fn){try{return await fn();}catch(e){if(PLAN_ERRORS[e.code])fail(PLAN_ERRORS[e.code],e.code,e.message);throw e;}}
+async function planCall(fn){try{return await fn();}catch(e){if(PLAN_ERRORS[e.code])fail(PLAN_ERRORS[e.code],e.code,e.message);if(e.status&&e.code&&/^[A-Z_]+$/.test(e.code))fail(e.status,e.code,e.message,e.status>=500);throw e;}}
+const uuid=v=>{if(typeof v!=='string'||!/^[0-9a-f-]{36}$/.test(v))fail(400,'INVALID_BODY','Invalid id');return v;};
+const b64tx=v=>{if(typeof v!=='string'||v.length>4000)fail(400,'INVALID_BODY','Invalid transaction');return v;};
+const launchPorts=db=>({...chain(db),readMetadata:hash=>Metadata.readMetadata(db,hash)});
 const validMint=m=>{try{W.pk(m);return m;}catch{fail(400,'MINT_INVALID','Invalid mint address');}};
 
 const PAGE=24;
@@ -87,6 +90,7 @@ const handlers={
    const s=await Session.authenticate(db,event.headers);const mint=validMint(q.mint);
    return{plan:await planCall(()=>Cycle.manualPlan(chain(db),{mint,wallets:s.wallets}))};
   },
+  async 'launch-status'({db,event,q}){const s=await Session.authenticate(db,event.headers);return planCall(()=>Launch.status(launchPorts(db),{session:s,attemptId:uuid(q.id)}));},
   async 'admin-logs'({db,event,q}){
    await Session.authenticate(db,event.headers,{need:'admin'});
    const where=[],args=[];const add=(sql,v)=>{args.push(v);where.push(sql.replace('?','$'+args.length));};
@@ -115,6 +119,15 @@ const handlers={
    if(typeof data.intentId!=='string'||!/^[0-9a-f-]{36}$/.test(data.intentId)||typeof data.signedTransaction!=='string'||data.signedTransaction.length>4000)fail(400,'INVALID_BODY','Invalid funding submission');
    return planCall(()=>Cycle.submitManualDeposit(chain(db),{mint,intentId:data.intentId,serialized:data.signedTransaction,wallets:s.wallets}));
   },
+  // Third-party launch journey (docs/API-V3.md). The browser generates the mint key; the server never sees it.
+  async 'launch-draft'({db,event,data}){const s=await Session.authenticate(db,event.headers);
+   return planCall(()=>Launch.draft(launchPorts(db),{session:s,wallet:String(data.wallet||''),idempotencyKey:data.idempotencyKey,metadataHash:String(data.metadataHash||''),name:data.name,symbol:data.symbol,initialBuyLamports:/^\d{1,15}$/.test(String(data.initialBuyLamports??'0'))?BigInt(data.initialBuyLamports??0):fail(400,'INVALID_AMOUNT','Invalid initial buy'),namespace:data.namespace==='production'?'production':'mainnet_test'})).then(a=>({attemptId:a.id,state:a.state}));},
+  async 'launch-prepare'({db,event,data}){const s=await Session.authenticate(db,event.headers);return planCall(()=>Launch.prepare(launchPorts(db),{session:s,attemptId:uuid(data.attemptId),mint:String(data.mint||'')}));},
+  async 'launch-submit'({db,event,data}){const s=await Session.authenticate(db,event.headers);return planCall(()=>Launch.submit(launchPorts(db),{session:s,attemptId:uuid(data.attemptId),index:data.index===1?1:0,signedTransaction:b64tx(data.signedTransaction)}));},
+  async 'activation-prepare'({db,event,data}){const s=await Session.authenticate(db,event.headers);return planCall(()=>Launch.activationPrepare(launchPorts(db),{session:s,attemptId:uuid(data.attemptId)}));},
+  async 'activation-submit'({db,event,data}){const s=await Session.authenticate(db,event.headers);
+   if(!['create_fee_sharing','lock_fee_sharing','activate'].includes(data.step))fail(400,'INVALID_BODY','Unknown setup step');
+   return planCall(()=>Launch.activationSubmit(launchPorts(db),{session:s,attemptId:uuid(data.attemptId),step:data.step,signedTransaction:b64tx(data.signedTransaction)}));},
   async 'metadata-upload'({db,event,data,origin,requestId}){
    const s=await Session.authenticate(db,event.headers);const payload=data.payload||{};
    await Consent.consume(db,s,{origin,wallet:data.wallet,action:'metadata-upload',payload,proof:data.proof});

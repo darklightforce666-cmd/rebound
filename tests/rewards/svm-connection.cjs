@@ -6,7 +6,7 @@
 //   finalityLag          — landed transactions become "finalized" only after advance()
 const fs=require('node:fs'),path=require('node:path');
 const {LiteSVM,TransactionMetadata}=require('litesvm');const kit=require('@solana/kit');
-const {PublicKey,Keypair,Transaction}=require('@solana/web3.js'),bs58=require('bs58');
+const {PublicKey,Keypair,Transaction,VersionedTransaction}=require('@solana/web3.js'),bs58=require('bs58');
 const SO=path.join(__dirname,'../../contracts/v3/target/deploy/rebound_rewards_v3.so');
 const LOADER=new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
 const A=x=>kit.address(typeof x==='string'?x:x.toBase58());
@@ -44,7 +44,12 @@ class SvmConnection{
   for(const a of m.accounts)if(!a.missing)this.svm.setAccount({address:A(a.id),lamports:BigInt(a.lamports),programAddress:A(a.owner),executable:a.executable,data:Buffer.from(a.data,'base64'),space:BigInt(Buffer.from(a.data,'base64').length)});
   return m;}
  async getBalance(pk){return Number(this.svm.getBalance(A(pk))||0n);}
- async simulateTransaction(tx,signers){if(signers)tx.sign(...signers);const r=this.svm.simulateTransaction(kit.getTransactionDecoder().decode(tx.serialize({requireAllSignatures:false,verifySignatures:false})));
+ async simulateTransaction(tx,signers){
+  if(tx instanceof VersionedTransaction){   // web3.js v1 form: (versionedTx, {sigVerify:false, replaceRecentBlockhash:true})
+   const {blockhash}=await this.getLatestBlockhash();tx.message.recentBlockhash=blockhash;
+   this.svm.withSigverify(false);try{const r=this.svm.simulateTransaction(kit.getTransactionDecoder().decode(tx.serialize()));const failed=typeof r.err==='function';
+    return{value:{err:failed?String(r.err()):null,logs:failed?r.meta().logs():r.meta?.().logs?.()||[]}};}finally{this.svm.withSigverify(true);}}
+  if(signers)tx.sign(...signers);const r=this.svm.simulateTransaction(kit.getTransactionDecoder().decode(tx.serialize({requireAllSignatures:false,verifySignatures:false})));
   const failed=typeof r.err==='function';return{value:{err:failed?String(r.err()):null,logs:failed?r.meta().logs():r.meta?.().logs?.()||[]}};}
  async sendRawTransaction(bytes){
   this.sent++;if(this.faults.rejectSend>0){this.faults.rejectSend--;throw Error('fixture: RPC rejected before submission');}

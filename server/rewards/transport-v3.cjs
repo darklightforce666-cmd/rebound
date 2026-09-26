@@ -60,11 +60,17 @@ function matchesIntent(tx,{instructions,signer,blockhash}){
  const msg=tx.compileMessage?tx.compileMessage():null;if(!msg)return false;
  if(!tx.feePayer||tx.feePayer.toBase58()!==signer)return false;
  if(blockhash&&tx.recentBlockhash!==blockhash)return false;   // the validity window we persisted
- const got=tx.instructions.map(i=>({p:i.programId.toBase58(),k:i.keys.map(k=>k.pubkey.toBase58()+(k.isWritable?'w':'')+(k.isSigner?'s':'')).join(','),d:Buffer.from(i.data).toString('hex')}));
- const want=instructions.map(i=>({p:i.programId.toBase58(),k:i.keys.map(k=>k.pubkey.toBase58()+(k.isWritable?'w':'')+(k.isSigner?'s':'')).join(','),d:Buffer.from(i.data).toString('hex')}));
+ // Per-instruction writable/signer flags are not preserved by the wire format (they are merged at message
+ // level), so programs, ordered account lists and data are compared exactly; the required signer set
+ // must equal the prepared one and every signature must verify.
+ const got=tx.instructions.map(i=>({p:i.programId.toBase58(),k:i.keys.map(k=>k.pubkey.toBase58()).join(','),d:Buffer.from(i.data).toString('hex')}));
+ const want=instructions.map(i=>({p:i.programId.toBase58(),k:i.keys.map(k=>k.pubkey.toBase58()).join(','),d:Buffer.from(i.data).toString('hex')}));
+ const signersWanted=new Set([signer,...instructions.flatMap(i=>i.keys.filter(k=>k.isSigner).map(k=>k.pubkey.toBase58()))]);
+ const signersGot=new Set(tx.signatures.map(s=>s.publicKey.toBase58()));
+ if(signersWanted.size!==signersGot.size||[...signersWanted].some(k=>!signersGot.has(k)))return false;
  // Compute-budget instructions added by wallets are tolerated; nothing else.
- const cb='ComputeBudget111111111111111111111111111111';const core=got.filter(x=>x.p!==cb);
- return core.length===want.length&&core.every((x,i)=>x.p===want[i].p&&x.k===want[i].k&&x.d===want[i].d)&&tx.verifySignatures(true);
+ const cb='ComputeBudget111111111111111111111111111111';const core=got.filter(x=>x.p!==cb),need=want.filter(x=>x.p!==cb);
+ return core.length===need.length&&core.every((x,i)=>x.p===need[i].p&&x.k===need[i].k&&x.d===need[i].d)&&tx.verifySignatures(true);
 }
 // Manual mode: the dev wallet signed the exact prepared intent in the browser.
 async function submitSigned({db,connection,job,intent,serialized,readSettlement,spend}){
@@ -77,4 +83,4 @@ async function submitSigned({db,connection,job,intent,serialized,readSettlement,
  const height=intent.lastValidBlockHeight;if(!height)throw Object.assign(Error('Funding plan has no validity window'),{code:'INVALID_TRANSACTION'});
  return persistAndBroadcast(db,connection,{job,kind:'primary_funding',mint:spend?.mint,signerRole:'primary_dev',intentId:intent.id,bytes:tx.serialize(),signature:bs58.encode(tx.signature),lastValidBlockHeight:height,context:{manual:true}});
 }
-module.exports={reconcile,submit,submitSigned,matchesIntent,persistAndBroadcast};
+module.exports={reconcile,submit,submitSigned,matchesIntent,persistAndBroadcast,LIVE};
