@@ -26,3 +26,4 @@ rewards-dry-run*.json
 contracts/v3/target/
 contracts/v3/artifact/
 contracts/v3/fixtures/mainnet/
+.probe/
