@@ -2,7 +2,7 @@
 const {PublicKey,Connection}=require('@solana/web3.js');
 const bs58=require('bs58');
 const P=require('./pump.cjs'),W=require('./wire.cjs'),Policy=require('./policy.cjs'),DB=require('./db.cjs');
-const PARSER='rebound-execution-v2.1';
+const PARSER='rebound-execution-v3.0';
 const TOKEN=new Set(['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA','TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb']);
 const PUMP=P.SDK.PUMP_PROGRAM_ID.toBase58(),AMM=P.SDK.PUMP_AMM_PROGRAM_ID.toBase58();
 const EVENT_CPI=Buffer.from('e445a52e51cb9a1d','hex');
@@ -92,7 +92,7 @@ function parseTransaction(tx,{slot,time,transactionIndex,coins,ownership=new Map
    }else if(['burn','burnChecked'].includes(type)){
     const owner=known.get(info.account),mint=info.mint||owner?.mint;if(coinMap.has(mint)){if(!owner)holds.push({mint,signature,reason:'burn_owner_unknown'});else if(Policy.int(info.amount??info.tokenAmount?.amount??0)>0n)emit(ins,'burn',mint,owner.owner,{account:info.account,amount:info.amount??info.tokenAmount.amount});}
    }else if(type==='setAuthority'&&['accountOwner','AccountOwner'].includes(info.authorityType)){
-    const old=known.get(info.account);if(old&&coinMap.has(old.mint)&&old.owner!==info.newAuthority){emit(ins,'owner_change',old.mint,old.owner,{account:info.account,nextOwner:info.newAuthority});known.set(info.account,{...old,owner:info.newAuthority});}
+    const old=known.get(info.account);if(old&&coinMap.has(old.mint)&&old.owner!==info.newAuthority){emit(ins,'owner_change',old.mint,old.owner,{account:info.account,nextOwner:info.newAuthority,amount:String(old.amount??'')});known.set(info.account,{...old,owner:info.newAuthority});}
    }
   }else if(TOKEN.has(program)&&!parsed){
    const touched=(ins.accounts||[]).map(address).some(k=>coinMap.has(known.get(k)?.mint)||coinMap.has(post.get(k)?.mint));
@@ -102,6 +102,14 @@ function parseTransaction(tx,{slot,time,transactionIndex,coins,ownership=new Map
    if(!Number.isSafeInteger(info.lamports))holds.push({signature,reason:'unsafe_native_amount'});
    else emit(ins,'funding_transfer',null,info.source,{from:info.source,to:info.destination,amount:String(info.lamports),asset:'native-SOL'});
   }
+ }
+ // Post-transaction balances of every token account of a tracked mint (closed accounts = 0).
+ // The V3 lot engine proves its reconstructed holdings against these after each transaction.
+ for(const c of coins){
+  const accounts=new Map();
+  for(const b of tx.meta.preTokenBalances||[])if(b.mint===c.mint&&b.owner)accounts.set(keys[b.accountIndex],{account:keys[b.accountIndex],owner:b.owner,amount:'0'});
+  for(const b of tx.meta.postTokenBalances||[])if(b.mint===c.mint&&b.owner)accounts.set(keys[b.accountIndex],{account:keys[b.accountIndex],owner:b.owner,amount:b.uiTokenAmount.amount});
+  if(accounts.size)emit({path:'post/balances',order:instructions.length+1},'token_balances',c.mint,null,{accounts:[...accounts.values()].sort((a,b)=>a.account<b.account?-1:1)});
  }
  // Reconcile historical authority, even where a token account has no net delta.
  for(const[account,b]of post){const k=known.get(account);if(coinMap.has(b.mint)&&(!k||k.owner!==b.owner))holds.push({mint:b.mint,signature,account,reason:'unreconciled_token_authority'});}
@@ -131,7 +139,7 @@ async function indexBatch(db,rpc,{name='finalized-blocks',from,limit=32,genesis,
     const parsed=parseTransaction(transaction,{slot,time:block.blockTime,transactionIndex:index,coins,ownership});ownership=parsed.ownership;
     for(const e of parsed.events){
      await tx.query('INSERT INTO reward_events(id,mint,signature,instruction_path,event_index,slot,transaction_index,execution_order,kind,owner,data,raw_digest,parser_version,finalized) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true) ON CONFLICT DO NOTHING',[e.id,e.mint,e.signature,e.path,e.eventIndex,e.slot,e.transactionIndex,e.order,e.kind,e.owner,stringify({...e.data,time:e.time}),e.rawDigest,PARSER]);
-     if(['sale','transfer_exit','burn','owner_change'].includes(e.kind)&&e.owner){await tx.query('INSERT INTO reward_disqualifications(mint,wallet,event,slot,kind) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING',[e.mint,e.owner,e.id,e.slot,e.kind]);await tx.query('UPDATE reward_purchase_lots SET continuously_held=false WHERE mint=$1 AND wallet=$2',[e.mint,e.owner]);}
+     // Policy V3: a sale, transfer or burn never disqualifies a wallet; lots are consumed FIFO.
      if(e.kind==='owner_initialized'||e.kind==='owner_change'){
       if(e.kind==='owner_change')await tx.query('UPDATE reward_token_ownership SET end_event=$2,end_slot=$3 WHERE address=$1 AND end_event IS NULL',[e.data.account,e.id,e.slot]);
       await tx.query('INSERT INTO reward_token_ownership(address,mint,owner,start_event,start_slot) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING',[e.data.account,e.mint,e.kind==='owner_change'?e.data.nextOwner:e.owner,e.id,e.slot]);
