@@ -242,7 +242,7 @@ cloned from mainnet (`scripts/rewards/clone-protocol.cjs contracts/v3/fixtures/m
 | Admin wallet public addresses | M1 | **requested from owner** |
 | PokeDrop cleanup approval (see LEGACY-CHAINLETS-CLEANUP.md) | any | awaiting owner |
 | Privy app ID (public) + allowed origins `https://rebound.wtf`, previews, localhost | M5 | pending |
-| Netlify site `tourmaline-melomakarona-72b603` env vars | M1/M5 | V3 vars set (dry_run ceiling); builds still stopped; branch link + deploy in M6 |
+| Netlify site `tourmaline-melomakarona-72b603` env vars | M1/M5 | V3 vars set (dry_run ceiling); builds active with branch deploys for `rebound-v3-implementation` only (production branch `main` unchanged); `DATABASE_URL`/`SOLANA_RPC_URL` also set for branch deploys; `ALLOWED_ORIGINS` = preview origin; Supabase redirect URL added for the preview |
 | Mainnet RPC with archival history | M2 | done: owner's Alchemy endpoint (archival + v1 verified); worker env with the worker host |
 | Primary mint (current config `3SohGcVP…ppump` is an unverified placeholder) | M2 | pending |
 | Dev funding wallet public address; test holder wallets | M2/M6 | pending |
