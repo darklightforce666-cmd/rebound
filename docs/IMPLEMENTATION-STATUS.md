@@ -86,21 +86,60 @@ from the owner's Mac (`Desktop/Projects/Rebound/.probe/`), database changes thro
 - [x] `snapshot-v3.cjs`: deterministic snapshot + round proposal, `waiting_for_data` with exact reason
 - [x] Parser `rebound-execution-v3.0`; V2 permanent exits/wallet links removed from the active path
 - [x] `scripts/rewards/preview-v3.cjs`: read-only auditable preview report
-- [ ] **Live:** run `preview-v3.cjs` on a real mint from a machine with mainnet RPC (owner Mac was offline
-      26 Sep ~15:30 UTC). Build container cannot reach RPC/Pyth (egress 403).
-- [ ] **Decision/config:** SOL/USD historical source — `PYTH_API_KEY` (paid after trial) or on-chain feed
-      history (free; cadence vs 30 s freshness to be measured live). Default feed account
-      `7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE` is self-verified (owner + feed id) at use.
+- [x] **Live (26 Sep, owner Mac, public mainnet RPC):** `preview-v3.cjs` on a live Pump mint
+      (`Goreaw…Lpump`, Token-2022, created ~15:1x UTC): history **complete** — 88 addresses, 205 finalized
+      transactions (4 failed, excluded), 1 368 events (105 purchases, 66 sales, 132 transfers, 200 post-balance
+      proofs), **0 parser holds**; cutoff slot resolved exactly. First run found v1 transactions (fixed, see M3).
+      Snapshot correctly held `waiting_for_data: sol_usd_window_incomplete` — no FX evidence (below).
+- [ ] **Decision/config — SOL/USD source (measured live):** the sponsored on-chain Pyth SOL/USD account
+      (`7UVimf…`, receiver-owned, decoder verified on real `UpdatePriceFeed` txs) is updated about every
+      **53 s**, so the policy's 30 s max age cannot be met from it, and historical backfill on-chain is not
+      practical (the account's signature list is dominated by readers: 1 000 signatures ≈ 6 min; updates
+      are ~1 in 120 of the updater's transactions). Options: **(a) `PYTH_API_KEY`** (Benchmarks/Hermes;
+      keeps the published 30 s / 1 % policy; recommended), or (b) on-chain only with a policy change
+      (e.g. max age 90 s → new policy hash) plus holds for purchases before the worker started recording.
 - [ ] Primary mint (placeholder `3SohGc…pump` unverified) — needed for the real primary preview
 
-## M3 — program V3 and durable funding/payouts
+## M3 — program V3 and durable funding/payouts — implemented locally; deployment is M6
 
-- [ ] `contracts/v3` state + instructions; Rust unit tests; SBF build
-- [ ] LiteSVM compiled-program tests: conservation, holder-only deposit, split once, timing, replay
-- [ ] `wire-v3.cjs`; verifier V3 manifest recomputation
-- [ ] Scheduler state machine, leases, crash recovery
-- [ ] Manual primary funding (exact transaction for owner signature) and automatic signer mode
-- [ ] Rent-aware batched payouts; ambiguous broadcast reconciliation
+- [x] `contracts/v3` (solana-program 2.2.1, seeds `*-v3`, magics `RBD3*`), commands 0–20: Initialize (upgrade
+      authority check), RegisterPrimary/StartPrimary/SetFundingWallet, **DepositHolders** (primary, holder-only,
+      never split), PrepareCoin/CreateSharing/LockSharing/Activate, **Credit** (third-party, verifier Ed25519
+      attestation, split 85/15 once into holder/buyback), **Fund** (publisher + verifier, only inside
+      `[cutoff(n), cutoff(n+1))`), **Pay** (permissionless after due time, Merkle-sum proof + paid-receipt PDA, no
+      fresh holding check), Pause/RequestResume/Resume (delayed), SetAuthorities (paused only),
+      SetBuybackTarget/ReserveBuyback/BuybackSwap (Pump `buy_exact_sol_in` / PumpSwap `buy_exact_quote_in` CPI via a
+      per-job buyer PDA)/BuybackBurn (`burn_checked`, verified by supply delta; burn-only retry)/CloseBuyback.
+      Build: `cargo build-sbf` → `target/deploy/rebound_rewards_v3.so` sha256 `ad180f2a3e407cca…`
+- [x] Compiled-program tests (LiteSVM): conservation, holder-only deposit, split once, Fund window, due-time
+      Pay, replay refusal, pause/resume delay, authorities; JS↔Rust wire parity vectors
+- [x] `wire-v3.cjs`; `verifier-v3.cjs` recomputes the snapshot from its own DB role, rebuilds the manifest and
+      co-signs only an exactly matching single Fund instruction
+- [x] `cycle-v3.cjs`: durable state machine (scheduled → snapshotting → [waiting_for_data] →
+      awaiting_funding_signature | funding_pending → funded → paying → complete / partially_paid / expired …),
+      row leases with fencing, policy-hash agreement (DB = on-chain coin), crash/ambiguous-broadcast recovery
+- [x] `transport-v3.cjs` + `execution.cjs`: persist signed bytes before broadcast, reconcile by on-chain
+      receipts, rebroadcast identical bytes only; execution gate `dry_run`/`mainnet_test`/`production` under the
+      host ceiling `REWARDS_MAX_EXECUTION_MODE`, allowlists and spend caps
+- [x] Automatic signer mode (`signer.cjs`, AES-256-GCM at rest, master key file chmod 600; `import-signer.cjs`)
+- [x] **Manual funding**: `GET funding-plan` returns the exact holder-only deposit for the registered dev wallet
+      (blockhash refreshed when stale); `POST funding-submit` verifies the signed bytes against the plan, gates,
+      persists, broadcasts (API role); the scheduler moves the cycle, follows the signature and hands the plan
+      back to the owner if it expires unlanded; an unsigned plan expires at the next cutoff with no credit
+- [x] Rent-aware payouts: awards below rent-exempt minimum stay `deferred_rent` liabilities
+      (`partially_paid`) until `REWARDS_SPONSOR_RENT` or a later funding covers the rent
+- [x] `worker-v3.cjs`: incremental mint-scoped ingestion with per-address cursors (migration 008, applied
+      live), exact in-block order (RPC `transactionIndex`, `getBlock` fallback), cursors never pass an
+      unavailable transaction, coverage checkpoints; snapshot evidence loader shared by scheduler and verifier;
+      on-chain SOL/USD sampler, finalized curve/pool heartbeats, dev-wallet reconciliation (REBOUND deposits are
+      liability moves, never new funding), public token projection. Run: `node server/rewards/worker-v3.cjs`
+      (`REWARDS_WORKER_ROLE=indexer|scheduler|all`, `--once`)
+- [x] **Live finding fixed:** mainnet now carries **version-1 transactions**; requesting
+      `maxSupportedTransactionVersion:0` made the RPC refuse them (-32015). All V3 history/SOL-USD reads request
+      v1 (jsonParsed shape unchanged for the fields used). Legacy V2 modules using web3.js
+      `getParsedTransaction` cannot read v1 and are not on the V3 path.
+- [ ] Buyback swap CPI against real Pump/PumpSwap programs (cloned accounts) → M4
+- [ ] Program deployment + initialization under governance → M6
 
 ## M4 — third-party launches and buyback/burn
 
@@ -156,3 +195,11 @@ from the owner's Mac (`Desktop/Projects/Rebound/.probe/`), database changes thro
 | 2026-09-26 | M1 live | Realtime probe from owner Mac | INSERT+UPDATE received ~350 ms; logs → 401 without data |
 | 2026-09-26 | M1 live | SIWS for rebound.wtf | rejected: redirect URL not allowed (external step) |
 | 2026-09-26 | M2 local | `pnpm test` | 114 pass, 3 skipped (same) |
+| 2026-09-26 | M2 live | `preview-v3.cjs` on a live Pump mint (owner Mac, public RPC) | history complete, 1 368 events, 0 parser holds; held on SOL/USD (expected without FX source) |
+| 2026-09-26 | M2 live | on-chain Pyth SOL/USD cadence probe | live read OK ($121.63); updates ~53 s apart; update-tx decoder verified |
+| 2026-09-26 | M3 Rust | `cargo test --locked` (contracts/v3) | 8 pass |
+| 2026-09-26 | M3 SBF + compiled | `cargo build-sbf`; `pytest contracts/v3/tests` (LiteSVM + wire parity) | built `ad180f2a…`; 12 pass |
+| 2026-09-26 | M3 local | `pnpm test` (incl. 5 end-to-end cycle tests on the compiled program, 5 worker tests) | 126 pass, 3 skipped (same) |
+| 2026-09-26 | M3 local | migrations 001–008 on PostgreSQL 16 (fresh DB) | version 8, RLS on new table |
+| 2026-09-26 | M3 live | migration 008 + API grants on Supabase | applied; RLS on, 6 role grants |
+| 2026-09-26 | M3 skipped | Pump swap CPI with cloned programs | M4 (needs cloned mainnet accounts) |
