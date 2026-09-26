@@ -9,7 +9,7 @@ Decisions: [POLICY-V3.md](POLICY-V3.md) · Module plan: [V3-MODULE-PLAN.md](V3-M
 |---|---|---|
 | `main` | `648956847fd94ee9cb4fd0217777467991f07608` | Older frontend + V1; untouched |
 | `rewards-v2-implementation` | `c7bde3e18a6b695650e14e3c26a6b0a856f0f3f3` | Baseline; untouched |
-| `rebound-v3-implementation` | (this branch) | All V3 work |
+| `rebound-v3-implementation` | (this branch) | All V3 work (repository made public by the owner on 2026-09-26 so Netlify's Personal plan builds branch deploys; history scanned: no secrets) |
 
 Remote state was fetched on 2026-09-26: both existing branches were identical to the reviewed commits, so
 no newer work needed merging. PR #1 (`rewards-v2-implementation`) is still open upstream.
