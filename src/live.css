@@ -16,3 +16,5 @@
 tr.sev-warn td{color:#eec191}tr.sev-error td,tr.sev-critical td{color:#ffb1b1}
 #admin-root .live-card form{max-width:760px}#privy-island{position:relative;z-index:2147483646}
 [hidden]{display:none!important}
+/* Chart controls: labels above, selects and button on one baseline with equal heights */
+.token-chart-card .token-chart-controls{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}.token-chart-card .token-chart-controls label{display:flex;flex-direction:column;gap:6px;margin:0;font-size:12px;line-height:1;color:#a6b4aa}.token-chart-card .token-chart-controls select{width:auto;min-width:96px;height:41px;margin:0;padding:0 34px 0 12px;box-sizing:border-box}.token-chart-card .token-chart-controls .btn{height:41px;min-height:41px;margin:0;box-sizing:border-box}
