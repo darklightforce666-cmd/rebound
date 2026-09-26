@@ -11,7 +11,7 @@ const {Connection,PublicKey}=require('@solana/web3.js');
 const DB=require('./db.cjs'),P3=require('./policy-v3.cjs'),H=require('./history-v3.cjs'),I=require('./indexer.cjs'),Pump=require('./pump.cjs');
 const FX=require('./sol-usd.cjs'),F=require('./primary-funding.cjs'),FS=require('./funding-store.cjs'),C=require('./cycle-v3.cjs'),V=require('./verifier-v3.cjs');
 const Logs=require('./logs.cjs'),Signer=require('./signer.cjs'),W3=require('./wire-v3.cjs'),{stable}=require('./policy.cjs');
-const R=require('./receipts-v3.cjs'),BB=require('./buyback-v3.cjs'),Admin=require('./admin-v3.cjs');
+const R=require('./receipts-v3.cjs'),BB=require('./buyback-v3.cjs'),Admin=require('./admin-v3.cjs'),Inbox=require('./key-inbox.cjs');
 const b=x=>BigInt(x);
 
 // ---------------- history ingestion ----------------
@@ -121,7 +121,7 @@ function chainDeposit(tx,{program,wallet,coin}){
 // applied oldest first; reconciliation never advances past a transaction it could not read, and a
 // partial signature listing is not applied at all.
 async function reconcileFunding({db,rpc,program},coin){
- const fw=(await db.query("SELECT * FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired'",[coin.mint])).rows[0];if(!fw||fw.opening_slot==null)return null;
+ const fw=(await db.query("SELECT * FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired'",[coin.mint])).rows[0];if(!fw||fw.opening_slot==null||fw.funding_model==='balance_budget')return null;   // budget wallets are not an income ledger
  const r=await H.signaturesFor(rpc,fw.address,{until:fw.reconciled_signature||null});
  if(!r.complete)return{credits:0,incidents:0,gap:r.reason||'incomplete'};
  const ctx=program?{program:program.toBase58(),wallet:fw.address,coin:W3.addresses(program,new PublicKey(coin.mint)).coin.toBase58()}:null;
@@ -141,6 +141,34 @@ async function primaryAwaiting(db,mint,cutoff){
  const a=(await db.query('SELECT holder_awaiting_transfer FROM reward_funding_accounts WHERE mint=$1',[mint])).rows[0];if(!a)return 0n;
  const late=(await db.query('SELECT COALESCE(sum(holder_lamports),0) s FROM reward_funding_credits WHERE mint=$1 AND block_time>$2',[mint,cutoff])).rows[0].s;
  const v=b(a.holder_awaiting_transfer)-b(String(late).split('.')[0]);return v>0n?v:0n;
+}
+// ---------------- balance budget (funding_model = 'balance_budget') ----------------
+// The admin commits budget_bps of the fee wallet's CURRENT balance. The scheduler measures that
+// balance once (finalized) and fixes budget_lamports plus the coin's on-chain deposit counter at that
+// moment; usage afterwards is read from the chain (Coin.deposits), never from database rows.
+const BUDGET_FEE_RESERVE=10_000_000n;   // keep 0.01 SOL in the fee wallet
+async function applyBudgetRequests(db,{connection,program}){
+ const rows=(await db.query("SELECT * FROM reward_funding_wallets WHERE status<>'retired' AND funding_model='balance_budget' AND budget_requested_at IS NOT NULL AND (budget_set_at IS NULL OR budget_set_at<budget_requested_at)")).rows;const out=[];
+ for(const fw of rows){
+  const bal=await connection.getBalanceAndContext(new PublicKey(fw.address),'finalized');
+  const info=program?await connection.getAccountInfo(W3.addresses(program,new PublicKey(fw.mint)).coin,'finalized'):null;
+  const deposits=info&&program&&info.owner.equals(program)?b(W3.decode('coin',info.data).deposits):0n;
+  const budget=b(bal.value)*BigInt(fw.budget_bps)/10000n;
+  await db.query('UPDATE reward_funding_wallets SET budget_balance_lamports=$2,budget_lamports=$3,budget_start_deposits=$4,budget_set_at=now() WHERE id=$1',[fw.id,String(bal.value),String(budget),String(deposits)]);
+  await Logs.log(db,{severity:'warn',component:'scheduler',eventType:'funding_budget_set',mint:fw.mint,message:`Holder budget fixed: ${budget} lamports = ${fw.budget_bps/100}% of the fee wallet balance ${bal.value} (finalized slot ${bal.context.slot}); rounds deposit only what is left of it`,metadata:{wallet:fw.address,budget:String(budget),balance:String(bal.value),startDeposits:String(deposits)}});
+  out.push({mint:fw.mint,budget:String(budget)});
+ }
+ return out;
+}
+// Lamports the next round may still take from a budget wallet; null for an income-ledger wallet.
+async function budgetAvailable(db,connection,mint,chainCoin){
+ const fw=(await db.query("SELECT * FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired'",[mint])).rows[0];
+ if(!fw||fw.funding_model!=='balance_budget')return null;
+ if(!fw.budget_set_at||(fw.budget_requested_at&&new Date(fw.budget_set_at)<new Date(fw.budget_requested_at)))return 0n;   // not measured yet
+ const used=b(chainCoin?.deposits??0)-b(fw.budget_start_deposits??0);
+ const left=b(fw.budget_lamports)-(used>0n?used:0n);if(left<=0n)return 0n;
+ const bal=b(await connection.getBalance(new PublicKey(fw.address),'finalized'))-BUDGET_FEE_RESERVE;
+ const v=left<bal?left:bal;return v>0n?v:0n;
 }
 async function projectToken({db,connection},coin){
  const info=await connection.getParsedAccountInfo(new PublicKey(coin.mint),'finalized');const m=info.value?.data?.parsed?.info;if(!m)return;
@@ -209,6 +237,8 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
     }
     await Logs.heartbeat(idb,'indexer','ok',{coins:coins.length,ms:Date.now()-started});
    }
+   if(settles)await Inbox.processInbox(sdb,{worker}).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'key_inbox_failed',message:e.message,errorCode:e.code||'INBOX_FAILED'}));
+   if(settles)await applyBudgetRequests(sdb,{connection,program}).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'funding_budget_failed',message:e.message,errorCode:e.code||'BUDGET_FAILED'}));
    if(settles)await Admin.applyOpeningRequests(sdb,connection).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'opening_credit_failed',message:e.message}));
    if(settles)for(const coin of coins.filter(c=>c.kind==='primary'))   // dev-wallet funding ledger (scheduler-only writes)
     await DB.withLease(sdb,'funding:'+coin.mint,worker,async()=>{const r=await reconcileFunding({db:sdb,rpc,program},coin);
@@ -223,7 +253,7 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
      verifier:{cosign:V.cosigner({db:vdb,program,key:verifierKey,inputs:inputsLoader(vdb)}),...R.attestor({rpc:new H.Rpc(process.env.VERIFIER_RPC_URL||historyUrl,{minIntervalMs:100}),connection,program,key:verifierKey})},
      cutoffSlot:async t=>(await H.findCutoffSlot(rpc,t)).slot,now:async()=>connection.getBlockTime(await connection.getSlot('finalized')),
      devSigner:async coin=>{const fw=(await sdb.query("SELECT * FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired' AND mode='automatic'",[coin.mint])).rows[0];return fw?.signer?Signer.load(sdb,fw.signer):null;},
-     primaryAwaiting:(mint,cutoff)=>primaryAwaiting(sdb,mint,cutoff),sponsorRent:process.env.REWARDS_SPONSOR_RENT==='true'};
+     primaryAwaiting:async(mint,cutoff,chainCoin)=>{const v=await budgetAvailable(sdb,connection,mint,chainCoin);return v??primaryAwaiting(sdb,mint,cutoff);},sponsorRent:process.env.REWARDS_SPONSOR_RENT==='true'};
     for(const r of await Admin.syncPrimary(sdb,{connection,program}).catch(e=>(Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'primary_sync_failed',message:e.message}),[])))if(r.state==='active'){const c=coins.find(x=>x.mint===r.mint);if(c)c.status='active';}
     for(const coin of coins.filter(c=>c.status==='active')){
      await C.tick(ports,coin.mint).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'tick_failed',mint:coin.mint,message:e.message,errorCode:e.code||'SCHEDULER_ERROR'}));
@@ -244,4 +274,4 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
  await Promise.all([idb,sdb,vdb].filter(Boolean).map(p=>p.end()));
 }
 if(require.main===module)main().catch(e=>{process.stderr.write('worker failed: '+(e.code||'')+' '+Logs.redactText(e.message)+'\n');process.exitCode=1;});
-module.exports={preflightV3,envOrFile,backfillSolUsd,chainDeposit,ingest,inputsLoader,sampleSolUsd,heartbeat,reconcileFunding,primaryAwaiting,projectToken,main};
+module.exports={preflightV3,envOrFile,backfillSolUsd,chainDeposit,ingest,inputsLoader,sampleSolUsd,heartbeat,reconcileFunding,primaryAwaiting,applyBudgetRequests,budgetAvailable,BUDGET_FEE_RESERVE,projectToken,main};

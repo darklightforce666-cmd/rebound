@@ -18,7 +18,8 @@ const b=x=>BigInt(x);
 const TERMINAL=new Set(['complete','skipped_no_funds','skipped_no_eligible_holders','missed','expired','failed_action_required']);
 
 async function chainCoin(connection,program,mint){const a=W3.addresses(program,mint);const info=await connection.getAccountInfo(a.coin,'finalized');return info?W3.decode('coin',info.data):null;}
-async function chainPaid(connection,program,mint,cycle,index){const a=W3.addresses(program,mint,{cycle,index});const info=await connection.getAccountInfo(a.paid,'finalized');return info?W3.decode('paid',info.data):null;}
+// Paid flags are one bit per award inside the round account (read once per pass).
+async function chainPaid(connection,program,mint,cycle,index){const r=await chainRound(connection,program,mint,cycle);return r&&W3.isPaid(r,index)?{slot:null}:null;}
 async function chainRound(connection,program,mint,cycle){const a=W3.addresses(program,mint,{cycle});const info=await connection.getAccountInfo(a.round,'finalized');return info?W3.decode('round',info.data):null;}
 const cycleId=(mint,n)=>`${mint}:${n}`;
 
@@ -39,7 +40,7 @@ async function setState(db,id,state,fields={},{mint,cycle,message}={}){
  *   verifier: {cosign(tx, proposal)} — independent recomputation + partial signature,
  *   inputs(coinRow, cycle, cutoff, cutoffSlot) → S.build inputs (events, coverage, fx, sol, …),
  *   cutoffSlot(t) → slot, now() → finalized unix time, devSigner(coinRow) → Keypair|null,
- *   primaryAwaiting(mint, cutoff) → lamports of dev-wallet holder funding credited ≤ cutoff not yet deposited,
+ *   primaryAwaiting(mint, cutoff, chainCoin) → lamports of dev-wallet holder funding credited ≤ cutoff not yet deposited,
  *   sponsorRent: boolean, worker: string}
  */
 async function tick(ports,mint){
@@ -79,7 +80,7 @@ async function advance(ports,coinRow,c,row,t){
    if(t<cutoff)return{cycle:n,state:row.state};
    const slot=await ports.cutoffSlot(cutoff);if(slot==null){await setState(db,id,'waiting_for_data',{reason:'cutoff_slot_unproven'},ctx);return{cycle:n,state:'waiting_for_data'};}
    const onchainH=b(c.holderUnallocated);
-   const awaiting=c.kind==='primary'&&ports.primaryAwaiting?b(await ports.primaryAwaiting(mint,cutoff)):0n;
+   const awaiting=c.kind==='primary'&&ports.primaryAwaiting?b(await ports.primaryAwaiting(mint,cutoff,c)):0n;
    const inputs=await ports.inputs(coinRow,n,cutoff,slot);
    const snap=S.build({...inputs,mint,cycle:n,cutoff,cutoffSlot:slot,holderReserve:onchainH+awaiting,policy:P3.policy(coinRow.policy_version)});
    if(snap.state==='waiting_for_data'){await setState(db,id,'waiting_for_data',{reason:snap.reason},{...ctx,message:`Cycle ${n} waiting for data: ${snap.reason}`});return{cycle:n,state:'waiting_for_data',reason:snap.reason};}
@@ -208,23 +209,34 @@ async function payStep(ports,coinRow,row){
  if(row.state==='funded')await setState(db,row.id,'paying',{submitted_at:new Date().toISOString()},{mint,cycle:n});
  const rent=b(await connection.getMinimumBalanceForRentExemption(0));
  const awards=(await db.query("SELECT * FROM reward_awards WHERE cycle_id=$1 AND state IN ('reserved','deferred_rent') ORDER BY leaf_index",[row.id])).rows;
+ const round=await chainRound(connection,program,mint,n);
+ const roundAddress=W3.addresses(program,mint,{cycle:n}).round.toBase58();
  let pending=0;
  for(const a of awards){
-  const onchain=await chainPaid(connection,program,mint,n,a.leaf_index);
-  if(onchain){await db.query("UPDATE reward_awards SET state='paid',settled_slot=$3,receipt_address=$4 WHERE cycle_id=$1 AND leaf_index=$2 AND state IN ('reserved','deferred_rent')",[row.id,a.leaf_index,String(onchain.slot),W3.addresses(program,mint,{cycle:n,index:a.leaf_index}).paid.toBase58()]);continue;}
+  if(round&&W3.isPaid(round,a.leaf_index)){await db.query("UPDATE reward_awards SET state='paid',receipt_address=$3 WHERE cycle_id=$1 AND leaf_index=$2 AND state IN ('reserved','deferred_rent')",[row.id,a.leaf_index,roundAddress]);continue;}
   const exists=await connection.getAccountInfo(W3.pk(a.recipient));const amount=b(a.amount_lamports);
   const needsRent=!exists&&amount<rent;
   if(needsRent&&!ports.sponsorRent){if(a.state!=='deferred_rent')await db.query("UPDATE reward_awards SET state='deferred_rent' WHERE cycle_id=$1 AND leaf_index=$2",[row.id,a.leaf_index]);pending++;continue;}
   const ixs=[];if(needsRent)ixs.push(require('@solana/web3.js').SystemProgram.transfer({fromPubkey:ports.feePayer.publicKey,toPubkey:W3.pk(a.recipient),lamports:Number(rent)}));
-  ixs.push(W3.I.pay(program,{payer:ports.feePayer.publicKey,mint,cycle:n,index:a.leaf_index,wallet:a.recipient,amount:a.amount_lamports,proof:a.proof}));
+  ixs.push(W3.I.pay(program,{mint,cycle:n,index:a.leaf_index,wallet:a.recipient,amount:a.amount_lamports,proof:a.proof}));
   const r=await T.submit({db,connection,job:`pay:${a.leaf_index}:${row.id}`,kind:'payout',signerRole:'fee_payer',feePayer:ports.feePayer,instructions:ixs,
-   readSettlement:async()=>{const p=await chainPaid(connection,program,mint,n,a.leaf_index);return p?{settled:true,slot:Number(p.slot)}:{definitivelyUnsettled:true};},
+   readSettlement:async()=>{const p=await chainPaid(connection,program,mint,n,a.leaf_index);return p?{settled:true,slot:p.slot}:{definitivelyUnsettled:true};},
    spend:{namespace:coinRow.namespace,mint,recipients:[a.recipient],lamports:needsRent?String(rent):'0',fees:'5000',cycleId:row.id,kind:'payout'},context:{cycle:n,index:a.leaf_index}});
-  if(r.state==='finalized'){await db.query("UPDATE reward_awards SET state='paid',settlement_signature=$3 WHERE cycle_id=$1 AND leaf_index=$2 AND state IN ('reserved','deferred_rent')",[row.id,a.leaf_index,r.signature||null]);continue;}
+  if(r.state==='finalized'){await db.query("UPDATE reward_awards SET state='paid',settlement_signature=$3,receipt_address=$4 WHERE cycle_id=$1 AND leaf_index=$2 AND state IN ('reserved','deferred_rent')",[row.id,a.leaf_index,r.signature||null,roundAddress]);continue;}
   pending++;
  }
  const left=(await db.query("SELECT count(*)::int n, count(*) FILTER (WHERE state='deferred_rent')::int d FROM reward_awards WHERE cycle_id=$1 AND state IN ('reserved','deferred_rent')",[row.id])).rows[0];
- if(left.n===0){await setState(db,row.id,'complete',{finalized_at:new Date().toISOString()},{mint,cycle:n,message:`Cycle ${n} complete: every award paid`});
+ if(left.n===0){
+  // Every award is paid: close the round so its rent returns to the fee payer (best effort; retried next pass).
+  const fresh=await chainRound(connection,program,mint,n);
+  if(fresh&&fresh.paidCount===fresh.count&&fresh.remaining===0n){
+   const c=await T.submit({db,connection,job:`close-round:${row.id}`,kind:'close_round',signerRole:'fee_payer',feePayer:ports.feePayer,
+    instructions:[W3.I.closeRound(program,{mint,cycle:n,rentPayer:fresh.rentPayer})],
+    readSettlement:async()=>(await chainRound(connection,program,mint,n))?{definitivelyUnsettled:true}:{settled:true},
+    spend:{namespace:coinRow.namespace,mint,recipients:[],lamports:'0',fees:'5000',cycleId:row.id,kind:'close_round'},context:{cycle:n}}).catch(e=>({state:'failed',error:e.message}));
+   if(c.state!=='finalized')return{cycle:n,state:row.state,pending:0,closing:c.state};
+  }
+  await setState(db,row.id,'complete',{finalized_at:new Date().toISOString()},{mint,cycle:n,message:`Cycle ${n} complete: every award paid; round closed and its rent returned`});
   await db.query("UPDATE reward_public_tokens SET paid_lamports=(SELECT COALESCE(sum(amount_lamports),0) FROM reward_awards WHERE mint=$1 AND state='paid') WHERE mint=$1",[mint]);return{cycle:n,state:'complete'};}
  const state=left.d===left.n?'partially_paid':'paying';if(state!==row.state)await setState(db,row.id,state,{},{mint,cycle:n,message:`Cycle ${n}: ${left.n} award(s) outstanding (${left.d} waiting for rent-exempt recipient accounts)`});
  return{cycle:n,state,pending:left.n};

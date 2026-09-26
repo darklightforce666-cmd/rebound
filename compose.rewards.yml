@@ -33,3 +33,5 @@ services:
       REWARDS_PUBLISHER_KEY_FILE: /run/secrets/publisher.json
       REWARDS_VERIFIER_KEY_FILE: /run/secrets/verifier.json
       REWARDS_FEE_PAYER_KEY_FILE: /run/secrets/fee_payer.json
+      REWARDS_SIGNER_MASTER_KEY_FILE: /run/secrets/signer-master.key   # encrypts imported fee-wallet keys at rest
+      REWARDS_INBOX_KEY_FILE: /run/secrets/inbox.jwk                   # dashboard seals fee-wallet keys to this key

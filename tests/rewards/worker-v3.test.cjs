@@ -35,7 +35,7 @@ function transfer({mint,from,fromAcc,to,toAcc,amount,pre,slot}){
 }
 async function setup(){
  const db=await supabaseDb(),mint=key();
- await db.query("INSERT INTO reward_coins(mint,policy_hash,status,kind,namespace,program_version,policy_version) VALUES($1,'h','active','primary','mainnet_test','v3','rebound-v3.0')",[mint]);
+ await db.query("INSERT INTO reward_coins(mint,policy_hash,status,kind,namespace,program_version,policy_version) VALUES($1,'h','active','primary','mainnet_test','v3','rebound-v3.1')",[mint]);
  return{db,mint,coin:(await db.query('SELECT * FROM reward_coins WHERE mint=$1',[mint])).rows[0]};
 }
 
@@ -93,7 +93,7 @@ test('dev-wallet reconciliation (scheduler role): holder deposits are recognized
  const db=await supabaseDb();try{
   const DEV=key(),mint=key(),crypto=require('node:crypto'),bs58=require('bs58'),W3=require('../../server/rewards/wire-v3.cjs'),{PublicKey}=require('@solana/web3.js');
   const program=Keypair.generate().publicKey,coinPda=W3.addresses(program,new PublicKey(mint)).coin.toBase58();
-  await db.query("INSERT INTO reward_coins(mint,policy_hash,status,kind,namespace,program_version,policy_version) VALUES($1,'h','active','primary','mainnet_test','v3','rebound-v3.0')",[mint]);
+  await db.query("INSERT INTO reward_coins(mint,policy_hash,status,kind,namespace,program_version,policy_version) VALUES($1,'h','active','primary','mainnet_test','v3','rebound-v3.1')",[mint]);
   await db.query("INSERT INTO reward_funding_wallets(id,namespace,mint,address,ownership_proof) VALUES($1,'mainnet_test',$2,$3,'{}')",[crypto.randomUUID(),mint,DEV]);
   await FS.recordOpening(db,{mint,wallet:DEV,balance:2n*SOL,requestedCredit:SOL,operationalReserve:0n,slot:100,time:100});
   const chain=fakeChain();let slot=100;

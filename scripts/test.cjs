@@ -25,6 +25,7 @@ require('../tests/rewards/signer.test.cjs');
 if(require('node:fs').existsSync(require('node:path').join(__dirname,'../contracts/v3/target/deploy/rebound_rewards_v3.so')))require('../tests/rewards/cycle-v3.test.cjs');
 else require('node:test').test('cycle engine against the compiled V3 program',{skip:'contracts/v3 SBF binary not built (run cargo build-sbf)'},()=>{});
 require('../tests/copy.test.cjs');
+require('../tests/rewards/budget-inbox.test.cjs');
 require('../tests/vendor-bigint.test.cjs');
 require('../tests/wallet.test.cjs');
 require('../tests/wallet-session.test.cjs');

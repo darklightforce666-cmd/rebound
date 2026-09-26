@@ -8,11 +8,11 @@ const lot=(id,order,{qty,cost,paid=0n,reserved=0n,kind='purchase'})=>({id,order,
 // price Q18 so that `tokens` raw units are worth `dollars`
 const priceFor=(dollars,tokens)=>usd(dollars)*P.E18/BigInt(tokens);
 
-test('policy constants: 85/15, 1800/60 production, 120/30 isolated test policy, USD loss, no exit bans',()=>{
+test('policy constants: 85/15, 1800/60 production, 120/30 isolated test policy, SOL loss (v3.1; USD v3.0 kept), no exit bans',()=>{
  assert.equal(P.POLICY.holdersBps+P.POLICY.otherBps,10000);assert.equal(P.POLICY.holdersBps,8500);
  assert.equal(P.POLICY.cycleSeconds,1800);assert.equal(P.POLICY.cutoffLeadSeconds,60);
  assert.equal(P.TEST_POLICY.cycleSeconds,120);assert.equal(P.TEST_POLICY.cutoffLeadSeconds,30);
- assert.equal(P.POLICY.lossUnit,'USD');assert.equal(P.POLICY.maturitySeconds,0);
+ assert.equal(P.POLICY.lossUnit,'SOL');assert.equal(P.TEST_POLICY.lossUnit,'SOL');assert.equal(P.POLICY_USD.lossUnit,'USD');assert.equal(P.POLICY.version,'rebound-v3.1');assert.equal(P.TEST_POLICY.version,'rebound-v3.1-test');assert.equal(P.policy('rebound-v3.0').lossUnit,'USD');assert.equal(P.POLICY.maturitySeconds,0);
  assert.equal(P.POLICY.permanentExitOnSale,false);assert.equal(P.POLICY.walletLinkExclusion,false);assert.equal(P.POLICY.pumpHolderRewardMode,false);
  assert.notEqual(P.POLICY_HASH,P.TEST_POLICY_HASH);assert.match(P.POLICY_HASH,/^[a-f0-9]{64}$/);
 });

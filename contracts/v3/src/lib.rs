@@ -24,7 +24,7 @@ solana_program::entrypoint!(process_instruction);
 pub const PRODUCTION_CYCLE:i64=1800; pub const PRODUCTION_LEAD:i64=60;
 pub const TEST_CYCLE:i64=120; pub const TEST_LEAD:i64=30;
 pub const MAX_INDEX_LAG:u64=96; pub const AUTH_LIFETIME:u64=20; pub const RESUME_DELAY:i64=86400;
-pub const GLOBAL_LEN:usize=320; pub const COIN_LEN:usize=384; pub const ROUND_LEN:usize=320; pub const PAID_LEN:usize=128; pub const RECEIPT_LEN:usize=128;
+pub const GLOBAL_LEN:usize=320; pub const COIN_LEN:usize=384; pub const ROUND_LEN:usize=320; pub const MAX_RECIPIENTS:u32=64_000; pub const RECEIPT_LEN:usize=128;
 pub const JOB_LEN:usize=320; pub const MAX_PROOF:usize=20;
 pub const PUMP:Pubkey=solana_program::pubkey!("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
 pub const FEES:Pubkey=solana_program::pubkey!("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ");
@@ -53,7 +53,6 @@ pub fn global_address(p:&Pubkey)->(Pubkey,u8){pda(p,&[b"deployment-v3"])}
 pub fn coin_address(p:&Pubkey,mint:&Pubkey)->(Pubkey,u8){pda(p,&[b"coin-v3",mint.as_ref()])}
 pub fn intake_address(p:&Pubkey,mint:&Pubkey)->(Pubkey,u8){pda(p,&[b"intake-v3",mint.as_ref()])}
 pub fn round_address(p:&Pubkey,coin:&Pubkey,cycle:u64)->(Pubkey,u8){pda(p,&[b"round-v3",coin.as_ref(),&cycle.to_le_bytes()])}
-pub fn paid_address(p:&Pubkey,round:&Pubkey,index:u32)->(Pubkey,u8){pda(p,&[b"paid-v3",round.as_ref(),&index.to_le_bytes()])}
 pub fn receipt_address(p:&Pubkey,coin:&Pubkey,event:&[u8;32])->(Pubkey,u8){pda(p,&[b"receipt-v3",coin.as_ref(),event])}
 pub fn job_address(p:&Pubkey,coin:&Pubkey,id:u64)->(Pubkey,u8){pda(p,&[b"buyback-v3",coin.as_ref(),&id.to_le_bytes()])}
 pub fn buyer_address(p:&Pubkey,job:&Pubkey)->(Pubkey,u8){pda(p,&[b"buyer-v3",job.as_ref()])}
@@ -70,9 +69,11 @@ pub struct Coin{
 }
 #[derive(BorshSerialize,BorshDeserialize,Debug,Clone,PartialEq)]
 pub struct Round{pub magic:[u8;8],pub coin:Pubkey,pub cycle:u64,pub root:[u8;32],pub total:u64,pub remaining:u64,pub count:u32,pub paid_count:u32,
- pub cutoff_slot:u64,pub cutoff_time:i64,pub due_time:i64,pub snapshot:[u8;32],pub manifest:[u8;32],pub policy:[u8;32],pub verifier:Pubkey}
-#[derive(BorshSerialize,BorshDeserialize,Debug,Clone,PartialEq)]
-pub struct Paid{pub magic:[u8;8],pub round:Pubkey,pub index:u32,pub wallet:Pubkey,pub amount:u64,pub slot:u64}
+ pub cutoff_slot:u64,pub cutoff_time:i64,pub due_time:i64,pub snapshot:[u8;32],pub manifest:[u8;32],pub policy:[u8;32],pub verifier:Pubkey,
+ /// Who paid the round's rent; CloseRound returns it there once every award is paid.
+ pub rent_payer:Pubkey}
+/// Paid flags live in the round account after the header: one bit per award (no account per recipient).
+pub fn bitmap_len(count:u32)->usize{((count as usize)+7)/8}
 #[derive(BorshSerialize,BorshDeserialize,Debug,Clone,PartialEq)]
 pub struct Receipt{pub magic:[u8;8],pub coin:Pubkey,pub event:[u8;32],pub amount:u64,pub holders:u64,pub buyback:u64,pub source_slot:u64}
 /// Buyback job states: 0 reserved, 1 purchased (pending burn), 2 burned, 3 closed.
@@ -95,9 +96,19 @@ fn coin(program:&Pubkey,a:&AccountInfo,g:&AccountInfo)->Result<Coin,ProgramError
  conservation(&c)?;backing(&c,a)?;Ok(c)
 }
 fn round(program:&Pubkey,a:&AccountInfo,c:&AccountInfo)->Result<Round,ProgramError>{
- let r:Round=load(program,a,ROUND_LEN,b"RBD3ROND")?;
+ require(a.owner==program&&!a.executable&&a.data_len()>=ROUND_LEN,Error::Account)?;
+ let r:Round={let data=a.try_borrow_data()?;require(data.get(..8)==Some(b"RBD3ROND"),Error::Data)?;
+  let mut rest=&data[..ROUND_LEN];let v=Round::deserialize(&mut rest).map_err(|_|Error::Data)?;require(rest.iter().all(|b|*b==0),Error::Data)?;v};
+ require(a.data_len()==ROUND_LEN+bitmap_len(r.count),Error::Account)?;
  require(r.coin==*c.key&&round_address(program,c.key,r.cycle).0==*a.key&&r.remaining<=r.total&&r.paid_count<=r.count,Error::Account)?;Ok(r)
 }
+/// Write the round header without touching the paid bitmap that follows it.
+fn store_round(a:&AccountInfo,v:&Round)->ProgramResult{
+ wr(a)?;let bytes=borsh::to_vec(v).map_err(|_|Error::Data)?;require(bytes.len()<=ROUND_LEN&&a.data_len()>=ROUND_LEN,Error::Account)?;
+ let mut d=a.try_borrow_mut_data()?;d[..ROUND_LEN].fill(0);d[..bytes.len()].copy_from_slice(&bytes);Ok(())
+}
+fn paid_flag(a:&AccountInfo,index:u32)->Result<bool,ProgramError>{let d=a.try_borrow_data()?;let at=ROUND_LEN+(index as usize)/8;require(at<d.len(),Error::Account)?;Ok(d[at]&(1u8<<(index%8))!=0)}
+fn set_paid_flag(a:&AccountInfo,index:u32)->ProgramResult{wr(a)?;let mut d=a.try_borrow_mut_data()?;let at=ROUND_LEN+(index as usize)/8;require(at<d.len(),Error::Account)?;d[at]|=1u8<<(index%8);Ok(())}
 /// Conservation: every credited lamport is in exactly one bucket.
 pub fn conservation(c:&Coin)->ProgramResult{
  let holders=add(add(c.holder_unallocated,c.holder_reserved)?,c.holder_paid)?;
@@ -224,6 +235,8 @@ pub enum Command{
  BuybackSwap{min_out:u64},
  BuybackBurn,
  CloseBuyback,
+ /// Close a fully paid round and return its rent to whoever paid it (permissionless).
+ CloseRound{cycle:u64},
 }
 
 pub fn process_instruction(program:&Pubkey,accounts:&[AccountInfo],data:&[u8])->ProgramResult{
@@ -327,27 +340,37 @@ pub fn process_instruction(program:&Pubkey,accounts:&[AccountInfo],data:&[u8])->
   let d=deployment(program,g)?;signer(publisher,&d.publisher)?;signer(verifier,&d.verifier)?;require(!d.paused,Error::Paused)?;
   let mut s=coin(program,c,g)?;require(s.active,Error::Inactive)?;let now=clock()?;
   funding_window(&s,cycle,now.unix_timestamp)?;
-  require(cutoff_slot<=now.slot&&root.sum>0&&root.hash!=[0;32]&&count>0&&snapshot!=[0;32]&&manifest!=[0;32],Error::Round)?;
+  require(cutoff_slot<=now.slot&&root.sum>0&&root.hash!=[0;32]&&count>0&&count<=MAX_RECIPIENTS&&snapshot!=[0;32]&&manifest!=[0;32],Error::Round)?;
   let(expected,bump)=round_address(program,c.key,cycle);require(expected==*r.key,Error::Account)?;
-  create(program,payer,r,system,&[b"round-v3",c.key.as_ref(),&cycle.to_le_bytes(),&[bump]],ROUND_LEN)?;
+  create(program,payer,r,system,&[b"round-v3",c.key.as_ref(),&cycle.to_le_bytes(),&[bump]],ROUND_LEN+bitmap_len(count))?;
   s.holder_unallocated=sub(s.holder_unallocated,root.sum)?;s.holder_reserved=add(s.holder_reserved,root.sum)?;s.last_cycle=cycle;
-  store(r,&Round{magic:*b"RBD3ROND",coin:*c.key,cycle,root:root.hash,total:root.sum,remaining:root.sum,count,paid_count:0,cutoff_slot,cutoff_time:cutoff(&s,cycle)?,due_time:due(&s,cycle)?,snapshot,manifest,policy:s.policy,verifier:d.verifier})?;
+  store_round(r,&Round{magic:*b"RBD3ROND",coin:*c.key,cycle,root:root.hash,total:root.sum,remaining:root.sum,count,paid_count:0,cutoff_slot,cutoff_time:cutoff(&s,cycle)?,due_time:due(&s,cycle)?,snapshot,manifest,policy:s.policy,verifier:d.verifier,rent_payer:*payer.key})?;
   conservation(&s)?;backing(&s,c)?;store(c,&s)?;solana_program::msg!("RBD3 funded {} cycle {} total {}",s.mint,cycle,root.sum);Ok(())
  },
  Command::Pay{cycle,index,amount,proof}=>{
   // Permissionless crank. No fresh holding/price check: the frozen snapshot award is payable.
-  require(accounts.len()==7,Error::Account)?;
-  let(payer,g,c,r,paid,wallet,system)=(&accounts[0],&accounts[1],&accounts[2],&accounts[3],&accounts[4],&accounts[5],&accounts[6]);
-  distinct(&[*payer.key,*g.key,*c.key,*r.key,*paid.key,*wallet.key])?;
+  require(accounts.len()==4,Error::Account)?;
+  let(g,c,r,wallet)=(&accounts[0],&accounts[1],&accounts[2],&accounts[3]);
+  distinct(&[*g.key,*c.key,*r.key,*wallet.key])?;
   let d=deployment(program,g)?;require(!d.paused,Error::Paused)?;let mut s=coin(program,c,g)?;let mut rd=round(program,r,c)?;
   require(rd.cycle==cycle,Error::Round)?;require(clock()?.unix_timestamp>=rd.due_time,Error::TooSoon)?;
   verify(program,&s,&rd,index,wallet.key,amount,&proof)?;
   require(!wallet.executable&&wallet.owner==&system_program::id(),Error::Account)?;
-  let(expected,bump)=paid_address(program,r.key,index);require(expected==*paid.key,Error::Account)?;require(paid.owner!=program,Error::Settled)?;
-  create(program,payer,paid,system,&[b"paid-v3",r.key.as_ref(),&index.to_le_bytes(),&[bump]],PAID_LEN)?;
+  require(!paid_flag(r,index)?,Error::Settled)?;
   settle(&mut s,&mut rd,amount)?;pay(c,wallet,amount)?;backing(&s,c)?;
-  store(paid,&Paid{magic:*b"RBD3PAID",round:*r.key,index,wallet:*wallet.key,amount,slot:clock()?.slot})?;store(r,&rd)?;store(c,&s)?;
+  set_paid_flag(r,index)?;store_round(r,&rd)?;store(c,&s)?;
   solana_program::msg!("RBD3 paid {} {} {}",r.key,index,amount);Ok(())
+ },
+ Command::CloseRound{cycle}=>{
+  require(accounts.len()==4,Error::Account)?;
+  let(g,c,r,rent_to)=(&accounts[0],&accounts[1],&accounts[2],&accounts[3]);
+  distinct(&[*g.key,*c.key,*r.key,*rent_to.key])?;
+  deployment(program,g)?;coin(program,c,g)?;let rd=round(program,r,c)?;
+  require(rd.cycle==cycle&&rd.paid_count==rd.count&&rd.remaining==0,Error::Round)?;
+  require(*rent_to.key==rd.rent_payer,Error::Account)?;wr(r)?;wr(rent_to)?;
+  let rent=r.lamports();let to=add(rent_to.lamports(),rent)?;**r.try_borrow_mut_lamports()?=0;**rent_to.try_borrow_mut_lamports()?=to;
+  r.try_borrow_mut_data()?.fill(0);
+  solana_program::msg!("RBD3 round closed {} cycle {} rent {}",c.key,cycle,rent);Ok(())
  },
  Command::Pause|Command::RequestResume|Command::Resume=>{
   require(accounts.len()==2,Error::Account)?;let(authority,g)=(&accounts[0],&accounts[1]);let mut d=deployment(program,g)?;let now=clock()?.unix_timestamp;
@@ -379,6 +402,7 @@ pub mod buyback;
 mod tests{
  use super::*;
  fn coin(kind:u8)->Coin{Coin{magic:*b"RBD3COIN",mint:Pubkey::new_unique(),kind,deployment:Pubkey::new_unique(),policy:[3;32],active:true,anchor:1_000_000,cycle_seconds:1800,cutoff_lead:60,funding_wallet:Pubkey::new_unique(),launcher:Pubkey::new_unique(),receipts:0,deposits:0,holder_unallocated:0,holder_reserved:0,holder_paid:0,buyback_available:0,buyback_reserved:0,buyback_spent:0,split_carry:0,last_cycle:0,next_job:0}}
+ #[test]fn paid_bitmap_is_tiny(){assert_eq!(bitmap_len(1),1);assert_eq!(bitmap_len(8),1);assert_eq!(bitmap_len(9),2);assert!(ROUND_LEN+bitmap_len(MAX_RECIPIENTS)<=10_240,"round must fit a CPI-created account");}
  #[test]fn third_party_split_once_with_carry(){
   let mut c=coin(THIRD_PARTY);assert_eq!(credit(&mut c,1_000_000_000).unwrap(),(850_000_000,150_000_000));
   let mut t=coin(THIRD_PARTY);for _ in 0..100{credit(&mut t,1).unwrap();}assert_eq!((t.holder_unallocated,t.buyback_available,t.split_carry),(85,15,0));
@@ -395,7 +419,7 @@ mod tests{
  }
  #[test]fn settlement_conserves_and_cannot_overpay(){
   let mut c=coin(PRIMARY);deposit(&mut c,100).unwrap();c.holder_unallocated-=60;c.holder_reserved=60;
-  let mut r=Round{magic:*b"RBD3ROND",coin:Pubkey::new_unique(),cycle:1,root:[1;32],total:60,remaining:60,count:2,paid_count:0,cutoff_slot:1,cutoff_time:1,due_time:2,snapshot:[1;32],manifest:[1;32],policy:c.policy,verifier:Pubkey::new_unique()};
+  let mut r=Round{magic:*b"RBD3ROND",coin:Pubkey::new_unique(),cycle:1,root:[1;32],total:60,remaining:60,count:2,paid_count:0,cutoff_slot:1,cutoff_time:1,due_time:2,snapshot:[1;32],manifest:[1;32],policy:c.policy,verifier:Pubkey::new_unique(),rent_payer:Pubkey::new_unique()};
   settle(&mut c,&mut r,40).unwrap();settle(&mut c,&mut r,20).unwrap();assert_eq!((c.holder_reserved,c.holder_paid,r.remaining,r.paid_count),(0,60,0,2));
   assert!(settle(&mut c,&mut r,1).is_err());
  }
@@ -407,7 +431,7 @@ mod tests{
  #[test]fn state_sizes_fit(){
   assert!(borsh::to_vec(&coin(PRIMARY)).unwrap().len()<=COIN_LEN);
   let d=Deployment{magic:[0;8],admin:Pubkey::default(),publisher:Pubkey::default(),verifier:Pubkey::default(),guardian:Pubkey::default(),policy:[0;32],test_mode:false,paused:false,resume_at:0,target_mint:Pubkey::default(),target_token_program:Pubkey::default(),config_version:0};assert!(borsh::to_vec(&d).unwrap().len()<=GLOBAL_LEN);
-  let r=Round{magic:[0;8],coin:Pubkey::default(),cycle:0,root:[0;32],total:0,remaining:0,count:0,paid_count:0,cutoff_slot:0,cutoff_time:0,due_time:0,snapshot:[0;32],manifest:[0;32],policy:[0;32],verifier:Pubkey::default()};assert!(borsh::to_vec(&r).unwrap().len()<=ROUND_LEN);
+  let r=Round{magic:[0;8],coin:Pubkey::default(),cycle:0,root:[0;32],total:0,remaining:0,count:0,paid_count:0,cutoff_slot:0,cutoff_time:0,due_time:0,snapshot:[0;32],manifest:[0;32],policy:[0;32],verifier:Pubkey::default(),rent_payer:Pubkey::default()};assert!(borsh::to_vec(&r).unwrap().len()<=ROUND_LEN);
   let j=Job{magic:[0;8],coin:Pubkey::default(),id:0,cycle:0,target_mint:Pubkey::default(),target_token_program:Pubkey::default(),config_version:0,budget:0,state:0,spent:0,acquired:0,burned:0,max_slippage_bps:0,max_impact_bps:0,purchase_slot:0,burn_slot:0};assert!(borsh::to_vec(&j).unwrap().len()<=JOB_LEN);
  }
 }

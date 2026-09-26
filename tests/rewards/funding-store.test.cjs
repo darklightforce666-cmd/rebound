@@ -8,7 +8,7 @@ function tx({sig,payer='Other',pre,post,transfers=[]}){slot++;const keys=[payer,
  return{slot,blockTime:slot,transaction:{signatures:[sig],message:{accountKeys:keys,instructions:transfers.map(t=>({programId:SYS,parsed:{type:'transfer',info:{source:t.from,destination:t.to,lamports:Number(t.lamports)}}}))}},meta:{err:null,fee:5000,preBalances:keys.map(k=>k===DEV?Number(pre):0),postBalances:keys.map(k=>k===DEV?Number(post):0),innerInstructions:[]}};}
 async function setup(){
  const db=await supabaseDb();
- await db.query("INSERT INTO reward_coins(mint,policy_hash,status,kind,namespace,program_version,policy_version) VALUES('PRIMARY','h','registered','primary','production','v3','rebound-v3.0')");
+ await db.query("INSERT INTO reward_coins(mint,policy_hash,status,kind,namespace,program_version,policy_version) VALUES('PRIMARY','h','registered','primary','production','v3','rebound-v3.1')");
  await db.query("INSERT INTO reward_funding_wallets(id,namespace,mint,address,ownership_proof) VALUES($1,'production','PRIMARY',$2,'{}')",[crypto.randomUUID(),DEV]);
  return db;
 }

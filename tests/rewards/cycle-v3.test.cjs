@@ -27,7 +27,7 @@ async function world({automatic=true,mode='mainnet_test',holders=3}={}){
  c.tx(x=>x.buy(Keypair.generate().publicKey.toBase58(),'late',10n**9n,{lamports:1_000_000n,vSol:30n*SOL,vTok:10n**12n}));   // price drops
  const db=await supabaseDb();const mintS=mint.toBase58();
  await db.query("UPDATE reward_platform SET execution_mode=$1,test_allowlist_mints=$2,test_allowlist_wallets=$3,spend_cap_action_lamports=$4,spend_cap_cycle_lamports=$4,spend_cap_total_lamports=$5 WHERE namespace='mainnet_test'",[mode,[mintS],people,String(50n*SOL),String(500n*SOL)]);
- await db.query("INSERT INTO reward_coins(mint,policy_hash,status,kind,namespace,program_version,policy_version) VALUES($1,$2,'active','primary','mainnet_test','v3','rebound-v3.0')",[mintS,P3.POLICY_HASH]);
+ await db.query("INSERT INTO reward_coins(mint,policy_hash,status,kind,namespace,program_version,policy_version) VALUES($1,$2,'active','primary','mainnet_test','v3',$3)",[mintS,P3.POLICY_HASH,P3.POLICY.version]);
  const sol=cutoff=>[{time:cutoff-70,price:100n*USD,conf:0n},{time:cutoff-40,price:100n*USD,conf:0n},{time:cutoff-10,price:100n*USD,conf:0n}];
  const inputs=async(coinRow,n,cutoff)=>({events:c.events,coverage:{complete:true,throughSlot:10_000},excluded:new Set(['CurvePDA']),fx:()=>({price:100n*USD,conf:0n,time:0,source:'test'}),solSeries:sol(cutoff)});
  const ports={db,connection:conn,program,feePayer,publisher,verifierKey:verifier.publicKey,worker:'w1',
@@ -56,6 +56,9 @@ test('automatic primary cycle: cutoff snapshot → holder-only deposit → cosig
   assert.equal((await cycleRow(w)).state,'complete');const as=await awards(w);assert.ok(as.every(a=>a.state==='paid'));
   const after=await Promise.all(w.people.map(p=>w.conn.getBalance(new PublicKey(p))));
   for(const a of as){const i=w.people.indexOf(a.recipient);assert.equal(BigInt(after[i]-before[i]),BigInt(a.amount_lamports));}
+  // The fully paid round is closed: its account is gone and no per-recipient accounts were created.
+  assert.equal(await C.chainRound(w.conn,w.program,w.mintS,Number(row.cycle_number)),null,'round closed, rent returned');
+  assert.ok(as.every(a=>a.receipt_address===W3.addresses(w.program,new PublicKey(w.mintS),{cycle:Number(row.cycle_number)}).round.toBase58()));
   const c2=W3.decode('coin',(await w.conn.getAccountInfo(W3.addresses(w.program,w.mint).coin)).data);assert.equal(c2.holderPaid,total);assert.equal(c2.holderReserved,0n);
   const logs=(await w.db.query("SELECT event_type FROM reward_logs WHERE component='scheduler' ORDER BY id")).rows.map(r=>r.event_type);
   for(const e of ['cycle_funding_pending','cycle_funded','cycle_paying','cycle_complete'])assert.ok(logs.includes(e),e);

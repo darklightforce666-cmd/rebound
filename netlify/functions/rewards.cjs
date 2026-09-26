@@ -8,7 +8,7 @@ const crypto=require('node:crypto');
 const DB=require('../../server/rewards/db.cjs'),P=require('../../server/rewards/policy.cjs'),P3=require('../../server/rewards/policy-v3.cjs');
 const W=require('../../server/rewards/wire.cjs'),Auth=require('../../server/rewards/auth.cjs'),Session=require('../../server/rewards/session.cjs');
 const Consent=require('../../server/rewards/consent.cjs'),Logs=require('../../server/rewards/logs.cjs'),Metadata=require('../../server/rewards/metadata.cjs');
-const AdminAuth=require('../../server/rewards/admin-auth.cjs'),Cycle=require('../../server/rewards/cycle-v3.cjs'),Launch=require('../../server/rewards/launch-v3.cjs'),Admin=require('../../server/rewards/admin-v3.cjs');
+const AdminAuth=require('../../server/rewards/admin-auth.cjs'),Cycle=require('../../server/rewards/cycle-v3.cjs'),Launch=require('../../server/rewards/launch-v3.cjs'),Admin=require('../../server/rewards/admin-v3.cjs'),Inbox=require('../../server/rewards/key-inbox.cjs');
 
 let pool;
 const MAX_BODY=3000000;
@@ -106,7 +106,7 @@ const handlers={
   async 'launch-status'({db,event,q}){const s=await Session.authenticate(db,event.headers);return planCall(()=>Launch.status(launchPorts(db),{session:s,attemptId:uuid(q.id)}));},
   async 'admin-overview'({db,event}){const who=await adminAccess(db,event);
    const ports=process.env.SOLANA_RPC_URL&&process.env.REWARDS_PROGRAM_ID?chain(db):{};const o=await Admin.overview(db,{connection:ports.connection,program:ports.program});
-   const st=await Admin.site(db);const meta=st?.primary_mint&&rpcConnection()?await Admin.tokenMeta(rpcConnection(),st.primary_mint):null;return{...o,site:st,siteToken:meta,access:{via:who.via,expiresAt:who.expiresAt||null},passwordSet:(await AdminAuth.state(db)).passwordSet};},
+   const st=await Admin.site(db);const meta=st?.primary_mint&&rpcConnection()?await Admin.tokenMeta(rpcConnection(),st.primary_mint):null;const siteChain=st?.primary_mint&&ports.connection?await Admin.primaryChainStatus(ports.connection,ports.program,st.primary_mint,st.fee_wallet):null;return{...o,site:st,siteToken:meta,siteChain,access:{via:who.via,expiresAt:who.expiresAt||null},passwordSet:(await AdminAuth.state(db)).passwordSet};},
   // Public, chain-derived: a wallet's fixed awards and their payment evidence.
   async 'admin-auth-state'({db}){return AdminAuth.state(db);},
   async 'wallet-rewards'({db,q}){try{W.pk(q.wallet);}catch{fail(400,'INVALID_BODY','Invalid wallet');}
@@ -153,8 +153,8 @@ const handlers={
   ...Object.fromEntries([['admin-set-mode',(db,a,d)=>Admin.setMode(db,a,d)],['admin-test-config',(db,a,d)=>Admin.testConfig(db,a,d)],
    ['admin-pause',(db,a,d)=>Admin.pause(db,a,{...d,paused:true})],['admin-resume',(db,a,d)=>Admin.pause(db,a,{...d,paused:false})],
    ['admin-register-primary',(db,a,d,s)=>Admin.registerPrimary(db,a,s,d)],['admin-opening-credit',(db,a,d)=>Admin.openingCredit(db,a,d)],
-   ['admin-site',(db,a,d)=>Admin.setSite(db,a,d)],['admin-launch',(db,a,d,s)=>Admin.launch(db,a,s,d,{connection:rpcConnection()})],
-   ['admin-set-wallet',(db,a,d)=>Admin.setAdminWallet(db,a,d)],
+   ['admin-site',(db,a,d)=>Admin.setSite(db,a,d)],['admin-launch',(db,a,d,s)=>Admin.launch(db,a,s,d,{connection:rpcConnection(),program:process.env.REWARDS_PROGRAM_ID||null})],
+   ['admin-set-wallet',(db,a,d)=>Admin.setAdminWallet(db,a,d)],['admin-key-submit',(db,a,d)=>Inbox.submit(db,a,d)],
    ['admin-add-admin',(db,a,d)=>Admin.addAdmin(db,a,d)],['admin-revoke-admin',(db,a,d)=>Admin.revokeAdmin(db,a,d)]].map(([name,fn])=>[name,async({db,event,data,origin})=>{
    const s=await adminAccess(db,event);const payload=data.payload&&typeof data.payload==='object'?data.payload:{};let actor;
    if(s.via==='password')actor=s.actor;   // password session: the dashboard password is the approval

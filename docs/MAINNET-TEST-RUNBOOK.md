@@ -1,189 +1,154 @@
-# Private mainnet test — runbook (V3)
+# Private mainnet test — runbook (V3.1)
 
-This runbook covers a **capped `mainnet_test`**: real mainnet, allowlisted mints and wallets, hard spending caps
-and a separate namespace. It never enables public production. Every command below was rehearsed on
-2026-09-26 against a mainnet-equivalent local validator (SIMD-0500 inactive, the same program bytes).
+A **capped `mainnet_test`** on real mainnet: 2-minute rounds on a token of your choice (it can be someone else's
+pump.fun token), paid from a fee wallet with a fixed **budget = a share of its current balance** (default 50 %).
+It never enables public production.
 
-Legend: **[owner]** means the owner acts (wallet signature, SOL transfer, secret handling). **[host]** is a command on
-the machine that holds the operator keys: the owner's Mac for governance, the worker host for workers.
-Secrets are only ever files with mode 600. They are never pasted into chat, committed, or stored in Supabase or
-Netlify (except the Netlify secrets listed in `.env.example`).
+Legend: **[owner]** = the owner acts (wallet signature, SOL transfer, secret handling). **[Mac]** = a command on the
+owner's Mac, which holds the operator keys and, for this test, also runs the worker. Secrets are files with mode 600;
+they are never pasted into chat, committed, or stored readable in Supabase or Netlify. The one exception is the
+fee-wallet key, which the dashboard **encrypts in the browser to the worker's own key** (see step 6); the site and
+database only ever hold ciphertext they cannot open.
 
-## 0. Budget (SOL)
+## How a round works
 
-| Item | Who pays | Amount | Returned? |
+- Losses are measured **in SOL** (policy `rebound-v3.1-test`): remaining loss = SOL paid for the tokens a wallet still
+  holds − what those tokens are worth in SOL at the snapshot (higher of spot and a 60 s average) − compensation
+  already paid or reserved. Every holder with a recorded purchase is counted; no USD rate is involved.
+- Test rounds last **120 s**; the snapshot is taken **30 s** before the end (production: 30 min / 60 s).
+- At the snapshot the worker lists every underwater holder and splits what is left of the budget **in proportion
+  to each loss**, never more than the loss itself. The fee wallet deposits exactly that amount (automatic once
+  its key is imported), the round is funded on chain with the independent verifier's co-signature, and each award
+  is paid at the end of the round.
+- **Budget:** when you press *Save and launch*, the worker measures the fee wallet's finalized balance once and
+  fixes `budget = 50 % × balance`. Every round deposits at most what is left of it, counted from the program's own
+  deposit counter, and 0.01 SOL always stays in the wallet. Pressing *Save and launch* again fixes a new budget
+  from the balance at that moment.
+- Paid awards are one bit in the round account; when every award is paid the round account is closed and its
+  rent returns to the fee payer.
+
+## 0. SOL needed
+
+| Item | Wallet | Amount | Returned? |
 |---|---|---|---|
-| Program deploy (`--max-len 300000`) | admin | **2.09** net, but **~3.6 needed at deploy time** (a ~1.48 buffer is refunded right after) | only by closing the program |
-| Initialize + primary coin account rent + fees | admin | ~0.01 | no |
-| Operations: cycle job/round rent, paid-receipt rent 0.0018 per recipient, collection cranks, fees | fee payer | 0.2 (budget) | mostly no (rent stays on receipts) |
-| Buyback route setup (ATAs, volume accumulators) + swap fees | fee payer / publisher | 0.05 | no |
-| Test primary token on pump.fun (create + small initial buy) | dev wallet | ~0.05 | tokens |
-| Holder rewards funding (opening credit; 85 % goes to holders) | dev wallet | e.g. **0.2** → 0.17 to holders | paid to test holders |
-| 2 test holder wallets: buys to create an underwater position | owner's test wallets | 2 × 0.1 | partly (it's trading) |
-| Third-party launch test: launch ~0.011 + activation ~0.0094 + initial buy + trades for creator fees | owner's test wallet | ~0.3 | partly |
-| **Total to have available** | | **≈ 4.7 SOL**, about **2.8 SOL** of it spent or locked | |
+| Program deploy (`--max-len 220000`) | admin | **≈1.53** net; **≈3.1 needed during the deploy** (the buffer is refunded right after) | only by closing the program |
+| Initialize + coin account rent + fees | admin | ≈0.01 | no |
+| Operations: round rent (returned at close), Fund/Pay/Close fees (0.000005 per payout) | fee payer | **0.1** | round rent yes, fees no |
+| Publisher | publisher | 0.01 | — |
+| Holder payouts | fee wallet | whatever you put in; **at most 50 % of it is paid out** (e.g. 0.2 → ≤ 0.1) | paid to holders |
+| **Total to have** | | **≈3.3 SOL + fee wallet**, of which ≈1.65 is spent or locked | |
 
-Spend caps enforce the test ceiling on everything REBOUND's signers move. Suggested caps: per action 0.05 SOL,
-per cycle 0.1 SOL, total 0.5 SOL.
+The fee wallet must be a **different wallet** from the admin wallet (the program refuses admin = fee wallet).
+Use a fresh wallet that holds only what you are willing to commit.
 
-## 1. Decisions and inputs (before starting)
+## 1. Choose the test token
 
-- [owner] **Pyth API key** for the worker (`PYTH_API_KEY`).
-  - Hermes and Benchmarks have required one since 2026-08-26.
-  - Without it, the policy's 30 s SOL/USD freshness is met only part of the time, because the on-chain feed
-    updates about every 53 s. Purchases between updates then stay on hold.
-- [owner] **Admin wallet(s)**: public addresses that may sign in to `#admin`.
-- [owner] **Test primary mint**: a new pump.fun token created from the dev wallet. **Dev wallet** public address.
-- [owner] **Worker host**: any always-on Linux machine with Docker (a small VPS is enough). The Mac also works for
-  a short test while it stays awake.
-- [owner] **Privy App ID** (public), with allowed origins `https://rebound.wtf` and the Netlify preview origin.
-  Without it the site falls back to the injected-wallet connector.
+- Any pump.fun token (bonding curve or migrated to its canonical PumpSwap pool).
+- Prefer a **young, small token** (a few thousand transactions): the indexer reads the token's full history to
+  know every holder's purchase price, and a huge history takes a long time on a public RPC.
+- You can switch the token at any time in the dashboard once no round is in progress; the site, token card and
+  chart follow immediately.
 
-## 2. Operator keys [host: owner's Mac]
+## 2. Operator keys [Mac]
 
 ```sh
-cd ~/Desktop/Projects/Rebound/v3          # repository clone on branch rebound-v3-implementation
-pnpm install --frozen-lockfile --ignore-scripts
+cd ~/Desktop/Projects/Rebound/repo && git pull && pnpm install --frozen-lockfile --ignore-scripts
 node scripts/rewards/keygen-v3.cjs --out ./runtime-secrets --roles program,admin,publisher,verifier,guardian,fee_payer
 ```
 
-This prints public addresses and an env snippet only; the key files never leave `runtime-secrets/` (mode 700/600).
+This prints public addresses and an env snippet only. `runtime-secrets/` (mode 700) now holds the key files plus
+`signer-master.key` and `inbox.jwk` for the worker.
 
-- `admin` is the upgrade authority and deployment admin for this private test. For production, move both to a
-  Ledger or Squads multisig with `solana program set-upgrade-authority`, plus a governance SetAuthorities while
-  paused.
-- `publisher`, `verifier` and `fee_payer` go to the worker host (step 6).
-- `guardian` can only pause; keep it offline.
+[owner] Send **≈3.2 SOL to `admin`**, **0.1 SOL to `fee_payer`**, **0.01 SOL to `publisher`**.
 
-[owner] Send **~3.7 SOL to `admin`**, **~0.3 SOL to `fee_payer`** and **~0.05 SOL to `publisher`**.
-
-## 3. Deploy the program [host: Mac with the Agave 4.2.2 CLI]
+## 3. Deploy the program [Mac, Solana CLI]
 
 ```sh
-sha256sum -c contracts/v3/release/SHA256SUMS         # 3e169837… (SBPF v0, see contracts/v3/release/BUILD.md)
+sha256sum -c contracts/v3/release/SHA256SUMS          # 2298cf58… (SBPF v0, see contracts/v3/release/BUILD.md)
 solana -um feature status B8JJXCy5amZyWG9r7EnUYLwzXSXTxG7GZ1qZ1qggo83g   # must be inactive (v0 deployable)
 solana -u "$SOLANA_RPC_URL" program deploy contracts/v3/release/rebound_rewards_v3.so \
   --program-id runtime-secrets/program.json \
   --upgrade-authority runtime-secrets/admin.json --keypair runtime-secrets/admin.json \
-  --max-len 300000 --with-compute-unit-price 50000
+  --max-len 220000 --with-compute-unit-price 50000
 solana -u "$SOLANA_RPC_URL" program dump <PROGRAM_ID> /tmp/onchain.so
-head -c 212320 /tmp/onchain.so | sha256sum                            # must equal SHA256SUMS
+head -c 210848 /tmp/onchain.so | sha256sum                            # must equal SHA256SUMS
 ```
 
-If a deploy is interrupted, the CLI prints a buffer address and seed phrase. Resume with `--buffer`, or reclaim
-the buffer with `solana program close <BUFFER>`.
+If a deploy is interrupted, resume with `--buffer <BUFFER>` or reclaim it with `solana program close <BUFFER>`.
 
-## 4. Initialize (test mode) and the primary [host: Mac]
+## 4. Initialize in test mode [Mac]
 
 ```sh
-export SOLANA_RPC_URL=…   # from the local file, never typed into chat
 G="node scripts/rewards/governance-v3.cjs --program <PROGRAM_ID> --admin runtime-secrets/admin.json"
 $G initialize --publisher <PUBLISHER> --verifier <VERIFIER> --guardian <GUARDIAN> --test-mode --dry   # simulate
 $G initialize --publisher <PUBLISHER> --verifier <VERIFIER> --guardian <GUARDIAN> --test-mode
-$G set-target --mint <PRIMARY_MINT>                  # third-party buybacks buy and burn this mint
 $G status
 ```
 
-`--test-mode` binds the deployment to policy `rebound-v3.0-test` (120 s cycles, 30 s cutoff lead). The database's
-`mainnet_test` namespace uses the same policy.
+`--test-mode` binds the deployment to `rebound-v3.1-test` (120 s rounds). Do **not** pause during setup: a
+resume has a 24 h on-chain delay.
 
-Do **not** pause during setup: a resume has a 24 h on-chain delay (enforced, rehearsed).
+## 5. Website [owner + Claude]
 
-The same actions are available in `#admin → Program (on chain)` for an admin wallet that is the upgrade authority.
+- Netlify: `REWARDS_PROGRAM_ID=<PROGRAM_ID>` (Claude sets it and redeploys).
+- `https://rebound.wtf/#admin` → sign in with the dashboard password.
+- **Administrator wallet**: the `admin` address (the program's upgrade authority). To sign on-chain steps from the
+  browser, import `runtime-secrets/admin.json` into a wallet app, or run the `$G` commands on the Mac instead.
 
-## 5. Website and database [owner + Claude]
+## 6. Launch [owner, in #admin]
 
-1. Admin wallets. Supabase SQL editor, or ask Claude to run it through the Supabase connection:
-   `INSERT INTO rebound.reward_admin_wallets(wallet,label,added_by) VALUES('<ADMIN_WALLET>','owner','bootstrap');`
-2. Netlify environment:
-   - `REWARDS_PROGRAM_ID=<PROGRAM_ID>`
-   - `PRIVY_APP_ID=<APP_ID>`
-   - `REWARDS_MAX_EXECUTION_MODE` stays `dry_run` for now
-   - Redeploy.
-3. Sign in at `https://rebound.wtf/#admin` with the admin wallet, then also with the **dev wallet**, which proves it
-   in the session. Then:
-   - **Register primary**: namespace `mainnet_test`, mint, dev wallet (manual funding).
-   - **Test configuration**:
-     - allowlist the primary mint, the test third-party mint (added later) and the test holder wallets
-     - caps 0.05 / 0.1 / 0.5 SOL
-     - slippage 100 bps, impact 300 bps
-   - **Opening credit**: the part of the dev wallet balance that counts as holder funding, e.g. 0.2 SOL, reserve 0.02.
-4. On chain [host: Mac]:
-   `$G register-primary --mint <PRIMARY_MINT> --funding-wallet <DEV_WALLET>`, then `$G start-primary --mint <PRIMARY_MINT>`.
-   - The scheduler marks the primary `active` only after it reads the finalized coin account and confirms that
-     kind, policy hash and dev wallet match the database.
-   - A mismatch is logged as `primary_mismatch` and blocks the coin.
+1. **Launch** card:
+   - token contract (mint), fee wallet address
+   - namespace **Private test**, funding **Budget**, **50 %**
+   - tick **Start real payouts now** only when you are ready (step 8)
+   - *Save and launch*. This allowlists the mint, lets every holder of it be paid, and sets the spend caps from
+     the budget (+10 %, plus a small fee margin).
+2. On chain: press **Sign with the admin wallet: register the token on chain**, then **start the rounds**
+   (or on the Mac: `$G register-primary --mint <MINT> --funding-wallet <FEE_WALLET>` and `$G start-primary --mint <MINT>`).
+   For a new fee wallet on an already registered token the button reads *set this fee wallet on chain*.
+3. **Fee wallet key** card: paste the fee wallet's private key (Phantom → Export private key, base58) and press
+   *Encrypt and send to the worker*. The browser checks that it belongs to the fee wallet, encrypts it to the
+   worker's `inbox.jwk` key and clears the field. The worker imports it within seconds and the Launch checklist
+   shows *Fee wallet key on the worker ✓*. Without it, each round waits for a manual signature (Advanced).
 
-## 6. Workers [host: worker host]
+## 7. Worker [Mac]
 
 ```sh
-git clone … && cd rebound && git checkout rebound-v3-implementation
-mkdir -m 700 runtime-secrets && cp <publisher.json verifier.json fee_payer.json> runtime-secrets/ && chmod 600 runtime-secrets/*
 for r in indexer scheduler verifier; do node scripts/rewards/db-login.cjs --role $r --out ./runtime-secrets; done
-#   → paste each printed SQL (SCRAM verifier, not a password) into the Supabase SQL editor
-cp .env.worker.example .env.worker     # fill in the RPC URL, PYTH_API_KEY, program id and public addresses
-docker compose -f compose.rewards.yml --env-file .env.worker up -d --build indexer
-docker compose -f compose.rewards.yml --env-file .env.worker --profile settle up -d --build scheduler
+#   → Claude applies each printed SQL (SCRAM verifier, not a password) in Supabase
+cp .env.worker.example .env.worker     # RPC URL, program id, public addresses; key/URL files from runtime-secrets
+caffeinate -i node --env-file=.env.worker server/rewards/worker-v3.cjs      # REWARDS_WORKER_ROLE=all
 ```
 
-Check `#admin → Status`:
+`caffeinate` keeps the Mac awake while the worker runs. `#admin → Status` must show `indexer`, `worker` and
+`worker:scheduler` as `ok`; a scheduler `down` with `preflight: …` means the RPC network, keys or policy do not
+match the deployment and nothing is signed.
 
-- `indexer`, `worker` and `worker:scheduler` are `ok`.
-- A scheduler `down` with a `preflight: …` reason means the RPC network, program keys or policy don't match; the
-  scheduler signs nothing until they do.
+## 8. Dry run, then real payouts
 
-## 7. Dry run (no signatures)
+1. With `REWARDS_MAX_EXECUTION_MODE=dry_run` the worker calculates every round (Rounds table, live log) and
+   signs nothing. Check the underwater list and amounts.
+2. [owner] Ready: set `REWARDS_MAX_EXECUTION_MODE=mainnet_test` in `.env.worker` and restart the worker; tick
+   *Start real payouts now* and *Save and launch* again (this also fixes a fresh budget).
+3. Each round: `funding_budget_set` (once) → snapshot → `holder_deposit` → `Fund` → `Pay` per holder →
+   round closed. Solscan links are in the log; `spent_total_lamports` stays within the caps.
+4. Stop: `#admin → Advanced → Pause test namespace` stops all signing at once. The on-chain pause (`$G pause`)
+   also blocks `Pay` and takes 24 h to resume, so use it only if the program itself must stop.
 
-The ceiling is still `dry_run`.
+## 9. Switching the token (the interface test)
 
-1. **Test holders buy.** With the primary token on pump.fun:
-   - [owner] wallet A buys ~0.1 SOL of the primary.
-   - [owner] wallet B buys ~0.1 SOL, then sells, so the price falls below A's entry and A is underwater.
-   - Buy only after the indexer is running and SOL/USD samples appear; earlier purchases need `PYTH_API_KEY` for
-     backfill.
-2. **Watch `#admin` → Rounds and the live log:**
-   - `history_ingested`, then each cycle `snapshotting` → proposal with awards for A (not B).
-   - Funding and payout attempts end with `DRY_RUN` (nothing signed).
-3. **Check each snapshot:** holdings, remaining loss after previous credits, and the SOL/USD used.
+Enter another mint in the Launch card and *Save and launch* (after the current round completes). The site's token
+card, copyable address and chart switch immediately through Realtime; register/start the new token on chain with
+the button, and the imported fee-wallet key keeps working if the fee wallet is the same.
 
-## 8. Capped `mainnet_test`
+## 10. Production later
 
-1. [owner] Confirm the budget. Set `REWARDS_MAX_EXECUTION_MODE=mainnet_test` in `.env.worker` (restart the
-   scheduler) **and** in Netlify (redeploy). Then in `#admin`: execution mode `mainnet_test` for namespace `mainnet_test`.
-2. Primary cycle:
-   - The scheduler records the opening credit (85 % holders, 15 % stays with the dev wallet, split once).
-   - At the next cutoff a funding plan appears in `#admin`. [owner] Sign the holder-only deposit with the dev
-     wallet; the Merkle-sum round is funded with verifier co-signature.
-   - After the due time, `Pay` delivers to A.
-   - Evidence: the Solscan links in the logs, `wallet-rewards` for A, and `reward_platform.spent_total_lamports`
-     rising within caps.
-3. Third-party:
-   - [owner] Launch a test token from `#launch` with an allowlisted wallet. That is 1–2 signatures plus
-     activation (fee-sharing create + lock).
-   - Add its mint to the test allowlist, then trade it a little to generate creator fees.
-   - Expected chain: collection crank → verified receipt → `Credit` (85/15 split once) → at the cycle, the
-     15 % budget (≥ `REWARDS_MIN_BUYBACK_LAMPORTS`, default 0.005 SOL) **buys the primary on its canonical
-     market and burns it** (`burn_checked`, verified by supply delta).
-   - Its holders' 85 % goes through the same round mechanics from the per-mint program treasury.
-4. Stop: `#admin` → Pause (the database stops all signing immediately). Use the on-chain pause
-   (`$G pause`, admin or guardian) only when the program must stop too; resuming takes 24 h.
+Production uses a separate, non-test deployment (30-minute rounds, 60 s snapshot lead), a Ledger/multisig upgrade
+authority, an always-on worker host (≈ $5/month VPS) and `REWARDS_ALLOW_PRODUCTION=true` set deliberately. It is
+never enabled as part of this test.
 
-## 9. Evidence to record (IMPLEMENTATION-STATUS verification log)
+## 11. Cleanup
 
-- **Program:** id, deploy signature, dumped hash.
-- **Governance:** initialize, set-target, register/start-primary signatures.
-- **Primary:** opening credit, deposit, Fund, and each Pay signature, with snapshot hash, root and awards.
-- **Third party:**
-  - launch, activation, collection, receipt, Credit signatures
-  - buyback swap and burn signatures, and the supply before/after
-- **Totals:** `spent_total_lamports` against the caps; no action above a cap; no payout to a non-allowlisted wallet.
-
-## 10. Rollback and cleanup
-
-- Database pause stops the workers at once; funded rounds can still be paid by anyone (`Pay` is permissionless).
-- On-chain pause blocks every value-moving instruction, **including `Pay`**. Funded awards stay reserved in the
-  coin account and become payable again after the 24 h resume, so prefer the database pause unless the program
-  itself must stop.
-- Reserved and unpaid awards stay as liabilities; nothing is swept back.
-- `solana program close <PROGRAM_ID> --bypass-warning` returns the 2.09 SOL programdata rent, but permanently
-  retires the program id. Use it only after all funded rounds are paid.
+- Reserved, unpaid awards stay payable; nothing is swept back.
+- `solana program close <PROGRAM_ID> --bypass-warning` returns the ≈1.53 SOL programdata rent but retires the
+  program id for good. Use it only after every funded round is paid.

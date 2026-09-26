@@ -215,9 +215,29 @@ cloned from mainnet (`scripts/rewards/clone-protocol.cjs contracts/v3/fixtures/m
 - [x] Privy App ID set (site settings)
 - [ ] Owner: create the password with the setup code; set the admin wallet; enter the real token mint
 
+## Third-party token test mode (owner request, 2026-09-27)
+
+- [x] Program: payout receipts are a bitmap inside the round account (was one 0.0018-SOL `Paid` account per
+      recipient); `Pay` has no signer; new `CloseRound` (tag 21) returns the round rent to its funder once every
+      award is paid. Release artifact rebuilt: 210 848 bytes, sha256 `2298cf58…`. `cargo test` 9, LiteSVM 12 pass.
+- [x] Policy v3.1 (`rebound-v3.1`, `rebound-v3.1-test`): losses in **SOL**, no SOL/USD dependency, so every holder
+      with a recorded purchase is counted. v3.0 (USD) kept for history; unused namespaces move to v3.1 on seed.
+- [x] Balance budget (migration 013): the fee wallet commits a share (default 50 %) of its **current** balance,
+      measured once by the scheduler (finalized); rounds deposit only what is left (on-chain deposit counter),
+      keeping 0.01 SOL in the wallet; income reconciliation skipped for budget wallets.
+- [x] Private test on strangers' tokens: `test_any_recipient` (mint allowlist + all caps still apply); Launch sets
+      the allowlist, the flag and caps from the budget; real payouts only when the owner ticks *Start real payouts*.
+- [x] Key inbox: the dashboard encrypts the fee-wallet key in the browser to the worker's X25519 key
+      (HKDF-SHA256 + AES-256-GCM, bound to wallet row, address and worker key); API stores ciphertext only (API and
+      indexer cannot read it back); the scheduler checks the key is exactly the fee wallet's, re-encrypts it under
+      the signer master key, switches the wallet to automatic deposits and wipes the inbox row.
+- [x] Launch checklist shows the on-chain step still missing (register / start / set fee wallet) with a one-click
+      admin-wallet signature.
+- [ ] Owner: deploy + initialize (test mode), launch the chosen token, import the fee-wallet key, run the worker.
+
 ## M6 — deployment and capped mainnet acceptance — tooling done and rehearsed; mainnet run waits for the owner
 
-- [x] Release artifact `contracts/v3/release/` (SBPF v0, sha256 `3e169837…`, BUILD.md with the SIMD-0500 finding:
+- [x] Release artifact `contracts/v3/release/` (SBPF v0, now sha256 `2298cf58…` — bitmap payouts; previously `3e169837…`, BUILD.md with the SIMD-0500 finding:
       mainnet still requires v0–v2; local validators need `--deactivate-feature B8JJXC…`)
 - [x] `keygen-v3.cjs` (operator keys, files 600/700, public output only); `governance-v3.cjs` (status,
       initialize, set-target, register/start-primary, set-funding-wallet, pause/request-resume/resume; simulate
@@ -265,7 +285,7 @@ cloned from mainnet (`scripts/rewards/clone-protocol.cjs contracts/v3/fixtures/m
 | Primary mint (current config `3SohGcVP…ppump` is an unverified placeholder) | M2 | pending |
 | Dev funding wallet public address; test holder wallets | M2/M6 | pending |
 | Worker host (Docker) | M3/M6 | pending (compose + env template ready) |
-| Pyth API key for the worker (`PYTH_API_KEY`) | M6 | pending — recommended; without it purchases between on-chain updates stay on hold |
+| Pyth API key for the worker (`PYTH_API_KEY`) | M6 | optional since policy v3.1 (losses in SOL); only used for USD display |
 | Program upgrade authority / governance, publisher, verifier, guardian public keys | M3/M6 | V2 addresses recorded in `.env.example` are unverified |
 | Mainnet test spending budget (explicit cap) | M6 | pending |
 

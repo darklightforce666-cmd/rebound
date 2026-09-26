@@ -23,7 +23,8 @@ async function authorize(tx,action,{env=process.env}={}){
  if(mode==='mainnet_test'){
   if(action.namespace!=='mainnet_test')throw new ExecutionBlocked('NAMESPACE','Test mode only executes the mainnet_test namespace');
   if(action.mint&&!p.test_allowlist_mints.includes(action.mint))throw new ExecutionBlocked('TEST_MINT_NOT_ALLOWED','Mint is not on the test allowlist');
-  const wallets=new Set(p.test_allowlist_wallets);for(const w of action.recipients||[])if(!wallets.has(w))throw new ExecutionBlocked('TEST_WALLET_NOT_ALLOWED','Recipient is not on the test allowlist');
+  // test_any_recipient: every eligible holder of an allowlisted test mint may be paid (caps still apply).
+  const wallets=new Set(p.test_allowlist_wallets);if(!p.test_any_recipient)for(const w of action.recipients||[])if(!wallets.has(w))throw new ExecutionBlocked('TEST_WALLET_NOT_ALLOWED','Recipient is not on the test allowlist');
   if(total>BigInt(p.spend_cap_action_lamports))throw new ExecutionBlocked('SPEND_CAP_ACTION','Action exceeds the per-action test spend cap');
   if(action.cycleId){
    const used=(await tx.query("SELECT COALESCE(sum((safe_metadata->>'lamports')::numeric),0) AS s FROM reward_logs WHERE event_type='test_spend' AND cycle_id=$1",[action.cycleId])).rows[0].s;

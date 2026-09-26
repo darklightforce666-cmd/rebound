@@ -17,7 +17,7 @@ REVOKE ALL ON ALL TABLES IN SCHEMA rebound FROM rebound_api,rebound_indexer,rebo
 -- ---------- reads ----------
 -- Workers and verifier read everything except signer key material (column grant below).
 DO $$ DECLARE t record; BEGIN
- FOR t IN SELECT tablename FROM pg_tables WHERE schemaname='rebound' AND tablename<>'reward_signers' LOOP
+ FOR t IN SELECT tablename FROM pg_tables WHERE schemaname='rebound' AND tablename NOT IN ('reward_signers','reward_key_inbox') LOOP
   EXECUTE format('GRANT SELECT ON rebound.%I TO rebound_indexer,rebound_scheduler,rebound_verifier',t.tablename);
  END LOOP;
 END $$;
@@ -86,3 +86,15 @@ GRANT SELECT ON reward_site TO rebound_indexer, rebound_scheduler, rebound_verif
 
 -- ---------- admin dashboard password (012) ----------
 GRANT SELECT, UPDATE(password_hash,setup_hash,setup_expires,session_version,failed,locked_until,updated_at) ON reward_admin_auth TO rebound_api;
+
+-- ---------- balance budget, any-recipient test flag, key inbox (013) ----------
+GRANT UPDATE(funding_model,budget_bps,budget_requested_at) ON reward_funding_wallets TO rebound_api;
+GRANT UPDATE(test_any_recipient) ON reward_platform TO rebound_api;
+GRANT SELECT ON reward_worker_keys TO rebound_api;
+GRANT INSERT, UPDATE ON reward_worker_keys TO rebound_scheduler;
+GRANT SELECT(id,funding_wallet,address,inbox_public_key,state,reason,created_by,created_at,processed_at) ON reward_key_inbox TO rebound_api;
+GRANT INSERT ON reward_key_inbox TO rebound_api;
+GRANT SELECT, UPDATE ON reward_key_inbox TO rebound_scheduler;   -- ciphertext: scheduler only
+GRANT SELECT(id,funding_wallet,address,inbox_public_key,state,reason,created_by,created_at,processed_at) ON reward_key_inbox TO rebound_indexer,rebound_verifier;
+GRANT INSERT ON reward_signers TO rebound_scheduler;
+GRANT UPDATE(status,revoked_at,ciphertext,iv,auth_tag,storage,external_reference) ON reward_signers TO rebound_scheduler;

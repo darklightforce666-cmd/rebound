@@ -17,7 +17,8 @@ function scenario(){
  return c;
 }
 const sol=cutoff=>[{time:cutoff-70,price:100n*USD,conf:0n},{time:cutoff-40,price:100n*USD,conf:0n},{time:cutoff-10,price:100n*USD,conf:0n}];
-const args=(c,over={})=>({mint:'M',cycle:1,cutoff:10200,cutoffSlot:120,events:c.events,coverage:{complete:true,throughSlot:130},excluded,fx,solSeries:sol(10200),holderReserve:SOL,...over});
+// The USD cases pin the v3.0 (USD) policy; SOL-unit cases (v3.1, current) are at the end of this file.
+const args=(c,over={})=>({mint:'M',cycle:1,cutoff:10200,cutoffSlot:120,events:c.events,coverage:{complete:true,throughSlot:130},excluded,fx,solSeries:sol(10200),holderReserve:SOL,policy:P3.POLICY_USD,...over});
 
 test('snapshot allocates the holder reserve in proportion to remaining USD loss, deterministically',()=>{
  const c=scenario(),s=S.build(args(c));
@@ -67,4 +68,20 @@ test('funded award credits reduce the next round; a later sale does not change t
  for(const o of ['Alice','Bob','Carol'])assert.equal(loss(second,o),loss(first,o)-BigInt(first.awards.find(a=>a.owner===o).creditUsd));
  c.skipTo(160).tx(x=>x.sell('Bob','b1',1000000n));    // Bob exits after the first snapshot
  assert.equal(S.build(args(c)).snapshotHash,first.snapshotHash);          // frozen award unchanged
+});
+
+test('SOL-unit policy (v3.1): no SOL/USD feed needed; loss and awards in lamports; everyone underwater is paid pro rata, never above their loss',()=>{
+ const c=scenario(),noFx=()=>null;
+ const s=S.build(args(c,{policy:P3.POLICY,fx:noFx,solSeries:[]}));
+ assert.equal(s.lossUnit,'SOL');assert.equal(s.state,'ready');assert.ok(s.awards.length>0);
+ const losses=Object.fromEntries(s.positions.filter(p=>p.outcome==='eligible').map(p=>[p.owner,BigInt(p.lossUsd)]));
+ for(const a of s.awards){assert.ok(BigInt(a.lamports)<=losses[a.owner],'award above SOL loss');assert.equal(a.creditUsd,a.lamports,'credit is the SOL paid');}
+ assert.ok(BigInt(s.total)<=SOL);
+ // Plenty of funds: every underwater holder is made whole exactly (award == remaining SOL loss) and the rest is carried.
+ const rich=S.build(args(c,{policy:P3.POLICY,fx:noFx,solSeries:[],holderReserve:1000n*SOL}));
+ assert.deepEqual(rich.awards.map(a=>[a.owner,BigInt(a.lamports)]).sort(),Object.entries(losses).filter(([,l])=>l>0n).sort());
+ assert.equal(BigInt(rich.undistributed),1000n*SOL-BigInt(rich.total));
+ // Same inputs → same snapshot; a different unit → a different policy hash.
+ assert.equal(S.build(args(c,{policy:P3.POLICY,fx:noFx,solSeries:[]})).snapshotHash,s.snapshotHash);
+ assert.notEqual(P3.hashOf(P3.POLICY),P3.hashOf(P3.POLICY_USD));
 });

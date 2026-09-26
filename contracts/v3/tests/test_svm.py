@@ -115,8 +115,10 @@ class Env:
             u(cycle),root[0],u(root[1]),u32(len(awards)),u(cutoff_slot if cutoff_slot is not None else self.svm.get_clock().slot),h(b'snapshot',u(cycle)),h(b'manifest',u(cycle))),*signers)
         return r,rnd,proofs
     def pay(self,coin,rnd,cycle,index,wallet,amount,proof):
-        paid=pd(b'paid-v3',bytes(rnd),u32(index))
-        return self.send(ix(11,[m(self.cranker.pubkey(),True,True),m(self.deployment),m(coin,True),m(rnd,True),m(paid,True),m(wallet,True),m(SYSTEM)],u(cycle),u32(index),u(amount),nodes(proof)),payer=self.cranker)
+        # Permissionless: no signer; the cranker only pays the transaction fee. Paid flags are bits in the round.
+        return self.send(ix(11,[m(self.deployment),m(coin,True),m(rnd,True),m(wallet,True)],u(cycle),u32(index),u(amount),nodes(proof)),payer=self.cranker)
+    def close_round(self,coin,rnd,cycle,rent_to):
+        return self.send(ix(21,[m(self.deployment),m(coin),m(rnd,True),m(rent_to,True)],u(cycle)),payer=self.cranker)
     # ---- third party (activation fixture-set; see module docstring) ----
     def third_party(self,fund_intake=0):
         mk=Keypair();self.tmint=mk.pubkey();self.tcoin=pd(b'coin-v3',bytes(self.tmint));self.intake=pd(b'intake-v3',bytes(self.tmint))
@@ -171,8 +173,16 @@ def test_awards_pay_exact_recipients_once_and_survive_later_sales(env):
     assert err(e.pay(coin,rnd,1,1,e.alice.pubkey(),250_000_000,proofs[1]),E['Proof'])     # wrong recipient
     assert err(e.pay(coin,rnd,1,1,e.bob.pubkey(),250_000_001,proofs[1]),E['Proof'])       # wrong amount
     ok(e.pay(coin,rnd,1,1,e.bob.pubkey(),250_000_000,proofs[1]))
+    assert err(e.close_round(coin,rnd,1,e.admin.pubkey()),E['Round'])                      # not everything paid yet
     ok(e.pay(coin,rnd,1,2,awards[2][0],100_000_000,proofs[2]))                          # brand-new account, above rent minimum
     s=e.conserved(coin);assert (s['holder_reserved'],s['holder_paid'])==(0,850_000_000)
+    # Round account = 320-byte header + 1 bit per award (3 awards -> 1 byte); no account per recipient.
+    assert len(e.svm.get_account(rnd).data)==321
+    assert err(e.close_round(coin,rnd,1,e.bob.pubkey()),E['Account'])                     # rent goes back only to its payer
+    rent=e.svm.get_balance(rnd);before=e.svm.get_balance(e.admin.pubkey())
+    ok(e.close_round(coin,rnd,1,e.admin.pubkey()))
+    assert e.svm.get_balance(e.admin.pubkey())-before==rent and e.svm.get_balance(rnd) in (0,None)
+    assert err(e.pay(coin,rnd,1,0,e.alice.pubkey(),500_000_000,proofs[0]),E['Account'])   # closed round cannot pay again
 
 def test_funding_cannot_exceed_holder_reserve_or_skip_signers(env):
     e=env;coin=e.primary();ok(e.deposit(100));e.clock(time=T0+1800-60)

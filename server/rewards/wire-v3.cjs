@@ -15,13 +15,13 @@ const hash=(...x)=>crypto.createHash('sha256').update(Buffer.concat(x.map(v=>typ
 const bytes32=x=>{const b=Buffer.isBuffer(x)?x:Buffer.from(x,'hex');if(b.length!==32)throw Error('Expected 32 bytes');return b;};
 const pda=(program,...seeds)=>PublicKey.findProgramAddressSync(seeds.map(s=>typeof s==='string'?Buffer.from(s):s),pk(program))[0];
 const SYSTEM=SystemProgram.programId,LOADER=new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
-const TAG=Object.freeze({Initialize:0,RegisterPrimary:1,StartPrimary:2,SetFundingWallet:3,DepositHolders:4,PrepareCoin:5,CreateSharing:6,LockSharing:7,Activate:8,Credit:9,Fund:10,Pay:11,Pause:12,RequestResume:13,Resume:14,SetAuthorities:15,SetBuybackTarget:16,ReserveBuyback:17,BuybackSwap:18,BuybackBurn:19,CloseBuyback:20});
+const TAG=Object.freeze({Initialize:0,RegisterPrimary:1,StartPrimary:2,SetFundingWallet:3,DepositHolders:4,PrepareCoin:5,CreateSharing:6,LockSharing:7,Activate:8,Credit:9,Fund:10,Pay:11,Pause:12,RequestResume:13,Resume:14,SetAuthorities:15,SetBuybackTarget:16,ReserveBuyback:17,BuybackSwap:18,BuybackBurn:19,CloseBuyback:20,CloseRound:21});
 const ERRORS=Object.freeze(Object.fromEntries('Unauthorized Account Data Arithmetic Funds Paused Round Proof Settled Stale Kind Inactive TooSoon TooLate Routing Buyback Burn'.split(' ').map((n,i)=>[300+i,n])));
 
 function addresses(program,mint,{cycle,index,job,event}={}){
  const deployment=pda(program,'deployment-v3'),coin=mint?pda(program,'coin-v3',key(mint)):undefined;
  const out={deployment,coin,intake:mint?pda(program,'intake-v3',key(mint)):undefined};
- if(coin&&cycle!=null){out.round=pda(program,'round-v3',key(coin),u64(cycle));if(index!=null)out.paid=pda(program,'paid-v3',key(out.round),u32(index));}
+ if(coin&&cycle!=null){out.round=pda(program,'round-v3',key(coin),u64(cycle));}
  if(coin&&job!=null){out.job=pda(program,'buyback-v3',key(coin),u64(job));out.buyer=pda(program,'buyer-v3',key(out.job));}
  if(coin&&event)out.receipt=pda(program,'receipt-v3',key(coin),bytes32(event));
  return out;
@@ -61,7 +61,9 @@ const I={
  lockSharing:(program,{mint,official})=>{const a=addresses(program,mint);return ix(program,TAG.LockSharing,[meta(a.deployment),meta(a.coin,true),meta(a.intake,true),...official.keys.map(k=>({...k,isSigner:false}))]);},
  activate:(program,{mint,curve,sharingConfig})=>{const a=addresses(program,mint);return ix(program,TAG.Activate,[meta(a.deployment),meta(a.coin,true),meta(a.intake),meta(mint),meta(curve),meta(sharingConfig)]);},
  fund:(program,{payer,publisher,verifier,mint,cycle,root,count,cutoffSlot,snapshot,manifest})=>{const a=addresses(program,mint,{cycle});return ix(program,TAG.Fund,[meta(payer,true,true),meta(publisher,false,true),meta(verifier,false,true),meta(a.deployment),meta(a.coin,true),meta(a.round,true),meta(SYSTEM)],u64(cycle),nodeBytes(root),u32(count),u64(cutoffSlot),bytes32(snapshot),bytes32(manifest));},
- pay:(program,{payer,mint,cycle,index,wallet,amount,proof})=>{const a=addresses(program,mint,{cycle,index});return ix(program,TAG.Pay,[meta(payer,true,true),meta(a.deployment),meta(a.coin,true),meta(a.round,true),meta(a.paid,true),meta(wallet,true),meta(SYSTEM)],u64(cycle),u32(index),u64(amount),nodes(proof));},
+ // Permissionless: no signer; the transaction fee payer is whoever submits it. Paid flags are bits in the round.
+ pay:(program,{mint,cycle,index,wallet,amount,proof})=>{const a=addresses(program,mint,{cycle});return ix(program,TAG.Pay,[meta(a.deployment),meta(a.coin,true),meta(a.round,true),meta(wallet,true)],u64(cycle),u32(index),u64(amount),nodes(proof));},
+ closeRound:(program,{mint,cycle,rentPayer})=>{const a=addresses(program,mint,{cycle});return ix(program,TAG.CloseRound,[meta(a.deployment),meta(a.coin),meta(a.round,true),meta(rentPayer,true)],u64(cycle));},
  pause:(program,{authority})=>ix(program,TAG.Pause,[meta(authority,false,true),meta(addresses(program).deployment,true)]),
  requestResume:(program,{admin})=>ix(program,TAG.RequestResume,[meta(admin,false,true),meta(addresses(program).deployment,true)]),
  resume:(program,{admin})=>ix(program,TAG.Resume,[meta(admin,false,true),meta(addresses(program).deployment,true)]),
@@ -87,15 +89,17 @@ function credit(program,{payer,mint,message,verifierSignature,verifier,event}){
 
 // ---- account decoders ----
 const rd=(b,o,n)=>b.subarray(o,o+n);
+const ROUND_LEN=320;
+/** True when award `index` of a decoded round is marked paid on chain. */
+const isPaid=(round,index)=>!!(round.paidBitmap[index>>3]&(1<<(index&7)));
 function decode(kind,data){
  const b=Buffer.from(data);let o=8;const p=()=>{const v=new PublicKey(rd(b,o,32)).toBase58();o+=32;return v;},q=()=>{const v=b.readBigUInt64LE(o);o+=8;return v;},s=()=>{const v=b.readBigInt64LE(o);o+=8;return v;},h32=()=>{const v=rd(b,o,32).toString('hex');o+=32;return v;},by=()=>b[o++],u4=()=>{const v=b.readUInt32LE(o);o+=4;return v;},w=()=>{const v=b.readUInt16LE(o);o+=2;return v;};
  const magic=rd(b,0,8).toString();
  if(kind==='deployment'){if(magic!=='RBD3DEP0')throw Error('Not a V3 deployment');return{admin:p(),publisher:p(),verifier:p(),guardian:p(),policy:h32(),testMode:!!by(),paused:!!by(),resumeAt:s(),targetMint:p(),targetTokenProgram:p(),configVersion:q()};}
  if(kind==='coin'){if(magic!=='RBD3COIN')throw Error('Not a V3 coin');return{mint:p(),kind:by()===0?'primary':'third_party',deployment:p(),policy:h32(),active:!!by(),anchor:s(),cycleSeconds:s(),cutoffLead:s(),fundingWallet:p(),launcher:p(),receipts:q(),deposits:q(),holderUnallocated:q(),holderReserved:q(),holderPaid:q(),buybackAvailable:q(),buybackReserved:q(),buybackSpent:q(),splitCarry:by(),lastCycle:q(),nextJob:q()};}
- if(kind==='round'){if(magic!=='RBD3ROND')throw Error('Not a V3 round');return{coin:p(),cycle:q(),root:h32(),total:q(),remaining:q(),count:u4(),paidCount:u4(),cutoffSlot:q(),cutoffTime:s(),dueTime:s(),snapshot:h32(),manifest:h32(),policy:h32(),verifier:p()};}
- if(kind==='paid'){if(magic!=='RBD3PAID')throw Error('Not a V3 paid receipt');return{round:p(),index:u4(),wallet:p(),amount:q(),slot:q()};}
+ if(kind==='round'){if(magic!=='RBD3ROND')throw Error('Not a V3 round');let count;return{coin:p(),cycle:q(),root:h32(),total:q(),remaining:q(),count:(count=u4()),paidCount:u4(),cutoffSlot:q(),cutoffTime:s(),dueTime:s(),snapshot:h32(),manifest:h32(),policy:h32(),verifier:p(),rentPayer:p(),paidBitmap:Buffer.from(rd(b,ROUND_LEN,Math.ceil(count/8)))};}
  if(kind==='job'){if(magic!=='RBD3JOB0')throw Error('Not a V3 job');return{coin:p(),id:q(),cycle:q(),targetMint:p(),targetTokenProgram:p(),configVersion:q(),budget:q(),state:['reserved','purchased','burned','closed'][by()],spent:q(),acquired:q(),burned:q(),maxSlippageBps:w(),maxImpactBps:w(),purchaseSlot:q(),burnSlot:q()};}
  throw Error('Unknown account kind');
 }
 function errorName(err){const m=/"Custom":(\d+)|Custom\((\d+)\)|Custom \{ code: (\d+) \}/.exec(typeof err==='string'?err:JSON.stringify(err||{}));const code=m&&Number(m[1]||m[2]||m[3]);return code&&ERRORS[code]||null;}
-module.exports={TAG,ERRORS,pk,key,u64,i64,u32,u16,hash,bytes32,pda,addresses,leaf,parent,tree,verify,nodes,I,receiptMessage,receiptEvent,credit,decode,errorName};
+module.exports={isPaid,ROUND_LEN,TAG,ERRORS,pk,key,u64,i64,u32,u16,hash,bytes32,pda,addresses,leaf,parent,tree,verify,nodes,I,receiptMessage,receiptEvent,credit,decode,errorName};

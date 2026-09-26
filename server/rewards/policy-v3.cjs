@@ -26,20 +26,30 @@ const BASE=Object.freeze({
  pumpHolderRewardMode:false,
  rentPolicy:'defer_undeliverable_as_liability',
 });
-const POLICY=Object.freeze({...BASE,version:'rebound-v3.0',kind:'production',cycleSeconds:1800,cutoffLeadSeconds:60});
-const TEST_POLICY=Object.freeze({...BASE,version:'rebound-v3.0-test',kind:'test',cycleSeconds:120,cutoffLeadSeconds:30});
+// v3.0 measured losses in USD (Pyth SOL/USD history needed for every purchase). Kept for history only.
+const POLICY_USD=Object.freeze({...BASE,version:'rebound-v3.0',kind:'production',cycleSeconds:1800,cutoffLeadSeconds:60});
+const TEST_POLICY_USD=Object.freeze({...BASE,version:'rebound-v3.0-test',kind:'test',cycleSeconds:120,cutoffLeadSeconds:30});
+// v3.1 (owner decision 2026-09-27): losses in SOL. Cost basis = lamports actually paid; value = holding × the
+// token's SOL reference price; awards capped at the remaining SOL loss. No external price feed is needed, so
+// every holder with a recorded purchase is included, on any token and any history length.
+const SOL_BASE=Object.freeze({...BASE,lossUnit:'SOL',solUsd:{...BASE.solUsd,usedFor:'display_only'}});
+const POLICY=Object.freeze({...SOL_BASE,version:'rebound-v3.1',kind:'production',cycleSeconds:1800,cutoffLeadSeconds:60});
+const TEST_POLICY=Object.freeze({...SOL_BASE,version:'rebound-v3.1-test',kind:'test',cycleSeconds:120,cutoffLeadSeconds:30});
 const hashOf=p=>W.hash(stable(p)).toString('hex');
 const POLICY_HASH=hashOf(POLICY),TEST_POLICY_HASH=hashOf(TEST_POLICY);
-const POLICIES=Object.freeze({[POLICY.version]:POLICY,[TEST_POLICY.version]:TEST_POLICY});
+const POLICIES=Object.freeze({[POLICY.version]:POLICY,[TEST_POLICY.version]:TEST_POLICY,[POLICY_USD.version]:POLICY_USD,[TEST_POLICY_USD.version]:TEST_POLICY_USD});
 function policy(version){const p=POLICIES[version];if(!p)throw Error('Unknown policy version');return p;}
 
 // Persist both policy versions (immutable rows) and the platform namespaces. Idempotent.
 async function seed(db){
- for(const p of [POLICY,TEST_POLICY])await db.query('INSERT INTO reward_policies(version,hash,canonical,kind) VALUES($1,$2,$3,$4) ON CONFLICT(version) DO NOTHING',[p.version,hashOf(p),stable(p),p.kind]);
- for(const p of [POLICY,TEST_POLICY]){const row=(await db.query('SELECT hash FROM reward_policies WHERE version=$1',[p.version])).rows[0];if(row.hash!==hashOf(p))throw Error('Stored policy '+p.version+' differs from code; create a new policy version');}
+ for(const p of [POLICY,TEST_POLICY,POLICY_USD,TEST_POLICY_USD])await db.query('INSERT INTO reward_policies(version,hash,canonical,kind) VALUES($1,$2,$3,$4) ON CONFLICT(version) DO NOTHING',[p.version,hashOf(p),stable(p),p.kind]);
+ for(const p of [POLICY,TEST_POLICY,POLICY_USD,TEST_POLICY_USD]){const row=(await db.query('SELECT hash FROM reward_policies WHERE version=$1',[p.version])).rows[0];if(row.hash!==hashOf(p))throw Error('Stored policy '+p.version+' differs from code; create a new policy version');}
  await db.query("INSERT INTO reward_platform(namespace,policy_version) VALUES('production',$1),('mainnet_test',$2) ON CONFLICT DO NOTHING",[POLICY.version,TEST_POLICY.version]);
+ // Move a namespace that never ran a cycle from the USD policy (v3.0) to the SOL policy (v3.1).
+ for(const [ns,from,to] of [['production',POLICY_USD.version,POLICY.version],['mainnet_test',TEST_POLICY_USD.version,TEST_POLICY.version]])
+  await db.query('UPDATE reward_platform p SET policy_version=$3,config_version=config_version+1,updated_at=now() WHERE p.namespace=$1 AND p.policy_version=$2 AND NOT EXISTS(SELECT 1 FROM reward_cycles c WHERE c.namespace=$1)',[ns,from,to]);
 }
-module.exports={POLICY,TEST_POLICY,POLICY_HASH,TEST_POLICY_HASH,POLICIES,policy,hashOf,seed};
+module.exports={POLICY,TEST_POLICY,POLICY_HASH,TEST_POLICY_HASH,POLICIES,policy,hashOf,seed,POLICY_USD,TEST_POLICY_USD};
 
 // =====================================================================================
 // V3 formulas (spec §7, §8, §9). Integers only (BigInt). Units:
@@ -84,6 +94,9 @@ function consumeFifo(lots,quantity){
 const valueUsd=(quantity,q18)=>ceilDiv(big(quantity)*big(q18),E18);   // value rounds up (conservative)
 // USD cost of a purchase: lamports × P / 10^9, rounded down (conservative).
 const costUsd=(lamports,solUsdPico)=>big(lamports)*big(solUsdPico)/LAMPORTS;
+// SOL-unit policies: a constant "rate" of 1 SOL per SOL makes every *Usd quantity a lamport amount
+// (costUsd(l, LAMPORTS) === l, spot = s18, allocation cap = loss). One code path for both units.
+const unitSeries=(cutoff,window,step=10)=>{const T=Number(cutoff),start=T-Number(window)-1,out=[];for(let t=start;t<T;t+=step)out.push({time:t,price:LAMPORTS,conf:0n,source:'sol-unit'});out.push({time:T,price:LAMPORTS,conf:0n,source:'sol-unit'});return out;};
 
 // §7.3 position of one wallet at the cutoff. lots: that wallet's lots (FIFO order).
 // holds: wallet-level evidence problems (never zero-filled).
@@ -186,4 +199,4 @@ const ammS18=({quoteReserve,baseReserve,virtualQuote=0})=>{const q=big(quoteRese
 // Deterministic canonical hash of any snapshot/manifest object.
 const canonicalHash=x=>W.hash(stable(x)).toString('hex');
 
-Object.assign(module.exports,{LAMPORTS,E18,big,u64,ceilDiv,splitFunding,consumeFifo,valueUsd,costUsd,position,allocateRound,attributeCredit,schedule,cycleAt,referencePrice,curveS18,ammS18,canonicalHash});
+Object.assign(module.exports,{LAMPORTS,E18,big,u64,ceilDiv,splitFunding,consumeFifo,valueUsd,costUsd,position,allocateRound,attributeCredit,schedule,cycleAt,referencePrice,curveS18,ammS18,canonicalHash,unitSeries});

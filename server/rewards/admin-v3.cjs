@@ -18,9 +18,9 @@ const audit=(db,actor,kind,evidence)=>db.query("INSERT INTO reward_audit(kind,ac
 async function overview(db,{connection=null,program=null}={}){
  const q=(sql,a=[])=>db.query(sql,a).then(r=>r.rows);
  const [platform,coins,wallets,cycles,jobs,receipts,health,admins,signers]=await Promise.all([
-  q('SELECT namespace,execution_mode,policy_version,primary_mint,config_version,test_allowlist_mints,test_allowlist_wallets,spend_cap_action_lamports,spend_cap_cycle_lamports,spend_cap_total_lamports,spent_total_lamports,buyback_max_slippage_bps,buyback_max_impact_bps,paused,pause_reason,updated_at FROM reward_platform ORDER BY namespace'),
+  q('SELECT namespace,execution_mode,policy_version,primary_mint,config_version,test_allowlist_mints,test_allowlist_wallets,test_any_recipient,spend_cap_action_lamports,spend_cap_cycle_lamports,spend_cap_total_lamports,spent_total_lamports,buyback_max_slippage_bps,buyback_max_impact_bps,paused,pause_reason,updated_at FROM reward_platform ORDER BY namespace'),
   q("SELECT mint,kind,namespace,status,blocked_reason,policy_version,name,symbol,intake,creator_wallet,primary_target_mint,launch_time,schedule_anchor FROM reward_coins WHERE program_version='v3' ORDER BY kind,created_at DESC LIMIT 200"),
-  q('SELECT id,namespace,mint,address,mode,status,operational_reserve_lamports,opening_balance_lamports,opening_credit_lamports,opening_slot,signer FROM reward_funding_wallets ORDER BY created_at DESC'),
+  q('SELECT id,namespace,mint,address,mode,status,funding_model,budget_bps,budget_requested_at,budget_balance_lamports,budget_lamports,budget_start_deposits,budget_set_at,operational_reserve_lamports,opening_balance_lamports,opening_credit_lamports,opening_slot,signer FROM reward_funding_wallets ORDER BY created_at DESC'),
   q('SELECT id,mint,cycle_number,state,cutoff_time,scheduled_end,total_lamports,eligible_count,reason,funding_mode,plan_expires_at FROM reward_cycles ORDER BY created_at DESC LIMIT 60'),
   q('SELECT id,source_mint,source_cycle_id,target_mint,budget_lamports,state,route,spent_lamports,acquired_raw,burned_raw,purchase_signature,burn_signature,reason,updated_at FROM reward_buyback_jobs ORDER BY created_at DESC LIMIT 60'),
   q('SELECT mint,signature,amount_lamports,state,holder_lamports,buyback_lamports,reason,slot FROM reward_intake_receipts ORDER BY created_at DESC LIMIT 60'),
@@ -29,10 +29,12 @@ async function overview(db,{connection=null,program=null}={}){
   q('SELECT id,address,role,storage,status,created_at,last_health_at,last_health_ok FROM reward_signers ORDER BY created_at DESC'),
  ]);
  const accounts=await q('SELECT * FROM reward_funding_accounts');
+ const workerKey=(await q('SELECT inbox_public_key,worker,updated_at FROM reward_worker_keys WHERE id=1'))[0]||null;
+ const keyInbox=await q('SELECT id,funding_wallet,address,state,reason,created_at,processed_at FROM reward_key_inbox ORDER BY created_at DESC LIMIT 10');
  let chain=null;
  if(connection&&program){try{const a=W3.addresses(program);const info=await connection.getAccountInfo(a.deployment,'confirmed');
   chain={program:new PublicKey(program).toBase58(),deployment:a.deployment.toBase58(),initialized:!!info,state:info?W3.decode('deployment',info.data):null};}catch(e){chain={error:e.message};}}
- return{platform,coins,fundingWallets:wallets,fundingAccounts:accounts,cycles,buybackJobs:jobs,receipts,health,admins,signers,chain,
+ return{platform,coins,fundingWallets:wallets,fundingAccounts:accounts,workerKey,keyInbox,cycles,buybackJobs:jobs,receipts,health,admins,signers,chain,
   hostCeiling:require('./execution.cjs').ceiling(),productionAllowed:process.env.REWARDS_ALLOW_PRODUCTION==='true',now:new Date().toISOString()};
 }
 
@@ -48,7 +50,7 @@ async function setMode(db,actor,{namespace,mode,reason}){
 }
 
 /** Private-test allowlists, spend caps and buyback limits. */
-async function testConfig(db,actor,{namespace='mainnet_test',mints=[],wallets=[],capAction,capCycle,capTotal,slippageBps,impactBps}){
+async function testConfig(db,actor,{namespace='mainnet_test',mints=[],wallets=[],capAction,capCycle,capTotal,slippageBps,impactBps,anyRecipient}){
  namespace=NS(namespace);if(!Array.isArray(mints)||!Array.isArray(wallets)||mints.length>50||wallets.length>200)fail('INVALID_BODY','Invalid allowlists');
  const m=[...new Set(mints.map(x=>address(x,'mint')))],w=[...new Set(wallets.map(x=>address(x,'wallet')))];
  const s=Number(slippageBps),i=Number(impactBps);if(!(s>=1&&s<=300)||!(i>=1&&i<=1000))fail('INVALID_BODY','Slippage 1–300 bps, impact 1–1000 bps');
@@ -56,7 +58,8 @@ async function testConfig(db,actor,{namespace='mainnet_test',mints=[],wallets=[]
  if(a>c||c>t)fail('INVALID_BODY','Caps must satisfy action ≤ cycle ≤ total');
  await db.query('UPDATE reward_platform SET test_allowlist_mints=$2,test_allowlist_wallets=$3,spend_cap_action_lamports=$4,spend_cap_cycle_lamports=$5,spend_cap_total_lamports=$6,buyback_max_slippage_bps=$7,buyback_max_impact_bps=$8,config_version=config_version+1,updated_at=now() WHERE namespace=$1',
   [namespace,m,w,String(a),String(c),String(t),s,i]);
- await audit(db,actor,'admin_test_config',{namespace,mints:m,wallets:w,caps:[String(a),String(c),String(t)],slippageBps:s,impactBps:i});
+ if(anyRecipient!==undefined)await db.query('UPDATE reward_platform SET test_any_recipient=$2 WHERE namespace=$1',[namespace,!!anyRecipient]);
+ await audit(db,actor,'admin_test_config',{namespace,mints:m,wallets:w,caps:[String(a),String(c),String(t)],slippageBps:s,impactBps:i,anyRecipient});
  await Logs.log(db,{component:'admin',eventType:'test_config_changed',namespace,message:`Test allowlists/caps updated by ${actor}`});
  return{namespace,mints:m,wallets:w};
 }
@@ -132,15 +135,63 @@ async function tokenMeta(connection,mint){
   const md=(p.info.extensions||[]).find(e=>e.extension==='tokenMetadata')?.state;return{exists:true,name:md?.name?String(md.name).slice(0,64):null,symbol:md?.symbol?String(md.symbol).slice(0,16):null};}
  catch{return{exists:null};}
 }
-/** "Launch" from the dashboard: set the site's REBOUND token + dev fee wallet and register it as the primary. */
-async function launch(db,actor,session,{mint,feeWallet,namespace='production'},{connection=null}={}){
+/**
+ * "Launch" from the dashboard: set the site's REBOUND token + dev fee wallet, register it as the
+ * primary and choose how holders are funded from that wallet:
+ *   balance_budget — budgetPercent of the wallet's CURRENT balance (measured by the scheduler,
+ *                    finalized) is the total holders may receive; each round takes only what is left.
+ *   income         — 85 % of every new SOL that arrives in the wallet after launch.
+ * In the private-test namespace the token is added to the mint allowlist, every eligible holder may
+ * be paid (test_any_recipient) and the spend caps are set from the budget; startTest also switches
+ * the namespace to mainnet_test execution (never production).
+ */
+const FEE_MARGIN=10_000_000n,CYCLE_FEE_MARGIN=50_000_000n,TOTAL_FEE_MARGIN=250_000_000n,INCOME_RESERVE=10_000_000n;
+function budgetBps(pct){const n=Number(pct);if(!Number.isFinite(n)||n<=0||n>100)fail('INVALID_BODY','Budget must be between 0.01 and 100 percent');const bps=Math.round(n*100);if(bps<1)fail('INVALID_BODY','Budget must be at least 0.01 percent');return bps;}
+async function launch(db,actor,session,{mint,feeWallet,namespace='production',fundingModel='balance_budget',budgetPercent=50,startTest=false},{connection=null,program=null}={}){
  mint=address(mint,'token contract');feeWallet=address(feeWallet,'fee wallet');namespace=NS(namespace);
+ if(!['balance_budget','income'].includes(fundingModel))fail('INVALID_BODY','Unknown funding model');
+ const bps=fundingModel==='balance_budget'?budgetBps(budgetPercent):null;
+ const admins=(await db.query('SELECT wallet FROM reward_admin_wallets WHERE revoked_at IS NULL')).rows.map(r=>r.wallet);
+ if(admins.includes(feeWallet))fail('INVALID_BODY','The fee wallet must be a different wallet from the administrator wallet',409);
  const r=await registerPrimary(db,actor,session,{namespace,mint,fundingWallet:feeWallet});
+ const fw=(await db.query("SELECT * FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired'",[mint])).rows[0];
+ // A key already imported on the worker for this wallet keeps deposits automatic after a token switch.
+ if(fw.mode==='manual'){const sg=(await db.query("SELECT id FROM reward_signers WHERE role='primary_dev' AND address=$1 AND status='ready' ORDER BY created_at DESC LIMIT 1",[feeWallet])).rows[0];
+  if(sg){await db.query("UPDATE reward_funding_wallets SET mode='automatic',signer=$2 WHERE id=$1",[fw.id,sg.id]);fw.mode='automatic';}}
+ if(fundingModel==='balance_budget')await db.query("UPDATE reward_funding_wallets SET funding_model='balance_budget',budget_bps=$2,budget_requested_at=now() WHERE id=$1",[fw.id,bps]);
+ else{await db.query("UPDATE reward_funding_wallets SET funding_model='income',budget_bps=NULL,budget_requested_at=NULL WHERE id=$1",[fw.id]);
+  if(fw.opening_slot==null)await openingCredit(db,actor,{mint,requestedCreditLamports:'0',operationalReserveLamports:String(INCOME_RESERVE)});}   // only fees arriving from now on count
+ let balance=null;if(connection)try{balance=BigInt(await connection.getBalance(new PublicKey(feeWallet),'confirmed'));}catch{}
+ const estimate=bps!=null&&balance!=null?balance*BigInt(bps)/10000n:null;
+ let test=null;
+ if(namespace==='mainnet_test'){
+  const p=(await db.query('SELECT * FROM reward_platform WHERE namespace=$1',[namespace])).rows[0];
+  const mints=[...new Set([...(p.test_allowlist_mints||[]),mint])];
+  const sets=['test_allowlist_mints=$2','test_any_recipient=true'],args=[namespace,mints];
+  if(estimate!=null){const a=estimate*11n/10n+FEE_MARGIN,c=a+CYCLE_FEE_MARGIN,t=BigInt(p.spent_total_lamports)+estimate*11n/10n+TOTAL_FEE_MARGIN;
+   args.push(String(a),String(c),String(t));sets.push(`spend_cap_action_lamports=$${args.length-2}`,`spend_cap_cycle_lamports=$${args.length-1}`,`spend_cap_total_lamports=$${args.length}`);test={capAction:String(a),capCycle:String(c),capTotal:String(t)};}
+  if(startTest&&p.execution_mode==='dry_run')sets.push("execution_mode='mainnet_test'");
+  await db.query(`UPDATE reward_platform SET ${sets.join(',')},config_version=config_version+1,updated_at=now() WHERE namespace=$1`,args);
+  test={...test,mints,anyRecipient:true,mode:startTest&&p.execution_mode==='dry_run'?'mainnet_test':p.execution_mode};
+ }
  const meta=connection?await tokenMeta(connection,mint):{exists:null};
  await db.query('UPDATE reward_site SET primary_mint=$1,primary_name=$2,primary_symbol=$3,fee_wallet=$4,namespace=$5,updated_by=$6,updated_at=now() WHERE id=1',[mint,meta.name||null,meta.symbol||null,feeWallet,namespace,actor]);
  await db.query('UPDATE reward_coins SET name=COALESCE($2,name),symbol=COALESCE($3,symbol),updated_at=now() WHERE mint=$1',[mint,meta.name||null,meta.symbol||null]).catch(()=>{});
- await Logs.log(db,{severity:'warn',component:'admin',eventType:'site_token_changed',namespace,mint,message:`Site token set to ${meta.name||mint} (${mint}); fee wallet ${feeWallet}`+(meta.exists===false?' — no mint exists at this address yet':'')});
- return{...r,exists:meta.exists,name:meta.name||null,symbol:meta.symbol||null,site:await site(db)};
+ const how=fundingModel==='balance_budget'?`budget ${bps/100}% of the current fee-wallet balance`+(estimate!=null?` (≈${estimate} lamports)`:''):'85% of new creator fees';
+ await audit(db,actor,'admin_launch',{namespace,mint,feeWallet,fundingModel,budgetBps:bps,test});
+ await Logs.log(db,{severity:'warn',component:'admin',eventType:'site_token_changed',namespace,mint,message:`Site token set to ${meta.name||mint} (${mint}); fee wallet ${feeWallet}; funding: ${how}`+(test?`; private test: any holder, mode ${test.mode}`:'')+(meta.exists===false?' — no mint exists at this address yet':'')});
+ return{...r,fundingMode:fw.mode,fundingModel,budgetBps:bps,balance:balance==null?null:String(balance),budgetEstimate:estimate==null?null:String(estimate),test,exists:meta.exists,name:meta.name||null,symbol:meta.symbol||null,
+  onChain:program&&connection?await primaryChainStatus(connection,program,mint,feeWallet):null,site:await site(db)};
+}
+/** What the admin wallet still has to sign on chain for this primary (register → start, or fix the fee wallet). */
+async function primaryChainStatus(connection,program,mint,feeWallet){
+ try{const a=W3.addresses(program,new PublicKey(mint));const [dep,info]=await Promise.all([connection.getAccountInfo(a.deployment,'confirmed'),connection.getAccountInfo(a.coin,'confirmed')]);
+  if(!dep)return{deployment:false,next:null};
+  const d=W3.decode('deployment',dep.data);
+  const c=info&&info.owner.equals(new PublicKey(program))?W3.decode('coin',info.data):null;
+  const next=!c?'registerPrimary':c.kind!=='primary'?null:feeWallet&&c.fundingWallet!==feeWallet?'setFundingWallet':!c.active?'startPrimary':null;
+  return{deployment:true,admin:d.admin,testMode:d.testMode,paused:d.paused,coin:c?{kind:c.kind,active:c.active,fundingWallet:c.fundingWallet,cycleSeconds:Number(c.cycleSeconds),deposits:String(c.deposits),holderUnallocated:String(c.holderUnallocated),lastCycle:String(c.lastCycle)}:null,next};}
+ catch(e){return{error:e.message,next:null};}
 }
 
 /**
@@ -250,4 +301,4 @@ async function revokeAdmin(db,actor,{wallet}){wallet=address(wallet,'wallet');if
  const left=(await db.query('SELECT count(*)::int n FROM reward_admin_wallets WHERE revoked_at IS NULL AND wallet<>$1',[wallet])).rows[0].n;if(!left)fail('FORBIDDEN','At least one admin must remain',409);
  await db.query('UPDATE reward_admin_wallets SET revoked_at=now(),revoked_by=$2 WHERE wallet=$1',[wallet,actor]);await audit(db,actor,'admin_revoke',{wallet});return{wallet,revoked:true};}
 
-module.exports={setAdminWallet,overview,setMode,testConfig,pause,registerPrimary,site,setSite,launch,tokenMeta,openingCredit,applyOpeningRequests,syncPrimary,chainPrepare,chainSubmit,addAdmin,revokeAdmin,CHAIN_ACTIONS};
+module.exports={primaryChainStatus,budgetBps,setAdminWallet,overview,setMode,testConfig,pause,registerPrimary,site,setSite,launch,tokenMeta,openingCredit,applyOpeningRequests,syncPrimary,chainPrepare,chainSubmit,addAdmin,revokeAdmin,CHAIN_ACTIONS};
