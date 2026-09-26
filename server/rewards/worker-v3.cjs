@@ -27,10 +27,10 @@ async function ingest({db,rpc},coin){
   const sigs=r.signatures.filter(s=>!s.err).reverse();       // oldest first
   for(const s of sigs){
    if((await db.query('SELECT 1 FROM reward_events WHERE signature=$1 LIMIT 1',[s.signature])).rows.length){continue;}
-   const tx=await rpc.call('getTransaction',[s.signature,{encoding:'jsonParsed',commitment:'finalized',maxSupportedTransactionVersion:0}]);
+   const tx=await rpc.call('getTransaction',[s.signature,{encoding:'jsonParsed',commitment:'finalized',maxSupportedTransactionVersion:H.TX_VERSION}]);
    if(!tx){incomplete.push({signature:s.signature,reason:'transaction_unavailable'});gap=true;break;}
-   const block=await rpc.call('getBlock',[tx.slot,{transactionDetails:'signatures',rewards:false,commitment:'finalized',maxSupportedTransactionVersion:0}]);
-   const index=(block?.signatures||[]).indexOf(s.signature);if(index<0){incomplete.push({slot:tx.slot,reason:'in_block_order_unavailable'});gap=true;break;}
+   let index=H.reportedIndex(tx,s);
+   if(index==null){const block=await rpc.call('getBlock',[tx.slot,{transactionDetails:'signatures',rewards:false,commitment:'finalized',maxSupportedTransactionVersion:H.TX_VERSION}]);index=(block?.signatures||[]).indexOf(s.signature);}if(index<0){incomplete.push({slot:tx.slot,reason:'in_block_order_unavailable'});gap=true;break;}
    const keys=tx.transaction.message.accountKeys.map(k=>typeof k==='string'?k:k.pubkey);
    for(const bal of [...(tx.meta?.preTokenBalances||[]),...(tx.meta?.postTokenBalances||[])])if(bal.mint===mint){
     const acct=keys[bal.accountIndex];if(!seen.has(acct)&&!queue.some(q=>q.address===acct)){
@@ -92,7 +92,7 @@ async function reconcileFunding({db,rpc},coin){
  const r=await H.signaturesFor(rpc,fw.address,{until:fw.reconciled_signature||null});
  // Every REBOUND-built holder deposit (manual via intent, automatic via attempt context) is a liability move, not new funding.
  const intents=new Map((await db.query("SELECT a.signature,COALESCE(i.amount_lamports::text,a.context->>'amount') AS amount FROM reward_chain_attempts a LEFT JOIN reward_intents i ON i.id=a.intent_id WHERE a.kind='primary_funding' AND a.mint=$1",[coin.mint])).rows.filter(x=>x.amount!=null).map(x=>[x.signature,{kind:'holder_deposit',amount:x.amount}]));
- const classified=[];for(const s of r.signatures.slice().reverse()){const tx=await rpc.call('getTransaction',[s.signature,{encoding:'jsonParsed',commitment:'finalized',maxSupportedTransactionVersion:0}]);if(tx)classified.push(F.classify(tx,fw.address,intents));}
+ const classified=[];for(const s of r.signatures.slice().reverse()){const tx=await rpc.call('getTransaction',[s.signature,{encoding:'jsonParsed',commitment:'finalized',maxSupportedTransactionVersion:H.TX_VERSION}]);if(tx)classified.push(F.classify(tx,fw.address,intents));}
  const out=await FS.applyWalletTransactions(db,{mint:coin.mint,wallet:fw.address,classified});
  if(r.signatures.length)await db.query('UPDATE reward_funding_wallets SET reconciled_signature=$2 WHERE id=$1',[fw.id,r.signatures[0].signature]);
  return{credits:out.credits.length,incidents:out.incidents.length};

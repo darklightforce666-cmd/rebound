@@ -129,7 +129,7 @@ async function onchainHistory(rpc,times,{account=process.env.PYTH_SOL_USD_ACCOUN
  for(const t of want){let best=null;for(const s of sigs){if(s.blockTime!=null&&s.blockTime<=t)best=s;else if(s.blockTime>t)break;}if(best)picked.set(best.signature,best);}
  const out=[];
  for(const s of picked.values()){
-  const tx=await rpc.call('getTransaction',[s.signature,{encoding:'json',commitment:'finalized',maxSupportedTransactionVersion:0}]);
+  const tx=await rpc.call('getTransaction',[s.signature,{encoding:'json',commitment:'finalized',maxSupportedTransactionVersion:1}]);
   out.push(...fromUpdateTransaction(tx,{feedAccount:account}));
  }
  return out.sort((a,b)=>a.time-b.time);

@@ -7,7 +7,7 @@ const TOKEN='TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',SYS='11111111111111111
 const key=()=>Keypair.generate().publicKey.toBase58();
 
 // A finalized chain: blocks hold ordered signatures; each address has a newest-first signature list.
-function fakeChain(){
+function fakeChain({reportIndex=false}={}){
  const txs=new Map(),blocks=new Map(),byAddress=new Map(),calls={};let head=0;const down=new Set();
  const api={calls,down,
   add(tx,addresses){const sig=tx.transaction.signatures[0];txs.set(sig,tx);head=Math.max(head,tx.slot);
@@ -19,7 +19,7 @@ function fakeChain(){
    if(m==='getSignaturesForAddress'){const list=byAddress.get(p[0])||[],o=p[1];let out=list;
     if(o.until){const i=out.findIndex(s=>s.signature===o.until);if(i>=0)out=out.slice(0,i);}
     if(o.before){const i=out.findIndex(s=>s.signature===o.before);out=out.slice(i+1);}return out.slice(0,o.limit);}
-   if(m==='getTransaction')return down.has(p[0])?null:txs.get(p[0])||null;
+   if(m==='getTransaction'){if(p[1].maxSupportedTransactionVersion!==1)return null;const t=down.has(p[0])?null:txs.get(p[0])||null;return t&&reportIndex?{...t,transactionIndex:blocks.get(t.slot).indexOf(p[0])}:t;}
    if(m==='getBlock')return{signatures:blocks.get(p[0])||[]};
    throw Error('unexpected '+m);}};
  return api;
@@ -109,5 +109,15 @@ test('dev-wallet reconciliation treats REBOUND holder deposits (manual intent or
   assert.equal((await Wk.reconcileFunding({db,rpc:chain},{mint})).credits,0,'reconciliation resumes after the last signature');
   assert.equal(await Wk.primaryAwaiting(db,mint,10_000),850000000n);
   assert.equal(await Wk.primaryAwaiting(db,mint,100),0n,'funding credited after the cutoff is not usable for that cycle');
+ }finally{await db.close();}
+});
+
+test('v1 transactions are requested and the RPC-reported block index is used without refetching blocks',async()=>{
+ const {db,mint,coin}=await setup();try{
+  const chain=fakeChain({reportIndex:true}),A=key(),B=key(),ta=key(),tb=key();
+  chain.add(transfer({mint,from:A,fromAcc:ta,to:B,toAcc:tb,amount:5,pre:[100,0],slot:50}),[mint,ta,tb]);
+  const r=await Wk.ingest({db,rpc:chain},coin);assert.equal(r.complete,true);assert.equal(r.newTx,1);
+  assert.equal(chain.calls.getBlock||0,0);
+  assert.ok((await db.query('SELECT transaction_index FROM reward_events WHERE mint=$1',[mint])).rows.every(e=>e.transaction_index===1));
  }finally{await db.close();}
 });

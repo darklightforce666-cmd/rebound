@@ -39,6 +39,13 @@ async function signaturesFor(rpc,address,{until=null,maxPages=200,pageSize=1000}
  return{signatures:out,complete:false,reason:'signature_page_limit'};
 }
 
+// Mainnet carries v1 transactions (message `transactionConfig`); jsonParsed keeps the v0 shape we read.
+// Requesting a lower version makes the RPC refuse the transaction (-32015), which would silently
+// become incomplete coverage for every mint touched by v1 traffic.
+const TX_VERSION=1;
+// Position inside the finalized block, as reported by the RPC (getTransaction / getSignaturesForAddress).
+const reportedIndex=(tx,s)=>Number.isInteger(tx?.transactionIndex)?tx.transactionIndex:Number.isInteger(s?.transactionIndex)?s.transactionIndex:null;
+
 // Collect, fetch and order the mint's full finalized history.
 async function collect(rpc,mint,{maxAccounts=5000,maxTransactions=50000,onProgress=()=>{}}={}){
  // Everything finalized at or before `head` is guaranteed to be in the signature lists below.
@@ -50,9 +57,9 @@ async function collect(rpc,mint,{maxAccounts=5000,maxTransactions=50000,onProgre
   // Fetch newly seen transactions and discover the mint's token accounts inside them.
   for(const s of r.signatures){
    if(txs.has(s.signature))continue;if(txs.size>=maxTransactions){incomplete.push({reason:'transaction_limit'});break;}
-   const tx=await rpc.call('getTransaction',[s.signature,{encoding:'jsonParsed',commitment:'finalized',maxSupportedTransactionVersion:0}]);
+   const tx=await rpc.call('getTransaction',[s.signature,{encoding:'jsonParsed',commitment:'finalized',maxSupportedTransactionVersion:TX_VERSION}]);
    if(!tx){incomplete.push({signature:s.signature,reason:'transaction_unavailable'});continue;}
-   txs.set(s.signature,tx);
+   tx._index=reportedIndex(tx,s);txs.set(s.signature,tx);
    const keys=tx.transaction.message.accountKeys.map(k=>typeof k==='string'?k:k.pubkey);
    for(const b of [...(tx.meta?.preTokenBalances||[]),...(tx.meta?.postTokenBalances||[])]){
     if(b.mint!==addr.mint)continue;const acct=keys[b.accountIndex];
@@ -66,13 +73,14 @@ async function collect(rpc,mint,{maxAccounts=5000,maxTransactions=50000,onProgre
  const ordered=[];
  for(const slot of [...bySlot.keys()].sort((a,b)=>a-b)){
   const group=bySlot.get(slot);
-  if(group.length>1){
-   const block=await rpc.call('getBlock',[slot,{transactionDetails:'signatures',rewards:false,commitment:'finalized',maxSupportedTransactionVersion:0}]);
+  if(group.every(t=>t._index!=null)){group.sort((a,b)=>a._index-b._index);}
+  else if(group.length>1){
+   const block=await rpc.call('getBlock',[slot,{transactionDetails:'signatures',rewards:false,commitment:'finalized',maxSupportedTransactionVersion:TX_VERSION}]);
    const index=new Map((block?.signatures||[]).map((s,i)=>[s,i]));
    if(group.some(t=>!index.has(t.transaction.signatures[0]))){incomplete.push({slot,reason:'in_block_order_unavailable'});group.forEach((t,i)=>t._index=i);}
    else group.forEach(t=>t._index=index.get(t.transaction.signatures[0]));
    group.sort((a,b)=>a._index-b._index);
-  }else group[0]._index=0;
+  }else group[0]._index=group[0]._index??0;
   ordered.push(...group);
  }
  const failed=ordered.filter(t=>t.meta?.err).length;
@@ -89,7 +97,7 @@ function parseAll(history,coin){
  }
  return{events,holds};
 }
-module.exports={Rpc,marketAddresses,signaturesFor,collect,parseAll};
+module.exports={Rpc,marketAddresses,signaturesFor,collect,parseAll,TX_VERSION,reportedIndex};
 
 // Latest produced, finalized slot whose block time is ≤ cutoff (spec §9). Never slides forward.
 // f(x) = time(first produced slot ≥ x) ≤ cutoff is monotone (true, then false): binary search the
