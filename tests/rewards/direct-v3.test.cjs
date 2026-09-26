@@ -102,3 +102,30 @@ test('the budget never exceeds what the wallet can pay: balance − reserved unp
   const b=await D.available(w.db,w.conn,fw);assert.equal(b.lamports,10n*SOL-D.FEE_RESERVE-reserved>0n?10n*SOL-D.FEE_RESERVE-reserved:0n);
  }finally{await w.done();}
 });
+
+test('a batch that landed but was not recorded (crash) is recorded on the next pass, never paid twice',async()=>{
+ const w=await world();try{
+  w.conn.setTime(T0+90,1500);await w.tick();w.conn.setTime(T0+120,1600);
+  // Simulate a crash right after the payment landed: undo the bookkeeping, keep the finalized attempt.
+  await w.tick(4);const paidBefore=await Promise.all(w.people.map(p=>w.conn.getBalance(new PublicKey(p))));
+  const att=(await w.db.query("SELECT * FROM reward_chain_attempts WHERE job LIKE 'direct-pay:%'")).rows;assert.equal(att.length,1);assert.equal(att[0].state,'finalized');
+  await w.db.query("ALTER TABLE reward_awards DISABLE TRIGGER USER");
+  await w.db.query("UPDATE reward_awards SET state='reserved',settlement_signature=NULL WHERE cycle_id=$1",[`${w.mint}:1`]);
+  await w.db.query("ALTER TABLE reward_awards ENABLE TRIGGER USER");
+  await w.db.query("DELETE FROM reward_public_payouts");
+  await w.db.query("UPDATE reward_cycles SET state='paying' WHERE id=$1",[`${w.mint}:1`]);
+  const sent=w.conn.sent;await w.tick(3);
+  assert.equal(w.conn.sent,sent,'no second transaction');
+  const after=await Promise.all(w.people.map(p=>w.conn.getBalance(new PublicKey(p))));assert.deepEqual(after,paidBefore);
+  assert.ok((await w.awards(1)).every(a=>a.state==='paid'));assert.equal((await w.cycle(1)).state,'complete');
+  assert.equal((await w.db.query('SELECT count(*)::int n FROM reward_public_payouts')).rows[0].n,3);
+ }finally{await w.done();}
+});
+
+test('a paused namespace computes the round but reserves nothing; a round of a switched-away wallet uses the new wallet',async()=>{
+ const w=await world();try{
+  await w.db.query("UPDATE reward_platform SET paused=true WHERE namespace='mainnet_test'");
+  w.conn.setTime(T0+90,1500);await w.tick();
+  const r=await w.cycle(1);assert.equal(r.state,'dry_run');assert.equal(r.reason,'paused');assert.equal(w.conn.sent,0);
+ }finally{await w.done();}
+});

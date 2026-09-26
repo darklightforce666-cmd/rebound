@@ -27,7 +27,10 @@ BEGIN
  FOREACH n IN ARRAY ARRAY['rebound_worker_rpc_url','rebound_worker_history_rpc_url'] LOOP
   v:=CASE n WHEN 'rebound_worker_rpc_url' THEN rpc ELSE history END;
   CONTINUE WHEN v IS NULL OR v='';
-  IF v !~ '^https://[^\s]+$' OR length(v)>500 THEN RAISE EXCEPTION 'An https RPC URL is required'; END IF;
+  -- Only well-known Solana RPC providers: a compromised site API must not be able to point the signing
+  -- worker at an RPC that fakes history or balances.
+  IF length(v)>500 OR v !~ '^https://([a-z0-9-]+\.)*(alchemy\.com|helius-rpc\.com|quiknode\.pro|rpcpool\.com|syndica\.io|mainnet-beta\.solana\.com)(:[0-9]+)?(/[^\s]*)?$' THEN
+   RAISE EXCEPTION 'Not an allowed Solana RPC provider URL'; END IF;
   SELECT decrypted_secret INTO cur FROM vault.decrypted_secrets WHERE name=n;
   IF cur IS NULL THEN PERFORM vault.create_secret(v,n,'Solana RPC for the hosted worker (stored by the site API)'); result:='stored';
   ELSIF cur<>v THEN PERFORM vault.update_secret((SELECT id FROM vault.secrets WHERE name=n),v); result:='updated'; END IF;

@@ -159,9 +159,11 @@ async function applyBudgetRequests(db,{connection,program}){
   const bal=await connection.getBalanceAndContext(new PublicKey(fw.address),'finalized');
   const info=program?await connection.getAccountInfo(W3.addresses(program,new PublicKey(fw.mint)).coin,'finalized'):null;
   const deposits=info&&program&&info.owner.equals(program)?b(W3.decode('coin',info.data).deposits):0n;
-  const budget=b(bal.value)*BigInt(fw.budget_bps)/10000n;
+  // Money already owed to holders (reserved, not yet paid) is not part of the balance being committed.
+  const owed=await Direct.unpaidOf(db,fw.id),free=b(bal.value)>owed?b(bal.value)-owed:0n;
+  const budget=free*BigInt(fw.budget_bps)/10000n;
   // Guarded: a request the admin made meanwhile (e.g. a lower percentage) is never marked as satisfied here.
-  const u=await db.query('UPDATE reward_funding_wallets SET budget_balance_lamports=$2,budget_lamports=$3,budget_start_deposits=$4,budget_set_at=greatest(now(),budget_requested_at) WHERE id=$1 AND budget_bps=$5 AND budget_requested_at::text=$6',[fw.id,String(bal.value),String(budget),String(deposits),fw.budget_bps,fw.requested_text]);
+  const u=await db.query('UPDATE reward_funding_wallets SET budget_balance_lamports=$2,budget_lamports=$3,budget_start_deposits=$4,budget_set_at=greatest(now(),budget_requested_at) WHERE id=$1 AND budget_bps=$5 AND budget_requested_at::text=$6',[fw.id,String(free),String(budget),String(deposits),fw.budget_bps,fw.requested_text]);
   if(!(u.rowCount??u.affectedRows))continue;
   await Logs.log(db,{severity:'warn',component:'scheduler',eventType:'funding_budget_set',mint:fw.mint,message:`Holder budget fixed: ${budget} lamports = ${fw.budget_bps/100}% of the fee wallet balance ${bal.value} (finalized slot ${bal.context.slot}); rounds deposit only what is left of it`,metadata:{wallet:fw.address,budget:String(budget),balance:String(bal.value),startDeposits:String(deposits)}});
   out.push({mint:fw.mint,budget:String(budget)});
@@ -219,10 +221,13 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
  const rpcUrl=process.env.SOLANA_RPC_URL,historyUrl=process.env.HISTORY_RPC_URL||rpcUrl;if(!rpcUrl)throw Object.assign(Error('SOLANA_RPC_URL is required'),{code:'SETUP_REQUIRED'});
  const connection=new Connection(rpcUrl,'finalized'),rpc=new H.Rpc(historyUrl,{minIntervalMs:Number(process.env.HISTORY_RPC_MIN_INTERVAL_MS||100)});
  const asRole=r=>process.env.REWARDS_DB_SET_ROLE==='true'?r:null;   // hosted worker: one URL, per-role privileges
- const idb=role!=='scheduler'?DB.connect(envOrFile('INDEXER_DATABASE_URL')||envOrFile('DATABASE_URL'),{max:3,name:'rebound-indexer',role:asRole('rebound_indexer')}):null;
+ const idb=role!=='scheduler'?DB.connect(envOrFile('INDEXER_DATABASE_URL')||envOrFile('DATABASE_URL'),{max:2,name:'rebound-indexer',role:asRole('rebound_indexer')}):null;
  const settles=role==='all'||role==='scheduler';   // an indexer-only process holds no scheduler/verifier connection
- const sdb=settles?DB.connect(envOrFile('SCHEDULER_DATABASE_URL')||envOrFile('DATABASE_URL'),{max:3,name:'rebound-scheduler',role:asRole('rebound_scheduler')}):null;
- const vdb=settles?DB.connect(envOrFile('VERIFIER_DATABASE_URL')||envOrFile('DATABASE_URL'),{max:2,name:'rebound-verifier',role:asRole('rebound_verifier')}):null;
+ const sdb=settles?DB.connect(envOrFile('SCHEDULER_DATABASE_URL')||envOrFile('DATABASE_URL'),{max:2,name:'rebound-scheduler',role:asRole('rebound_scheduler')}):null;
+ const vdb=settles?DB.connect(envOrFile('VERIFIER_DATABASE_URL')||envOrFile('DATABASE_URL'),{max:1,name:'rebound-verifier',role:asRole('rebound_verifier')}):null;
+ // A pool that should run as a REBOUND group role must really do so (a pooler could drop the startup option).
+ if(process.env.REWARDS_DB_SET_ROLE==='true')for(const [pool,want] of [[idb,'rebound_indexer'],[sdb,'rebound_scheduler'],[vdb,'rebound_verifier']])if(pool){
+  const who=(await pool.query('SELECT current_user AS u')).rows[0].u;if(who!==want){await Promise.all([idb,sdb,vdb].filter(Boolean).map(p=>p.end()));throw Object.assign(Error(`Database role not applied (running as ${who}); refusing to work without per-role privileges`),{code:'DB_ROLE'});}}
  let stop=false;for(const s of ['SIGTERM','SIGINT'])process.on(s,()=>{stop=true;});
  const program=process.env.REWARDS_PROGRAM_ID?new PublicKey(process.env.REWARDS_PROGRAM_ID):null;if(program)C.bind(program);
  const keyFile=async(env,expected)=>{if(!process.env[env])return null;const k=await require('./config.cjs').keyFromFile(env,expected);return k;};

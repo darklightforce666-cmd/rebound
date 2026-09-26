@@ -14,9 +14,12 @@ const {Client}=require('pg');
 const Seal=require('../../../server/rewards/inbox-seal.cjs');
 
 const PREFIX='rebound_worker_';
-async function secrets(dbUrl){
+// The cron token is checked before any other secret is read or created.
+async function secrets(dbUrl,token){
  const c=new Client({connectionString:dbUrl,connectionTimeoutMillis:10000});await c.connect();
  try{
+  const one=async n=>(await c.query('SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name=$1',[PREFIX+n])).rows[0]?.decrypted_secret;
+  if(!same(token,await one('cron_token')))return null;
   const read=async()=>Object.fromEntries((await c.query("SELECT name,decrypted_secret FROM vault.decrypted_secrets WHERE name LIKE $1",[PREFIX+'%'])).rows.map(r=>[r.name.slice(PREFIX.length),r.decrypted_secret]));
   let s=await read();
   if(!s.inbox_jwk){const j=await Seal.generate();await c.query('SELECT vault.create_secret($1,$2,$3)',[JSON.stringify(j),PREFIX+'inbox_jwk','REBOUND hosted worker key inbox (X25519 private JWK)']).catch(()=>{});s=await read();}
@@ -28,8 +31,8 @@ const same=(a,b)=>{const x=Buffer.from(String(a||'')),y=Buffer.from(String(b||''
 /** Returns {status, body, work?}: `work` is the pass to run in the background (EdgeRuntime.waitUntil). */
 async function handle({dbUrl,token}){
  if(!dbUrl)return{status:503,body:{error:'SUPABASE_DB_URL missing'}};
- const s=await secrets(dbUrl);
- if(!same(token,s.cron_token))return{status:401,body:{error:'unauthorized'}};
+ const s=await secrets(dbUrl,token);
+ if(!s)return{status:401,body:{error:'unauthorized'}};
  if(!s.rpc_url)return{status:200,body:{state:'waiting_for_rpc',hint:'Open the admin dashboard once: the site stores its RPC endpoint for the worker.'}};
  if(!s.master_key)return{status:200,body:{state:'waiting_for_master_key'}};
  Object.assign(process.env,{
