@@ -17,6 +17,7 @@ require('../tests/rewards/worker-v3.test.cjs');
 require('../tests/rewards/pump-lifecycle-v3.test.cjs');
 require('../tests/rewards/third-party-v3.test.cjs');
 require('../tests/rewards/admin-v3.test.cjs');
+require('../tests/rewards/api-errors.test.cjs');
 require('../tests/rewards/launch-v3.test.cjs');
 require('../tests/rewards/signer.test.cjs');
 // Needs the compiled V3 program (cargo build-sbf in contracts/v3); reported as skipped otherwise.

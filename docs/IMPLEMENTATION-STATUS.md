@@ -218,6 +218,17 @@ cloned from mainnet (`scripts/rewards/clone-protocol.cjs contracts/v3/fixtures/m
       set-target, register-primary, start-primary, pause → request-resume → resume refused (24 h), worker roles
       with least-privilege logins, preflight pass/fail
 - [x] `docs/MAINNET-TEST-RUNBOOK.md`: budget, commands, dry run, capped test, evidence, rollback
+- [x] Independent review of M5/M6 (separate agent, no prior context) — fixed:
+      **high:** dev-wallet funding reconciliation ran under the indexer login, which cannot write funding
+      ledgers (primary rounds could never have been funded live) → moved to the scheduler; holder deposits are
+      now recognized from the finalized `DepositHolders` instruction, not from database labels; reconciliation
+      stops at an unreadable transaction or partial listing instead of skipping it.
+      **medium:** API role could rewind `spent_total_lamports` / opening-credit columns → migration 010
+      (monotonic spend for service roles, opening columns scheduler-only; applied live).
+      **low:** SQL errors redacted (409 `CONFLICT` / 503), production primary registration gated and an active
+      primary not replaceable, governance submit bound to the preparing admin, SOL/USD backfill no longer
+      retries the same times every loop, consent display lines derived from the hashed payload.
+      Not changed: receipt guard (009) does not freeze `state` against a compromised indexer login (noted)
 - [ ] Netlify deploy preview of this branch, then production publish after the owner's OK
 - [ ] Program deployed + initialized on mainnet, dry run, capped `mainnet_test` (runbook §3–§8) with evidence
 
@@ -272,3 +283,6 @@ cloned from mainnet (`scripts/rewards/clone-protocol.cjs contracts/v3/fixtures/m
 | 2026-09-26 | M6 rehearsal | `solana-test-validator` 4.2.2 with SIMD-0500 deactivated: deploy + governance-v3 sequence | deployed bytes = `3e169837…`; programdata rent 2.0892 SOL (max-len 300000); all actions finalized; resume refused before 24 h |
 | 2026-09-26 | M6 local | worker `--once` per role with `rebound_{indexer,scheduler,verifier}_login` | indexer ok; scheduler ok with matching genesis, `down` (preflight: wrong network) otherwise |
 | 2026-09-26 | M6 local | `db-login.cjs` SCRAM verifier on PostgreSQL 16 with `scram-sha-256` auth | create + rotate; generated URL logs in; wrong password refused |
+| 2026-09-26 | M6 local | `pnpm test` after review fixes | 150 tests: 147 pass, 3 skipped (protocol-capture replay, as before) |
+| 2026-09-26 | M6 local | migrations 001–010 on a fresh PostgreSQL 16 + `database-roles.sql` | version 10; API cannot update opening columns; indexer cannot write funding ledgers |
+| 2026-09-26 | M6 live | migration 010 on Supabase | applied; privileges verified; no advisor findings in schema `rebound` |

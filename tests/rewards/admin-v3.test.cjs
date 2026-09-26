@@ -56,6 +56,7 @@ test('program governance actions: exact unsigned transaction for the admin walle
   const other=await api.chainPrepare(db,ports,{admin:admin.publicKey.toBase58(),action:'initialize',params:{publisher:p,verifier:v,guardian:g,testMode:false}});
   const prep=await api.chainPrepare(db,ports,{admin:admin.publicKey.toBase58(),action:'initialize',params:{publisher:p,verifier:v,guardian:g,testMode:true}});
   const tx=Transaction.from(Buffer.from(prep.transaction,'base64'));tx.sign(admin);
+  await assert.rejects(api.chainSubmit(db,ports,[key()],{intentId:prep.intentId,signedTransaction:tx.serialize().toString('base64')}),e=>e.code==='FORBIDDEN'&&/another administrator/.test(e.message));   // a different admin session cannot submit it
   await assert.rejects(api.chainSubmit(db,ports,admin.publicKey.toBase58(),{intentId:other.intentId,signedTransaction:tx.serialize().toString('base64')}),e=>e.code==='FORBIDDEN');   // signed bytes of a different prepared action
   const r=await api.chainSubmit(db,ports,admin.publicKey.toBase58(),{intentId:prep.intentId,signedTransaction:tx.serialize().toString('base64')});assert.equal(r.state,'submitted');
   const d=W3.decode('deployment',(await conn.getAccountInfo(W3.addresses(program).deployment)).data);assert.equal(d.testMode,true);assert.equal(d.publisher,p);
@@ -99,5 +100,30 @@ test('primary activation: the scheduler marks a registered primary active only a
   assert.deepEqual((await sync()).map(r=>r.state),['active']);
   assert.deepEqual(await status(),{status:'active',blocked_reason:null});
   assert.deepEqual(await sync(),[],'idempotent');
+ }finally{await db.close();}
+});
+
+test('review fixes: production primary locked, active primary not replaced, API cannot rewind spend or opening credit',async()=>{
+ const {db,api}=await setup();const admin=key(),dev=key(),dev2=key(),mint=key(),mint2=key();try{
+  const s={userId:crypto.randomUUID(),reboundWallets:[dev,dev2]};
+  await assert.rejects(api.registerPrimary(db,admin,s,{namespace:'production',mint,fundingWallet:dev}),e=>e.code==='PRODUCTION_LOCKED');
+  await api.registerPrimary(db,admin,s,{namespace:'mainnet_test',mint,fundingWallet:dev});
+  await db.query("UPDATE reward_coins SET status='active' WHERE mint=$1",[mint]);
+  await assert.rejects(api.registerPrimary(db,admin,s,{namespace:'mainnet_test',mint:mint2,fundingWallet:dev2}),e=>e.code==='PRIMARY_ACTIVE');
+  await db.query("UPDATE reward_platform SET spent_total_lamports=500 WHERE namespace='mainnet_test'");
+  await db.query('SET ROLE rebound_api');try{
+   await db.query("UPDATE reward_platform SET spent_total_lamports=600 WHERE namespace='mainnet_test'");                 // increments are allowed (execution gate)
+   await assert.rejects(db.query("UPDATE reward_platform SET spent_total_lamports=0 WHERE namespace='mainnet_test'"),/schema owner/);
+   await assert.rejects(db.query('UPDATE reward_funding_wallets SET opening_slot=NULL WHERE mint=$1',[mint]),/permission denied/);
+  }finally{await db.query('RESET ROLE');}
+  await db.query("UPDATE reward_platform SET spent_total_lamports=0 WHERE namespace='mainnet_test'");                    // owner may reset
+ }finally{await db.close();}
+});
+
+test('consent message display lines come from the hashed payload, never from caller-supplied text',async()=>{
+ const Consent=require('../../server/rewards/consent.cjs');const {db}=await setup();try{
+  const wallet=key(),mint=key(),session={userId:crypto.randomUUID(),wallets:[wallet],reboundWallets:[wallet]};
+  const c=await Consent.challenge(db,session,{origin:'https://rebound.wtf',wallet,action:'admin-register-primary',payload:{namespace:'mainnet_test',mint,fundingWallet:wallet},binding:{mint:'FAKE-MINT',policy:'anything'}});
+  assert.match(c.message,new RegExp('Mint: '+mint));assert.doesNotMatch(c.message,/FAKE-MINT|Policy:/);
  }finally{await db.close();}
 });

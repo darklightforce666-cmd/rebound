@@ -39,7 +39,7 @@ GRANT INSERT ON reward_coins TO rebound_api;
 GRANT UPDATE(status,blocked_reason,name,symbol,image_uri,metadata_uri,pinned,updated_at,launch_signature,launch_time,launch_slot,activation_signature,activation_time,activation_slot,activation_evidence,schedule_anchor,cycle_seconds,cutoff_lead_seconds,sharing_config) ON reward_coins TO rebound_api;
 GRANT INSERT,UPDATE(reward_status,updated_at) ON reward_public_tokens TO rebound_api;   -- publish a verified launch
 GRANT INSERT ON reward_funding_wallets TO rebound_api;
-GRANT UPDATE(mode,signer,operational_reserve_lamports,opening_balance_lamports,opening_credit_lamports,opening_slot,status,retired_at) ON reward_funding_wallets TO rebound_api;
+GRANT UPDATE(mode,signer,status,retired_at) ON reward_funding_wallets TO rebound_api;   -- opening columns: scheduler only (010)
 GRANT INSERT,UPDATE(revoked_at,revoked_by) ON reward_admin_wallets TO rebound_api;
 GRANT UPDATE(state,body,body_hash,mint,updated_at) ON reward_intents TO rebound_api;   -- manual plans / launch intents: refresh, mark submitted
 GRANT INSERT,UPDATE ON reward_chain_attempts TO rebound_api;   -- persist user-signed bytes before broadcast

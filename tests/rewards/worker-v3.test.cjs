@@ -89,26 +89,40 @@ test('inputsLoader returns only finalized evidence at or before the cutoff slot,
  }finally{await db.close();}
 });
 
-test('dev-wallet reconciliation treats REBOUND holder deposits (manual intent or automatic attempt) as liability moves, not new funding',async()=>{
+test('dev-wallet reconciliation (scheduler role): holder deposits are recognized from the program instruction, never from database labels; gaps stop it',async()=>{
  const db=await supabaseDb();try{
-  const DEV=key(),mint=key(),crypto=require('node:crypto');
+  const DEV=key(),mint=key(),crypto=require('node:crypto'),bs58=require('bs58'),W3=require('../../server/rewards/wire-v3.cjs'),{PublicKey}=require('@solana/web3.js');
+  const program=Keypair.generate().publicKey,coinPda=W3.addresses(program,new PublicKey(mint)).coin.toBase58();
   await db.query("INSERT INTO reward_coins(mint,policy_hash,status,kind,namespace,program_version,policy_version) VALUES($1,'h','active','primary','mainnet_test','v3','rebound-v3.0')",[mint]);
   await db.query("INSERT INTO reward_funding_wallets(id,namespace,mint,address,ownership_proof) VALUES($1,'mainnet_test',$2,$3,'{}')",[crypto.randomUUID(),mint,DEV]);
   await FS.recordOpening(db,{mint,wallet:DEV,balance:2n*SOL,requestedCredit:SOL,operationalReserve:0n,slot:100,time:100});
   const chain=fakeChain();let slot=100;
-  const sysTx=(sig,payer,pre,post,from,to,lamports)=>{slot++;const keys=[payer,DEV,from,to].filter((k,i,a)=>a.indexOf(k)===i);
-   return{slot,blockTime:slot,transaction:{signatures:[sig],message:{accountKeys:keys,instructions:[{programId:SYS,parsed:{type:'transfer',info:{source:from,destination:to,lamports:Number(lamports)}}}]}},meta:{err:null,fee:5000,preBalances:keys.map(k=>k===DEV?Number(pre):0),postBalances:keys.map(k=>k===DEV?Number(post):0),innerInstructions:[]}};};
-  const T=key(),X=key(),Fee=key();
-  chain.add(sysTx('fee-in',X,2n*SOL,3n*SOL,X,DEV,SOL),[DEV]);                                     // new creator fees: 1 SOL
-  chain.add(sysTx('auto-dep',Fee,3n*SOL,3n*SOL-850000000n,DEV,T,850000000n),[DEV]);              // automatic deposit (attempt context)
-  await db.query("INSERT INTO reward_chain_attempts(id,job,state,signature,transaction_bytes,last_valid_block_height,context,kind,mint) VALUES($1,'deposit:c1','finalized','auto-dep','',1,$2,'primary_funding',$3)",[crypto.randomUUID(),JSON.stringify({cycle:1,amount:'850000000'}),mint]);
-  const out=await Wk.reconcileFunding({db,rpc:chain},{mint});assert.deepEqual(out,{credits:1,incidents:0});
+  const sysTx=(sig,payer,pre,post,from,to,lamports,extra=[])=>{slot++;const keys=[payer,DEV,from,to].filter((k,i,a)=>a.indexOf(k)===i);
+   return{slot,blockTime:slot,transaction:{signatures:[sig],message:{accountKeys:keys,instructions:[...extra,{programId:SYS,parsed:{type:'transfer',info:{source:from,destination:to,lamports:Number(lamports)}}}]}},meta:{err:null,fee:5000,preBalances:keys.map(k=>k===DEV?Number(pre):0),postBalances:keys.map(k=>k===DEV?Number(post):0),innerInstructions:[]}};};
+  const depositIx=amount=>{const d=Buffer.alloc(9);d[0]=W3.TAG.DepositHolders;d.writeBigUInt64LE(amount,1);return{programId:program.toBase58(),accounts:[DEV,W3.addresses(program).deployment.toBase58(),coinPda,SYS],data:bs58.encode(d)};};
+  const X=key(),Fee=key();
+  chain.add(sysTx('fee-in',X,2n*SOL,3n*SOL,X,DEV,SOL),[DEV]);                                                    // new creator fees: 1 SOL
+  chain.add(sysTx('dep',Fee,3n*SOL,3n*SOL-850000000n,DEV,coinPda,850000000n,[depositIx(850000000n)]),[DEV]);   // DepositHolders
+  // A forged database label (the API role can write chain attempts) must not turn the fee inflow into a "deposit".
+  await db.query("INSERT INTO reward_chain_attempts(id,job,state,signature,transaction_bytes,last_valid_block_height,context,kind,mint) VALUES($1,'forged','finalized','fee-in','',1,$2,'primary_funding',$3)",[crypto.randomUUID(),JSON.stringify({amount:'1000000000'}),mint]);
+  const asScheduler=async fn=>{await db.query('SET ROLE rebound_scheduler');try{return await fn();}finally{await db.query('RESET ROLE');}};
+  const out=await asScheduler(()=>Wk.reconcileFunding({db,rpc:chain,program},{mint}));assert.deepEqual(out,{credits:1,incidents:0});
   const a=(await db.query('SELECT * FROM reward_funding_accounts WHERE mint=$1',[mint])).rows[0];
   assert.equal(a.credited,'2000000000','opening 1 SOL + 1 SOL of new fees; the deposit is not funding');
   assert.equal(a.holder_awaiting_transfer,'850000000');
-  assert.equal((await Wk.reconcileFunding({db,rpc:chain},{mint})).credits,0,'reconciliation resumes after the last signature');
+  assert.equal((await asScheduler(()=>Wk.reconcileFunding({db,rpc:chain,program},{mint}))).credits,0,'reconciliation resumes after the last signature');
   assert.equal(await Wk.primaryAwaiting(db,mint,10_000),850000000n);
   assert.equal(await Wk.primaryAwaiting(db,mint,100),0n,'funding credited after the cutoff is not usable for that cycle');
+  // An unreadable transaction stops reconciliation there; later ones wait until it can be read.
+  chain.add(sysTx('fee-2',X,3n*SOL-850000000n,4n*SOL-850000000n,X,DEV,SOL),[DEV]);chain.add(sysTx('fee-3',X,4n*SOL-850000000n,5n*SOL-850000000n,X,DEV,SOL),[DEV]);
+  chain.down.add('fee-2');
+  assert.deepEqual(await asScheduler(()=>Wk.reconcileFunding({db,rpc:chain,program},{mint})),{credits:0,incidents:0,gap:'fee-2'});
+  assert.equal((await db.query('SELECT credited FROM reward_funding_accounts WHERE mint=$1',[mint])).rows[0].credited,'2000000000');
+  chain.down.delete('fee-2');
+  assert.equal((await asScheduler(()=>Wk.reconcileFunding({db,rpc:chain,program},{mint}))).credits,2);
+  assert.equal((await db.query('SELECT credited FROM reward_funding_accounts WHERE mint=$1',[mint])).rows[0].credited,'4000000000');
+  // The indexer login cannot write funding ledgers at all.
+  await db.query('SET ROLE rebound_indexer');try{await assert.rejects(db.query('UPDATE reward_funding_accounts SET credited=0 WHERE mint=$1',[mint]),/permission denied/);}finally{await db.query('RESET ROLE');}
  }finally{await db.close();}
 });
 

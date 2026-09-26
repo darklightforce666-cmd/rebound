@@ -73,11 +73,15 @@ async function pause(db,actor,{namespace,paused,reason}){
  */
 async function registerPrimary(db,actor,session,{namespace,mint,fundingWallet}){
  namespace=NS(namespace);mint=address(mint,'mint');fundingWallet=address(fundingWallet,'funding wallet');
+ if(namespace==='production'&&process.env.REWARDS_ALLOW_PRODUCTION!=='true')fail('PRODUCTION_LOCKED','The production primary cannot be registered on this host (REWARDS_ALLOW_PRODUCTION). Use mainnet_test for a private test.',409);
  if(!(session.reboundWallets||[]).includes(fundingWallet))fail('FORBIDDEN','Sign in with the dev funding wallet as well (it must prove control), then register it.',403);
  const plat=(await db.query('SELECT * FROM reward_platform WHERE namespace=$1',[namespace])).rows[0];
  const policyHash=P3.hashOf(P3.policy(plat.policy_version));
  await DB.transaction(db,async t=>{
-  const existing=(await t.query("SELECT kind FROM reward_coins WHERE mint=$1",[mint])).rows[0];if(existing&&existing.kind!=='primary')fail('MINT_EXISTS','This mint is registered as a third-party coin',409);
+  const existing=(await t.query("SELECT kind,namespace FROM reward_coins WHERE mint=$1",[mint])).rows[0];if(existing&&existing.kind!=='primary')fail('MINT_EXISTS','This mint is registered as a third-party coin',409);
+  if(existing&&existing.namespace!==namespace)fail('NAMESPACE','This mint is already the primary of the '+existing.namespace+' namespace',409);
+  const current=plat.primary_mint&&plat.primary_mint!==mint?(await t.query("SELECT status FROM reward_coins WHERE mint=$1",[plat.primary_mint])).rows[0]:null;
+  if(current&&current.status==='active')fail('PRIMARY_ACTIVE','This namespace already has an active primary; it cannot be replaced from the dashboard',409);
   await t.query("INSERT INTO reward_coins(mint,policy_hash,status,kind,namespace,program_version,policy_version) VALUES($1,$2,'registered','primary',$3,'v3',$4) ON CONFLICT(mint) DO NOTHING",[mint,policyHash,namespace,plat.policy_version]);
   const live=(await t.query("SELECT * FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired'",[mint])).rows[0];
   if(live&&live.address!==fundingWallet)fail('FUNDING_WALLET_EXISTS','Retire the current funding wallet first',409);
@@ -168,8 +172,9 @@ async function chainPrepare(db,{connection,program},{admin,action,params={}}){
  const tx=new Transaction({feePayer:new PublicKey(admin),blockhash:bh.blockhash,lastValidBlockHeight:bh.lastValidBlockHeight}).add(ix);
  return{intentId:id,action,transaction:tx.serialize({requireAllSignatures:false,verifySignatures:false}).toString('base64')};
 }
-async function chainSubmit(db,{connection},actor,{intentId,signedTransaction}){
+async function chainSubmit(db,{connection},adminWallets,{intentId,signedTransaction}){
  const intent=(await db.query("SELECT * FROM reward_intents WHERE id=$1 AND kind='setup' AND state='awaiting_signature'",[intentId])).rows[0];if(!intent)fail('PLAN_STALE','This program action is no longer awaiting a signature',409);
+ const actor=intent.body.admin;if(!(Array.isArray(adminWallets)?adminWallets:[adminWallets]).includes(actor))fail('FORBIDDEN','This action was prepared for another administrator wallet',403);
  let tx;try{tx=Transaction.from(Buffer.from(signedTransaction,'base64'));}catch{fail('INVALID_TRANSACTION','Unsupported transaction encoding');}
  if(!T.matchesIntent(tx,{instructions:[ixFrom(intent.body.ix)],signer:intent.body.admin,blockhash:intent.body.blockhash}))fail('FORBIDDEN','Signed transaction does not match the prepared program action',403);
  const r=await T.persistAndBroadcast(db,connection,{job:intent.job,kind:'setup',mint:intent.body.params?.mint||null,signerRole:'admin',intentId,bytes:tx.serialize(),signature:bs58.encode(tx.signature),lastValidBlockHeight:intent.body.lastValidBlockHeight,context:{action:intent.body.action}});

@@ -19,7 +19,9 @@ function message({domain,wallet,action,hash,nonce,expires,binding}){
  lines.push(`Nonce: ${nonce}`,`Expires: ${expires}`);return lines.join('\n');
 }
 
-async function challenge(db,session,{origin,wallet,action,payload,binding={}}){
+async function challenge(db,session,{origin,wallet,action,payload,binding:_ignored}){
+ // Display lines are taken from the hashed payload itself, never from caller-supplied text.
+ const binding={};for(const k of ['mint','policy','fundingMode','targetPrimaryMint'])if(payload&&(typeof payload[k]==='string'||typeof payload[k]==='number'))binding[k]=String(payload[k]).slice(0,100);
  const domain=new URL(origin).host;W.pk(wallet);
  if(!ownsWallet(session,wallet))throw new AuthError('FORBIDDEN','Sign in with this wallet first.',403);
  const nonce=crypto.randomUUID(),expires=new Date(Date.now()+TTL_MS).toISOString(),hash=payloadHash(action,payload);

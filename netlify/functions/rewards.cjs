@@ -152,7 +152,7 @@ const handlers={
    if(!s.adminWallets.includes(wallet))fail(403,'FORBIDDEN','Use your administrator wallet');
    return planCall(()=>Admin.chainPrepare(db,chain(db),{admin:wallet,action:String(data.action||''),params:data.params&&typeof data.params==='object'?data.params:{}}));},
   async 'admin-program-submit'({db,event,data}){const s=await Session.authenticate(db,event.headers,{need:'admin'});
-   return planCall(()=>Admin.chainSubmit(db,chain(db),s.adminWallets[0],{intentId:uuid(data.intentId),signedTransaction:b64tx(data.signedTransaction)}));},
+   return planCall(()=>Admin.chainSubmit(db,chain(db),s.adminWallets,{intentId:uuid(data.intentId),signedTransaction:b64tx(data.signedTransaction)}));},
   async 'metadata-upload'({db,event,data,origin,requestId}){
    const s=await Session.authenticate(db,event.headers);const payload=data.payload||{};
    await Consent.consume(db,s,{origin,wallet:data.wallet,action:'metadata-upload',payload,proof:data.proof});
@@ -189,9 +189,11 @@ exports.handler=async event=>{
  }catch(error){
   const known=error instanceof ApiError?error:error instanceof Session.AuthError?new ApiError(error.status,error.code,error.message,error.status>=500):null;
   if(known)return reply(event,known.status,{code:known.code,message:known.message,retryable:known.retryable,requestId,...known.extra});
-  const safe=typeof error?.message==='string'&&error.message.length<200&&!/https?:|postgres|password|secret|key file|ECONN|ENOTFOUND|ENOENT|relation|column|syntax/i.test(error.message);
+  const sqlState=typeof error?.code==='string'&&/^[0-9A-Z]{5}$/.test(error.code)&&('routine' in error||'severity' in error||'schema' in error);
+  if(sqlState&&error.code==='23505')return reply(event,409,{code:'CONFLICT',message:'This conflicts with an existing record. Refresh and review the current state.',retryable:false,requestId});
+  const safe=!sqlState&&typeof error?.message==='string'&&error.message.length<200&&!/https?:|postgres|password|secret|key file|ECONN|ENOTFOUND|ENOENT|relation|column|syntax|constraint|duplicate key|permission denied|violates/i.test(error.message);
   if(pool)await Logs.log(pool,{severity:'error',component:'api',eventType:'request_failed',requestId,message:Logs.redactText(error?.message||'error'),errorCode:error?.code||'INTERNAL',metadata:{action}}).catch(()=>{});
-  return reply(event,safe?400:503,{code:error?.code&&/^[A-Z_]+$/.test(error.code)?error.code:safe?'INVALID_REQUEST':'UNAVAILABLE',message:safe?error.message:'This service is temporarily unavailable. Nothing was changed; retry shortly.',retryable:!safe,requestId});
+  return reply(event,safe?400:503,{code:!sqlState&&error?.code&&/^[A-Z_]+$/.test(error.code)?error.code:safe?'INVALID_REQUEST':'UNAVAILABLE',message:safe?error.message:'This service is temporarily unavailable. Nothing was changed; retry shortly.',retryable:!safe,requestId});
  }
 };
 exports._internal={handlers,origins,publicConfig,ApiError};
