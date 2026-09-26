@@ -146,11 +146,40 @@ from the owner's Mac (`Desktop/Projects/Rebound/.probe/`), database changes thro
 - [ ] Buyback swap CPI against real Pump/PumpSwap programs (cloned accounts) → M4
 - [ ] Program deployment + initialization under governance → M6
 
-## M4 — third-party launches and buyback/burn
+## M4 — third-party launches and buyback/burn — implemented; verified on cloned mainnet programs
 
-- [ ] Launch flow on V3 (initial creator = intake PDA), `created_pending_activation`, resumable steps
-- [ ] Per-mint buyback reserve, quote/slippage/impact validation, swap + real burn, burn-only retry
-- [ ] Curve and graduated paths tested against cloned Pump programs
+- [x] `pump-v3.cjs` (official `@pump-fun/pump-sdk@2.0.0` / `pump-swap-sdk@1.20.0`): launch = V3 `PrepareCoin` +
+      `create_v2` with the per-mint intake PDA as creator (regular creator-fee coin; holder-reward, mayhem,
+      cashback and non-SOL refused); the creator's initial buy goes in the same transaction when it fits,
+      otherwise as a second transaction (the intake is already the creator, so no fee escapes)
+- [x] Routing: fee-sharing create (setup rent moved from the user to the intake first) + lock (admin revoked,
+      intake = sole 100 % shareholder) signed by the intake PDA inside the program; `verifyRouting` checks
+      curve creator, sharing config, coin account and (after graduation) the canonical pool before `active`
+- [x] `launch-v3.cjs` + API (`launch-draft/prepare/submit/status`, `activation-prepare/submit`): browser mint key,
+      exact transactions verified against stored intents, simulation before signing, coin persisted only after
+      finalized evidence, `created_pending_activation` survives rejected/closed setup, resume offers only the
+      steps the chain still lacks, a creation that can still land blocks replacement (no duplicate token);
+      launches obey the namespace execution mode and test allowlist
+- [x] `receipts-v3.cjs`: permissionless collection crank; intake scan credits only transfers from the coin's
+      Pump creator vaults (setup rent/donations recorded as non-income); verifier re-measures each finalized
+      collection and signs the receipt; `Credit` with receipt-PDA settlement; split mirrored once in the ledger
+- [x] `buyback-v3.cjs`: one job per coin and cycle, target mint/config frozen at reservation; quote on the
+      canonical market only (curve `buy_exact_sol_in`, pool `buy_exact_quote_in`), min_out/impact/quote-age
+      checks, `deferred` with budget kept reserved on any failure; one signed purchase followed through
+      ambiguous broadcasts; burn-only retry; `burn_checked` verified by supply delta; close returns unspent
+      budget to the buyback reserve (never to holders)
+- [x] Worker wiring: indexer scans intakes; scheduler cranks collections, credits receipts and advances buyback
+      jobs for every active third-party coin
+- [x] Program: unspent WSOL unwrapped after a PumpSwap buyback (sha256 `3e169837…`)
+- [x] Live-verified protocol facts, fixed in code: v1 transactions; Pump `create_v2` mint rent fails for very
+      short metadata (creation is simulated before the user signs); fee-sharing setup rent paid by the creator;
+      PumpSwap picks fee recipients at random (REBOUND fixes them); protocol WSOL accounts and volume
+      accumulators are created by the operations payer, not from the buyback budget; the 23-account PumpSwap
+      route fits a legacy transaction only with the publisher as fee payer
+- [ ] Live mainnet evidence → M6 runbook
+
+Tests: `pump-lifecycle-v3` (4), `third-party-v3` (2), `launch-v3` (3) run the real Pump / PumpSwap / fee binaries
+cloned from mainnet (`scripts/rewards/clone-protocol.cjs contracts/v3/fixtures/mainnet`; fixtures git-ignored).
 
 ## M5 — admin dashboard, Privy UI, live discovery
 
@@ -202,6 +231,9 @@ from the owner's Mac (`Desktop/Projects/Rebound/.probe/`), database changes thro
 | 2026-09-26 | M2 local | `pnpm test` | 114 pass, 3 skipped (same) |
 | 2026-09-26 | M2 live | `preview-v3.cjs` on a live Pump mint (owner Mac, public RPC) | history complete, 1 368 events, 0 parser holds; held on SOL/USD (expected without FX source) |
 | 2026-09-26 | M2 live | on-chain Pyth SOL/USD cadence probe | live read OK ($121.63); updates ~53 s apart; update-tx decoder verified |
+| 2026-09-26 | M4 cloned protocol | lifecycle/third-party/launch suites on cloned Pump, PumpSwap, fee programs | 9 pass |
+| 2026-09-26 | M4 local | `pnpm test` | 132 pass, 3 skipped (same) |
+| 2026-09-26 | M4 live | migration 009 + API grants on Supabase | applied; no REBOUND advisor findings |
 | 2026-09-26 | M1 live | SIWS sign-in for https://rebound.wtf after redirect URLs | ok; identity domain rebound.wtf; not admin |
 | 2026-09-26 | M1 live | `rebound_api_login` via transaction pooler from owner Mac | connects; search_path rebound; forbidden write refused |
 | 2026-09-26 | M3 Rust | `cargo test --locked` (contracts/v3) | 8 pass |

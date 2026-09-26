@@ -11,6 +11,7 @@ const {Connection,PublicKey}=require('@solana/web3.js');
 const DB=require('./db.cjs'),P3=require('./policy-v3.cjs'),H=require('./history-v3.cjs'),I=require('./indexer.cjs'),Pump=require('./pump.cjs');
 const FX=require('./sol-usd.cjs'),F=require('./primary-funding.cjs'),FS=require('./funding-store.cjs'),C=require('./cycle-v3.cjs'),V=require('./verifier-v3.cjs');
 const Logs=require('./logs.cjs'),Signer=require('./signer.cjs'),W3=require('./wire-v3.cjs'),{stable}=require('./policy.cjs');
+const R=require('./receipts-v3.cjs'),BB=require('./buyback-v3.cjs');
 const b=x=>BigInt(x);
 
 // ---------------- history ingestion ----------------
@@ -144,6 +145,7 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
       const r=await ingest({db:idb,rpc},coin);if(r.newTx)await Logs.log(idb,{component:'indexer',eventType:'history_ingested',mint:coin.mint,message:`Ingested ${r.newTx} finalized transaction(s), ${r.newEvents} event(s); coverage ${r.complete?'complete':'INCOMPLETE'} through slot ${r.head}`,metadata:{incomplete:r.incomplete.slice(0,5)}});
       await heartbeat({db:idb,connection},coin).catch(e=>Logs.log(idb,{severity:'warn',component:'indexer',eventType:'heartbeat_failed',mint:coin.mint,message:e.message,errorCode:e.code||'HEARTBEAT_FAILED'}));
       if(coin.kind==='primary')await reconcileFunding({db:idb,rpc},coin);
+      else if(program)await R.scanIntake({db:idb,rpc,program},coin);   // creator-fee income vs setup rent/donations
       await projectToken({db:idb,connection},coin);
      },{seconds:300,busy:()=>null}).catch(e=>Logs.log(idb,{severity:'error',component:'indexer',eventType:'ingest_failed',mint:coin.mint,message:e.message,errorCode:e.code||'INDEXER_ERROR'}));
     }
@@ -151,11 +153,20 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
    }
    if((role==='all'||role==='scheduler')&&program&&feePayer&&publisher&&verifierKey){
     const ports={db:sdb,connection,program,feePayer,publisher,verifierKey:verifierKey.publicKey,worker,inputs,
-     verifier:{cosign:V.cosigner({db:vdb,program,key:verifierKey,inputs:inputsLoader(vdb)})},
+     verifier:{cosign:V.cosigner({db:vdb,program,key:verifierKey,inputs:inputsLoader(vdb)}),...R.attestor({rpc:new H.Rpc(process.env.VERIFIER_RPC_URL||historyUrl,{minIntervalMs:100}),connection,program,key:verifierKey})},
      cutoffSlot:async t=>(await H.findCutoffSlot(rpc,t)).slot,now:async()=>connection.getBlockTime(await connection.getSlot('finalized')),
      devSigner:async coin=>{const fw=(await sdb.query("SELECT * FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired' AND mode='automatic'",[coin.mint])).rows[0];return fw?.signer?Signer.load(sdb,fw.signer):null;},
      primaryAwaiting:(mint,cutoff)=>primaryAwaiting(sdb,mint,cutoff),sponsorRent:process.env.REWARDS_SPONSOR_RENT==='true'};
-    for(const coin of coins.filter(c=>c.status==='active'))await C.tick(ports,coin.mint).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'tick_failed',mint:coin.mint,message:e.message,errorCode:e.code||'SCHEDULER_ERROR'}));
+    for(const coin of coins.filter(c=>c.status==='active')){
+     await C.tick(ports,coin.mint).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'tick_failed',mint:coin.mint,message:e.message,errorCode:e.code||'SCHEDULER_ERROR'}));
+     if(coin.kind!=='third_party')continue;
+     // Third-party funding: collect creator fees → verified receipts → Credit (split once) → PRIMARY buyback/burn.
+     await DB.withLease(sdb,'third-party:'+coin.mint,worker,async()=>{
+      await R.crank(ports,coin);await R.creditStep(ports,coin);
+      const last=(await sdb.query('SELECT id FROM reward_cycles WHERE mint=$1 AND cutoff_time<=$2 ORDER BY cycle_number DESC LIMIT 1',[coin.mint,await ports.now()])).rows[0];
+      await BB.step(ports,coin,last?.id||null);
+     },{seconds:120,busy:()=>null}).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'third_party_step_failed',mint:coin.mint,message:e.message,errorCode:e.code||'SCHEDULER_ERROR'}));
+    }
     await Logs.heartbeat(sdb,'scheduler','ok',{coins:coins.length});
    }else if(role==='all'||role==='scheduler')await Logs.heartbeat(sdb,'scheduler','unconfigured',{reason:'program id or signer files missing; settlement disabled'});
    await Logs.heartbeat(idb,'worker','ok',{role,worker});
