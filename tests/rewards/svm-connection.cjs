@@ -6,7 +6,7 @@
 //   finalityLag          — landed transactions become "finalized" only after advance()
 const fs=require('node:fs'),path=require('node:path');
 const {LiteSVM,TransactionMetadata}=require('litesvm');const kit=require('@solana/kit');
-const {PublicKey,Keypair}=require('@solana/web3.js'),bs58=require('bs58');
+const {PublicKey,Keypair,Transaction}=require('@solana/web3.js'),bs58=require('bs58');
 const SO=path.join(__dirname,'../../contracts/v3/target/deploy/rebound_rewards_v3.so');
 const LOADER=new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
 const A=x=>kit.address(typeof x==='string'?x:x.toBase58());
@@ -15,7 +15,7 @@ class SvmConnection{
  constructor({program=Keypair.generate().publicKey,admin}={}){
   if(!fs.existsSync(SO))throw Error('Build contracts/v3 first (cargo build-sbf)');
   this.svm=new LiteSVM();this.program=program;this.svm.addProgramFromFile(A(program),SO);
-  this.faults={dropResponse:0,rejectSend:0};this.statuses=new Map();this.height=100;this.sent=0;this.landed=[];
+  this.faults={dropResponse:0,rejectSend:0};this.statuses=new Map();this.parsed=new Map();this.height=100;this.sent=0;this.landed=[];
   if(admin){ // upgradeable-loader authority fixture checked by Initialize
    const programData=PublicKey.findProgramAddressSync([program.toBuffer()],LOADER)[0];this.programData=programData;
    const u32=n=>{const b=Buffer.alloc(4);b.writeUInt32LE(n);return b;};
@@ -49,11 +49,34 @@ class SvmConnection{
  async sendRawTransaction(bytes){
   this.sent++;if(this.faults.rejectSend>0){this.faults.rejectSend--;throw Error('fixture: RPC rejected before submission');}
   const decoded=kit.getTransactionDecoder().decode(Uint8Array.from(bytes));const sig=bs58.encode(Buffer.from(bytes).subarray(1,65));
-  if(!this.statuses.has(sig)){const r=this.svm.sendTransaction(decoded);const ok=r instanceof TransactionMetadata;
-   this.statuses.set(sig,{slot:await this.getSlot(),err:ok?null:String(r.err()),confirmationStatus:'confirmed',logs:ok?r.logs():r.meta().logs()});if(ok)this.landed.push(sig);}
+  if(!this.statuses.has(sig)){
+   const legacy=(()=>{try{return Transaction.from(Buffer.from(bytes));}catch{return null;}})(),msg=legacy?.compileMessage(),keys=msg?msg.accountKeys.map(k=>k.toBase58()):[];
+   const pre=keys.map(k=>Number(this.svm.getBalance(A(k))||0n));
+   const r=this.svm.sendTransaction(decoded);const ok=r instanceof TransactionMetadata;
+   this.statuses.set(sig,{slot:await this.getSlot(),err:ok?null:String(r.err()),confirmationStatus:'confirmed',logs:ok?r.logs():r.meta().logs()});
+   if(ok){this.landed.push(sig);if(msg)this.parsed.set(sig,this._parsed(sig,msg,keys,pre,r));}}
   if(this.faults.dropResponse>0){this.faults.dropResponse--;throw Error('fixture: RPC response lost after submission');}
   const s=this.statuses.get(sig);if(s.err)throw Error('Transaction simulation failed: '+s.err);return sig;
  }
+ // jsonParsed-shaped finalized transaction (system transfers parsed; everything else raw), for receipt tests.
+ _parsed(sig,msg,keys,pre,meta){
+  const SYS='11111111111111111111111111111111';const signers=msg.header.numRequiredSignatures;
+  const one=(programIdIndex,accounts,data)=>{const programId=keys[programIdIndex],acc=Array.from(accounts).map(i=>keys[i]),d=Buffer.from(data);
+   if(programId===SYS&&d.length>=12&&d.readUInt32LE(0)===2)return{programId,parsed:{type:'transfer',info:{source:acc[0],destination:acc[1],lamports:Number(d.readBigUInt64LE(4))}}};
+   return{programId,accounts:acc,data:bs58.encode(d)};};
+  const inner=meta.innerInstructions().map((list,index)=>({index,instructions:list.map(x=>({...one(x.instruction().programIdIndex(),x.instruction().accounts(),x.instruction().data()),stackHeight:x.stackHeight()}))})).filter(x=>x.instructions.length);
+  return{slot:Number(this.svm.getClock().slot),blockTime:Number(this.svm.getClock().unixTimestamp),transaction:{signatures:[sig],message:{accountKeys:keys.map((k,i)=>({pubkey:k,signer:i<signers,writable:msg.isAccountWritable(i)})),instructions:msg.instructions.map(i=>one(i.programIdIndex,i.accounts,bs58.decode(i.data)))}},
+   meta:{err:null,fee:5000*signers,preBalances:pre,postBalances:keys.map(k=>Number(this.svm.getBalance(A(k))||0n)),innerInstructions:inner,preTokenBalances:[],postTokenBalances:[],logMessages:meta.logs()}};
+ }
+ async getTransaction(sig){return this.parsed.get(sig)||null;}
+ async getParsedTransaction(sig){return this.parsed.get(sig)||null;}
+ // Minimal JSON-RPC facade (history-v3 Rpc interface) over the landed transactions.
+ rpc(){const self=this;return{calls:0,async call(m,p){this.calls++;
+  if(m==='getSlot')return self.getSlot();if(m==='getBlockTime')return self.getBlockTime();
+  if(m==='getTransaction')return self.parsed.get(p[0])||null;
+  if(m==='getSignaturesForAddress'){const [addr,o={}]=p;let list=self.landed.filter(s=>self.parsed.get(s)?.transaction.message.accountKeys.some(k=>k.pubkey===addr)).reverse().map(s=>({signature:s,slot:self.parsed.get(s).slot,err:null,blockTime:self.parsed.get(s).blockTime}));
+   if(o.until){const i=list.findIndex(x=>x.signature===o.until);if(i>=0)list=list.slice(0,i);}if(o.before){const i=list.findIndex(x=>x.signature===o.before);list=list.slice(i+1);}return list.slice(0,o.limit||1000);}
+  throw Error('svm rpc: unsupported '+m);}};}
  finalizeAll(){for(const s of this.statuses.values())s.confirmationStatus='finalized';}
  async getSignatureStatuses(sigs){return{value:sigs.map(s=>{const x=this.statuses.get(s);return x?{slot:x.slot,err:x.err,confirmationStatus:x.confirmationStatus}:null;})};}
  logsOf(sig){return this.statuses.get(sig)?.logs||[];}

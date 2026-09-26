@@ -172,6 +172,11 @@ async function buybackMarket({connection=null,payer,buyer,targetMint,lamports,sl
   const spotOut=lamports*B/Q;quote={expectedOut:out,minOut:out-bps(out,slippageBps),impactBps:spotOut>0n?Number((spotOut-out)*10000n/spotOut):10000,market:'pump-amm:'+poolKey.toBase58()};
   const st={globalConfig:state.globalConfig,poolKey,poolAccountInfo:state.poolAccountInfo,pool,user:buyer,baseTokenProgram:tokenProgram,quoteTokenProgram:TOKEN_PROGRAM_ID,userBaseTokenAccount:holding,userQuoteTokenAccount:wsol,userBaseAccountInfo:null,userQuoteAccountInfo:null};
   const accounts=AMM.PUMP_AMM_SDK.swapAccounts(st);const remaining=[];
+  // The SDK picks fee recipients at random; REBOUND fixes them so the prepared setup, the quote and a
+  // retried swap all reference the same accounts.
+  const gc=state.globalConfig,wsolAta=o=>getAssociatedTokenAddressSync(NATIVE_MINT,o,true,TOKEN_PROGRAM_ID);
+  accounts.protocolFeeRecipient=gc.protocolFeeRecipients[0];accounts.protocolFeeRecipientTokenAccount=wsolAta(accounts.protocolFeeRecipient);
+  accounts.buybackFeeRecipient=gc.buybackFeeRecipients[0];accounts.buybackFeeRecipientTokenAccount=wsolAta(accounts.buybackFeeRecipient);
   // Protocol-side WSOL accounts the swap would otherwise create at the buyer's expense (e.g. the coin
   // creator vault ATA right after migration): created idempotently by the fee payer (operating cost).
   for(const [ata,owner] of [[accounts.protocolFeeRecipientTokenAccount,accounts.protocolFeeRecipient],[accounts.coinCreatorVaultAta,accounts.coinCreatorVaultAuthority],[accounts.buybackFeeRecipientTokenAccount,accounts.buybackFeeRecipient]])

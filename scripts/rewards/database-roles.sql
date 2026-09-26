@@ -64,6 +64,12 @@ GRANT UPDATE(paused,pause_reason,spent_total_lamports,updated_at) ON reward_plat
 GRANT INSERT ON reward_logs,reward_audit TO rebound_verifier;
 GRANT INSERT,UPDATE ON reward_nonce_uses,reward_leases,reward_health TO rebound_verifier;
 
+-- ---------- incremental history cursors (008) and third-party receipts (009) ----------
+GRANT SELECT,INSERT,UPDATE ON reward_history_cursors,reward_intake_receipts TO rebound_indexer;
+GRANT SELECT ON reward_history_cursors TO rebound_scheduler,rebound_verifier,rebound_api;
+GRANT UPDATE(state,holder_lamports,buyback_lamports,receipt_account,credit_signature,reason,updated_at) ON reward_intake_receipts TO rebound_scheduler;
+GRANT SELECT ON reward_intake_receipts TO rebound_scheduler,rebound_verifier,rebound_api;
+
 -- Sequences for append-only tables.
 GRANT USAGE,SELECT ON SEQUENCE reward_audit_id_seq,reward_logs_id_seq TO rebound_api,rebound_indexer,rebound_scheduler,rebound_verifier;
 GRANT USAGE,SELECT ON SEQUENCE reward_config_versions_id_seq TO rebound_api;
