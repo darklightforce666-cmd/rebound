@@ -68,16 +68,30 @@ isolated in schema `rebound` and nothing legacy was changed.
 Note: this build container cannot reach `*.supabase.co` or Solana RPC (egress policy 403); live probes run
 from the owner's Mac (`Desktop/Projects/Rebound/.probe/`), database changes through the Supabase MCP.
 
-## M2 — finalized history and loss engine
+## M2 — finalized history and V3 loss engine — implemented; live read-only run pending
 
-- [ ] `policy-v3.cjs` formulas + tests (§19 accounting list)
-- [ ] FIFO lots incl. zero-basis incoming, lot credits
-- [ ] SOL/USD historical evidence module (Pyth)
-- [ ] 60 s TWAP token/USD reference price
-- [ ] Per-anchor cutoff snapshots; preview output with reasons
-- [ ] Primary dev-wallet funding ledger (buckets, retained 15%, reconciliation from finalized events)
-- [ ] Remove permanent-exit / wallet-link exclusions from the active path
-- [ ] Real read-only mint history snapshot (or named coverage blocker)
+- [x] `policy-v3.cjs` formulas: split once with per-mint carry, FIFO proportional consumption, position
+      Q/C/V/K/L with profitable-lot offset, allocation with loss caps and deterministic rounding,
+      credit→lot attribution, schedule (1800/60; test 120/30), 60 s TWAP `max(spot,twap)` with named holds
+- [x] `lots-v3.cjs`: trade↔delivery matching per transaction, payment proof from the buyer's own transfers,
+      zero-basis gifts/owner changes/router intermediaries/side pools, FIFO outflows, post-balance proof
+      after every transaction, credit replay at snapshot slots (transfer out/back cannot reset credit)
+- [x] `sol-usd.cjs`: Pyth Benchmarks (needs `PYTH_API_KEY`, required by Pyth since 2026-08-26) and
+      on-chain Pyth feed (live `PriceUpdateV2` + update-transaction history); age ≤ 30 s, conf ≤ 1 %
+- [x] `primary-funding.cjs` + `funding-store.cjs`: per-transaction dev-wallet reconciliation, opening credit
+      once, 85/15 split once, retained 15 % never re-split, holder-only deposits, fees → operating,
+      insufficient backing → exact shortfall incident + coin paused; DB CHECK enforces conservation
+- [x] `history-v3.cjs`: mint-scoped finalized history (mint, curve, pool + every discovered token account),
+      exact in-block order, honest coverage; `findCutoffSlot`; `mint-v3.cjs` (Token-2022 extension gate)
+- [x] `snapshot-v3.cjs`: deterministic snapshot + round proposal, `waiting_for_data` with exact reason
+- [x] Parser `rebound-execution-v3.0`; V2 permanent exits/wallet links removed from the active path
+- [x] `scripts/rewards/preview-v3.cjs`: read-only auditable preview report
+- [ ] **Live:** run `preview-v3.cjs` on a real mint from a machine with mainnet RPC (owner Mac was offline
+      26 Sep ~15:30 UTC). Build container cannot reach RPC/Pyth (egress 403).
+- [ ] **Decision/config:** SOL/USD historical source — `PYTH_API_KEY` (paid after trial) or on-chain feed
+      history (free; cadence vs 30 s freshness to be measured live). Default feed account
+      `7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE` is self-verified (owner + feed id) at use.
+- [ ] Primary mint (placeholder `3SohGc…pump` unverified) — needed for the real primary preview
 
 ## M3 — program V3 and durable funding/payouts
 
@@ -141,3 +155,4 @@ from the owner's Mac (`Desktop/Projects/Rebound/.probe/`), database changes thro
 | 2026-09-26 | M1 live | anon/authenticated RLS probe (rolled back) | anon reads 2 projections only; 0 writable; PokeDrop user not admin |
 | 2026-09-26 | M1 live | Realtime probe from owner Mac | INSERT+UPDATE received ~350 ms; logs → 401 without data |
 | 2026-09-26 | M1 live | SIWS for rebound.wtf | rejected: redirect URL not allowed (external step) |
+| 2026-09-26 | M2 local | `pnpm test` | 114 pass, 3 skipped (same) |
