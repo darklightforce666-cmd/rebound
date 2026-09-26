@@ -11,11 +11,12 @@ const {Connection,PublicKey}=require('@solana/web3.js');
 const DB=require('./db.cjs'),P3=require('./policy-v3.cjs'),H=require('./history-v3.cjs'),I=require('./indexer.cjs'),Pump=require('./pump.cjs');
 const FX=require('./sol-usd.cjs'),F=require('./primary-funding.cjs'),FS=require('./funding-store.cjs'),C=require('./cycle-v3.cjs'),V=require('./verifier-v3.cjs');
 const Logs=require('./logs.cjs'),Signer=require('./signer.cjs'),W3=require('./wire-v3.cjs'),{stable}=require('./policy.cjs');
-const R=require('./receipts-v3.cjs'),BB=require('./buyback-v3.cjs'),Admin=require('./admin-v3.cjs'),Inbox=require('./key-inbox.cjs');
+const R=require('./receipts-v3.cjs'),BB=require('./buyback-v3.cjs'),Admin=require('./admin-v3.cjs'),Inbox=require('./key-inbox.cjs'),Direct=require('./cycle-direct.cjs');
 const b=x=>BigInt(x);
 
 // ---------------- history ingestion ----------------
-async function ingest({db,rpc},coin){
+// maxTx bounds one pass (hosted worker: short invocations); the rest continues on the next pass.
+async function ingest({db,rpc},coin,{maxTx=Infinity}={}){let fetched=0;
  const mint=coin.mint,m=H.marketAddresses(mint),head=await rpc.call('getSlot',[{commitment:'finalized'}]);
  for(const [address,role] of [[m.mint,'mint'],[m.curve,'curve'],[m.pool,'pool']])
   await db.query('INSERT INTO reward_history_cursors(mint,address,role,discovered_slot) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING',[mint,address,role,head]);
@@ -28,7 +29,8 @@ async function ingest({db,rpc},coin){
   const sigs=r.signatures.filter(s=>!s.err).reverse();       // oldest first
   for(const s of sigs){
    if((await db.query('SELECT 1 FROM reward_events WHERE signature=$1 LIMIT 1',[s.signature])).rows.length){continue;}
-   const tx=await rpc.call('getTransaction',[s.signature,{encoding:'jsonParsed',commitment:'finalized',maxSupportedTransactionVersion:H.TX_VERSION}]);
+   if(fetched>=maxTx){incomplete.push({address:cur.address,reason:'continues_next_pass'});gap=true;break;}
+   const tx=await rpc.call('getTransaction',[s.signature,{encoding:'jsonParsed',commitment:'finalized',maxSupportedTransactionVersion:H.TX_VERSION}]);fetched++;
    if(!tx){incomplete.push({signature:s.signature,reason:'transaction_unavailable'});gap=true;break;}
    let index=H.reportedIndex(tx,s);
    if(index==null){const block=await rpc.call('getBlock',[tx.slot,{transactionDetails:'signatures',rewards:false,commitment:'finalized',maxSupportedTransactionVersion:H.TX_VERSION}]);index=(block?.signatures||[]).indexOf(s.signature);}if(index<0){incomplete.push({slot:tx.slot,reason:'in_block_order_unavailable'});gap=true;break;}
@@ -56,6 +58,11 @@ async function ingest({db,rpc},coin){
 }
 
 // ---------------- evidence loaders for snapshots (scheduler and verifier use the same code) ----------------
+// Compensation already reserved or paid before this cutoff, per lot (reduces remaining losses).
+async function loadCredits(db,mint,cutoffSlot){
+ return(await db.query(`SELECT lc.lot_id,lc.credit_usd,a.state,c.cutoff_slot,a.cycle_id,a.leaf_index FROM reward_lot_credits lc JOIN reward_awards a USING(cycle_id,leaf_index) JOIN reward_cycles c ON c.id=a.cycle_id
+   WHERE a.mint=$1 AND a.state IN ('reserved','paid','deferred_rent') AND c.cutoff_slot<$2`,[mint,cutoffSlot])).rows.map(r=>({slot:Number(r.cutoff_slot),lotId:r.lot_id,credit:b(r.credit_usd),state:r.state==='paid'?'paid':'reserved',award:r.cycle_id+':'+r.leaf_index}));
+}
 function inputsLoader(db){
  return async(coinRow,cycle,cutoff,cutoffSlot)=>{
   const mint=coinRow.mint,m=H.marketAddresses(mint);
@@ -67,8 +74,7 @@ function inputsLoader(db){
   const minT=purchaseTimes.length?Math.min(...purchaseTimes)-60:cutoff-120;
   const series=await FX.load(db,minT,cutoff);
   const excluded=new Set([m.curve,m.pool,m.poolAuthority,...[coinRow.intake,coinRow.treasury].filter(Boolean)]);
-  const credits=(await db.query(`SELECT lc.lot_id,lc.credit_usd,a.state,c.cutoff_slot,a.cycle_id,a.leaf_index FROM reward_lot_credits lc JOIN reward_awards a USING(cycle_id,leaf_index) JOIN reward_cycles c ON c.id=a.cycle_id
-   WHERE a.mint=$1 AND a.state IN ('reserved','paid','deferred_rent') AND c.cutoff_slot<$2`,[mint,cutoffSlot])).rows.map(r=>({slot:Number(r.cutoff_slot),lotId:r.lot_id,credit:b(r.credit_usd),state:r.state==='paid'?'paid':'reserved',award:r.cycle_id+':'+r.leaf_index}));
+  const credits=await loadCredits(db,mint,cutoffSlot);
   const heartbeats=(await db.query('SELECT observed_at,quote_model,base_reserve,real_quote,virtual_quote,market FROM reward_price_observations WHERE mint=$1 AND heartbeat AND observed_at BETWEEN $2 AND $3',[mint,cutoff-120,cutoff])).rows
    .map(r=>({time:Number(r.observed_at),market:r.quote_model==='curve'?'pump-curve':'pump-amm:'+r.market,s18:r.quote_model==='curve'?P3.curveS18({virtualSolReserves:r.virtual_quote,virtualTokenReserves:r.base_reserve}):P3.ammS18({quoteReserve:r.real_quote,baseReserve:r.base_reserve})}));
   return{events,parserHolds:holds,coverage:{complete:!!cp?.complete,throughSlot:cp?Number(cp.through_slot):0},excluded,fx:FX.lookup(series),solSeries:series,heartbeats,credits};
@@ -212,10 +218,11 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
  const worker=`worker:${require('node:os').hostname()}:${process.pid}:${crypto.randomUUID().slice(0,8)}`;
  const rpcUrl=process.env.SOLANA_RPC_URL,historyUrl=process.env.HISTORY_RPC_URL||rpcUrl;if(!rpcUrl)throw Object.assign(Error('SOLANA_RPC_URL is required'),{code:'SETUP_REQUIRED'});
  const connection=new Connection(rpcUrl,'finalized'),rpc=new H.Rpc(historyUrl,{minIntervalMs:Number(process.env.HISTORY_RPC_MIN_INTERVAL_MS||100)});
- const idb=role!=='scheduler'?DB.connect(envOrFile('INDEXER_DATABASE_URL')||envOrFile('DATABASE_URL'),{max:3,name:'rebound-indexer'}):null;
+ const asRole=r=>process.env.REWARDS_DB_SET_ROLE==='true'?r:null;   // hosted worker: one URL, per-role privileges
+ const idb=role!=='scheduler'?DB.connect(envOrFile('INDEXER_DATABASE_URL')||envOrFile('DATABASE_URL'),{max:3,name:'rebound-indexer',role:asRole('rebound_indexer')}):null;
  const settles=role==='all'||role==='scheduler';   // an indexer-only process holds no scheduler/verifier connection
- const sdb=settles?DB.connect(envOrFile('SCHEDULER_DATABASE_URL')||envOrFile('DATABASE_URL'),{max:3,name:'rebound-scheduler'}):null;
- const vdb=settles?DB.connect(envOrFile('VERIFIER_DATABASE_URL')||envOrFile('DATABASE_URL'),{max:2,name:'rebound-verifier'}):null;
+ const sdb=settles?DB.connect(envOrFile('SCHEDULER_DATABASE_URL')||envOrFile('DATABASE_URL'),{max:3,name:'rebound-scheduler',role:asRole('rebound_scheduler')}):null;
+ const vdb=settles?DB.connect(envOrFile('VERIFIER_DATABASE_URL')||envOrFile('DATABASE_URL'),{max:2,name:'rebound-verifier',role:asRole('rebound_verifier')}):null;
  let stop=false;for(const s of ['SIGTERM','SIGINT'])process.on(s,()=>{stop=true;});
  const program=process.env.REWARDS_PROGRAM_ID?new PublicKey(process.env.REWARDS_PROGRAM_ID):null;if(program)C.bind(program);
  const keyFile=async(env,expected)=>{if(!process.env[env])return null;const k=await require('./config.cjs').keyFromFile(env,expected);return k;};
@@ -232,7 +239,7 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
     await sampleSolUsd({db:idb,connection}).catch(e=>Logs.log(idb,{severity:'warn',component:'indexer',eventType:'sol_usd_sample_failed',message:e.message,errorCode:e.code}));
     for(const coin of coins){
      await DB.withLease(idb,'ingest:'+coin.mint,worker,async()=>{
-      const r=await ingest({db:idb,rpc},coin);if(r.newTx)await Logs.log(idb,{component:'indexer',eventType:'history_ingested',mint:coin.mint,message:`Ingested ${r.newTx} finalized transaction(s), ${r.newEvents} event(s); coverage ${r.complete?'complete':'INCOMPLETE'} through slot ${r.head}`,metadata:{incomplete:r.incomplete.slice(0,5)}});
+      const r=await ingest({db:idb,rpc},coin,{maxTx:Number(process.env.REWARDS_INGEST_MAX_TX||Infinity)});if(r.newTx)await Logs.log(idb,{component:'indexer',eventType:'history_ingested',mint:coin.mint,message:`Ingested ${r.newTx} finalized transaction(s), ${r.newEvents} event(s); coverage ${r.complete?'complete':'INCOMPLETE'} through slot ${r.head}`,metadata:{incomplete:r.incomplete.slice(0,5)}});
       await heartbeat({db:idb,connection},coin).catch(e=>Logs.log(idb,{severity:'warn',component:'indexer',eventType:'heartbeat_failed',mint:coin.mint,message:e.message,errorCode:e.code||'HEARTBEAT_FAILED'}));
       await backfillSolUsd({db:idb},coin.mint).catch(e=>Logs.log(idb,{severity:'warn',component:'indexer',eventType:'sol_usd_backfill_failed',mint:coin.mint,message:e.message,errorCode:e.code}));
       if(coin.kind!=='primary'&&program)await R.scanIntake({db:idb,rpc,program},coin);   // creator-fee income vs setup rent/donations
@@ -248,7 +255,14 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
     await DB.withLease(sdb,'funding:'+coin.mint,worker,async()=>{const r=await reconcileFunding({db:sdb,rpc,program},coin);
      if(r?.gap)await Logs.log(sdb,{severity:'warn',component:'scheduler',eventType:'funding_reconcile_gap',mint:coin.mint,message:'Dev-wallet reconciliation paused at an unreadable or incomplete history ('+r.gap+'); it resumes from there'});
     },{seconds:120,busy:()=>null}).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'funding_reconcile_failed',mint:coin.mint,message:e.message,errorCode:e.code||'RECONCILE_FAILED'}));
-   const signing=settles&&program&&feePayer&&publisher&&verifierKey;
+   // Direct settlement (no program): rounds are paid by the fee wallet's imported key; no program keys needed.
+   const settlement=settles?Object.fromEntries((await sdb.query('SELECT namespace,settlement FROM reward_platform')).rows.map(r=>[r.namespace,r.settlement])):{};
+   if(settles)for(const coin of coins.filter(c=>c.status==='active'&&c.kind==='primary'&&settlement[c.namespace]==='direct'))
+    await Direct.tick({db:sdb,connection,worker,inputs,now:async()=>connection.getBlockTime(await connection.getSlot('finalized')),
+     cutoffSlot:async t=>(await H.findCutoffSlot(rpc,t)).slot,signer:fw=>Signer.load(sdb,fw.signer)},coin)
+     .catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'tick_failed',mint:coin.mint,message:e.message,errorCode:e.code||'SCHEDULER_ERROR'}));
+   const programCoins=coins.filter(c=>settlement[c.namespace]!=='direct');
+   const signing=settles&&program&&feePayer&&publisher&&verifierKey&&programCoins.length>0;
    if(signing&&Date.now()-checked.at>60000){checked={...await preflightV3({connection,program,publisher:publisher.publicKey,verifier:verifierKey.publicKey}).catch(e=>({ok:false,reason:'preflight failed: '+e.message})),at:Date.now()};
     if(!checked.ok)await Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'preflight_failed',message:'Settlement disabled: '+checked.reason,errorCode:'PREFLIGHT'});}
    if(signing&&!checked.ok)await Logs.heartbeat(sdb,'scheduler','down',{reason:'preflight: '+checked.reason});
@@ -259,7 +273,7 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
      devSigner:async coin=>{const fw=(await sdb.query("SELECT * FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired' AND mode='automatic'",[coin.mint])).rows[0];return fw?.signer?Signer.load(sdb,fw.signer):null;},
      primaryAwaiting:async(mint,cutoff,chainCoin)=>{const v=await budgetAvailable(sdb,connection,mint,chainCoin);return v??primaryAwaiting(sdb,mint,cutoff);},sponsorRent:process.env.REWARDS_SPONSOR_RENT==='true'};
     for(const r of await Admin.syncPrimary(sdb,{connection,program}).catch(e=>(Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'primary_sync_failed',message:e.message}),[])))if(r.state==='active'){const c=coins.find(x=>x.mint===r.mint);if(c)c.status='active';}
-    for(const coin of coins.filter(c=>c.status==='active')){
+    for(const coin of programCoins.filter(c=>c.status==='active')){
      await C.tick(ports,coin.mint).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'tick_failed',mint:coin.mint,message:e.message,errorCode:e.code||'SCHEDULER_ERROR'}));
      if(coin.kind!=='third_party')continue;
      // Third-party funding: collect creator fees → verified receipts → Credit (split once) → PRIMARY buyback/burn.
@@ -270,7 +284,7 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
      },{seconds:120,busy:()=>null}).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'third_party_step_failed',mint:coin.mint,message:e.message,errorCode:e.code||'SCHEDULER_ERROR'}));
     }
     await Logs.heartbeat(sdb,'scheduler','ok',{coins:coins.length});
-   }else if(settles)await Logs.heartbeat(sdb,'scheduler','unconfigured',{reason:'program id or signer files missing; settlement disabled'});
+   }else if(settles)await Logs.heartbeat(sdb,'scheduler','ok',{coins:coins.length,settlement:programCoins.length?'program keys missing: program settlement disabled':'direct'});
    await Logs.heartbeat(role==='scheduler'?sdb:idb,role==='scheduler'?'worker:scheduler':'worker','ok',{role,worker});
   }catch(e){await Logs.heartbeat(role==='scheduler'?sdb:idb,role==='scheduler'?'worker:scheduler':'worker','degraded',{error:Logs.redactText(e.message)}).catch(()=>{});}
   if(!once&&!stop)await new Promise(r=>setTimeout(r,Math.max(1000,5000-(Date.now()-started))));
@@ -278,4 +292,4 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
  await Promise.all([idb,sdb,vdb].filter(Boolean).map(p=>p.end()));
 }
 if(require.main===module)main().catch(e=>{process.stderr.write('worker failed: '+(e.code||'')+' '+Logs.redactText(e.message)+'\n');process.exitCode=1;});
-module.exports={preflightV3,envOrFile,backfillSolUsd,chainDeposit,ingest,inputsLoader,sampleSolUsd,heartbeat,reconcileFunding,primaryAwaiting,applyBudgetRequests,budgetAvailable,BUDGET_FEE_RESERVE,projectToken,main};
+module.exports={preflightV3,envOrFile,backfillSolUsd,chainDeposit,ingest,inputsLoader,loadCredits,sampleSolUsd,heartbeat,reconcileFunding,primaryAwaiting,applyBudgetRequests,budgetAvailable,BUDGET_FEE_RESERVE,projectToken,main};

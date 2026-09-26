@@ -69,17 +69,21 @@ const PAGE=24;
 async function tokens(db,q){
  const namespace=q.view==='test'?'mainnet_test':'production',limit=Math.min(Math.max(Number(q.limit)||PAGE,1),50);
  const before=q.cursor&&/^\d+:[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(q.cursor)?q.cursor.split(':'):null;
- const rows=(await db.query(`SELECT * FROM reward_public_tokens WHERE namespace=$1 ${before?'AND (pinned=false AND (COALESCE(launch_time,0),mint)<($2::bigint,$3))':''}
-  ORDER BY pinned DESC, COALESCE(launch_time,0) DESC, mint DESC LIMIT ${limit+1}`,before?[namespace,before[0],before[1]]:[namespace])).rows;
+ // The site's REBOUND token (set in the admin dashboard) is always listed first, whatever its namespace.
+ const featured=(await db.query('SELECT primary_mint FROM reward_site WHERE id=1')).rows[0]?.primary_mint||null;
+ const rows=(await db.query(`SELECT t.*,(t.mint=$2) AS featured FROM reward_public_tokens t WHERE (t.namespace=$1 OR t.mint=$2) ${before?'AND (t.mint<>$2 AND t.pinned=false AND (COALESCE(t.launch_time,0),t.mint)<($3::bigint,$4))':''}
+  ORDER BY (t.mint=$2) DESC NULLS LAST, t.pinned DESC, COALESCE(t.launch_time,0) DESC, t.mint DESC LIMIT ${limit+1}`,before?[namespace,featured,before[0],before[1]]:[namespace,featured])).rows;
  const page=rows.slice(0,limit),last=page.at(-1);
- return{tokens:page,next:rows.length>limit&&last?`${last.launch_time||0}:${last.mint}`:null,namespace};
+ return{tokens:page,next:rows.length>limit&&last?`${last.launch_time||0}:${last.mint}`:null,namespace,featured};
 }
+const HOLDER_SORT={loss:'loss_lamports DESC',paid:'paid_lamports DESC',cost:'cost_lamports DESC',value:'value_lamports DESC'};
 
 async function body(event){
  if(event.isBase64Encoded||Buffer.byteLength(event.body||'')>MAX_BODY)fail(413,'PAYLOAD_TOO_LARGE','Request too large');
  try{const v=JSON.parse(event.body||'{}');if(!v||typeof v!=='object'||Array.isArray(v))throw 0;return v;}catch{fail(400,'INVALID_BODY','Invalid request body');}
 }
 
+let rpcShared=null;
 const handlers={
  GET:{
   async config({db}){return publicConfig(db);},
@@ -95,8 +99,25 @@ const handlers={
   async token({db,q}){
    try{W.pk(q.mint);}catch{fail(400,'MINT_INVALID','Invalid mint address');}
    const token=(await db.query('SELECT * FROM reward_public_tokens WHERE mint=$1',[q.mint])).rows[0];if(!token)fail(404,'NOT_FOUND','This token is not a verified REBOUND launch.');
-   const cycles=(await db.query('SELECT * FROM reward_public_cycles WHERE mint=$1 ORDER BY cycle_number DESC LIMIT 20',[q.mint])).rows;
-   return{token,cycles};
+   const cycles=(await db.query('SELECT * FROM reward_public_cycles WHERE mint=$1 ORDER BY cycle_number DESC LIMIT 30',[q.mint])).rows;
+   const payouts=(await db.query('SELECT * FROM reward_public_payouts WHERE mint=$1 ORDER BY id DESC LIMIT 50',[q.mint])).rows;
+   const stats=(await db.query("SELECT count(*)::int holders, count(*) FILTER (WHERE loss_lamports>0)::int underwater, COALESCE(sum(loss_lamports),0)::text loss, COALESCE(sum(paid_lamports),0)::text paid, count(*) FILTER (WHERE paid_lamports>0)::int paid_holders FROM reward_public_holders WHERE mint=$1 AND outcome<>'sold'",[q.mint])).rows[0];
+   return{token,cycles,payouts,stats,now:Math.floor(Date.now()/1000)};
+  },
+  // Per-holder table (latest snapshot): cost, value now, remaining loss, compensation, payouts.
+  async 'token-holders'({db,q}){
+   try{W.pk(q.mint);}catch{fail(400,'MINT_INVALID','Invalid mint address');}
+   const sort=HOLDER_SORT[q.sort]||HOLDER_SORT.loss,limit=Math.min(Math.max(Number(q.limit)||100,1),500),offset=Math.min(Math.max(Number(q.offset)||0,0),100000);
+   const where=q.filter==='paid'?'AND paid_lamports>0':q.filter==='underwater'?'AND loss_lamports>0':q.filter==='all'?'':"AND outcome<>'sold'";
+   const rows=(await db.query(`SELECT owner,quantity_raw,cost_lamports,value_lamports,compensated_lamports,loss_lamports,paid_lamports,payouts,outcome,cycle_number,updated_at FROM reward_public_holders WHERE mint=$1 ${where} ORDER BY ${sort}, owner LIMIT ${limit} OFFSET ${offset}`,[q.mint])).rows;
+   const total=(await db.query(`SELECT count(*)::int n FROM reward_public_holders WHERE mint=$1 ${where}`,[q.mint])).rows[0].n;
+   return{holders:rows,total,offset,limit};
+  },
+  // Latest payouts across all REBOUND tokens (or one mint), newest first.
+  async payouts({db,q}){
+   const mint=q.mint?(()=>{try{W.pk(q.mint);return q.mint;}catch{fail(400,'MINT_INVALID','Invalid mint address');}})():null;
+   const rows=(await db.query(`SELECT p.*,t.name,t.symbol FROM reward_public_payouts p LEFT JOIN reward_public_tokens t USING(mint) ${mint?'WHERE p.mint=$1':''} ORDER BY p.id DESC LIMIT 50`,mint?[mint]:[])).rows;
+   return{payouts:rows};
   },
   // The exact holder-only deposit the connected dev wallet is asked to sign (manual primary funding).
   async 'funding-plan'({db,event,q}){
@@ -105,6 +126,8 @@ const handlers={
   },
   async 'launch-status'({db,event,q}){const s=await Session.authenticate(db,event.headers);return planCall(()=>Launch.status(launchPorts(db),{session:s,attemptId:uuid(q.id)}));},
   async 'admin-overview'({db,event}){const who=await adminAccess(db,event);
+   // Hand the hosted worker (Supabase) this site's RPC endpoint: write-only vault function, never read back.
+   if(!rpcShared&&process.env.SOLANA_RPC_URL)rpcShared=await db.query('SELECT rebound.worker_store_rpc($1,$2) AS r',[process.env.SOLANA_RPC_URL,process.env.HISTORY_RPC_URL||null]).then(r=>r.rows[0].r).catch(()=>null);
    const ports=process.env.SOLANA_RPC_URL&&process.env.REWARDS_PROGRAM_ID?chain(db):{};const o=await Admin.overview(db,{connection:ports.connection,program:ports.program});
    const st=await Admin.site(db);const meta=st?.primary_mint&&rpcConnection()?await Admin.tokenMeta(rpcConnection(),st.primary_mint):null;const siteChain=st?.primary_mint&&ports.connection?await Admin.primaryChainStatus(ports.connection,ports.program,st.primary_mint,st.fee_wallet):null;return{...o,site:st,siteToken:meta,siteChain,access:{via:who.via,expiresAt:who.expiresAt||null},passwordSet:(await AdminAuth.state(db)).passwordSet};},
   // Public, chain-derived: a wallet's fixed awards and their payment evidence.

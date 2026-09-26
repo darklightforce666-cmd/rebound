@@ -13,6 +13,7 @@ const wipeKeypair=kp=>{try{kp?._keypair?.secretKey?.fill(0);}catch{}};
 function writeSecret(file,content){fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});fs.writeFileSync(file,content,{mode:0o600,flag:'wx'});fs.chmodSync(file,0o600);}
 /** Load (or create once) the inbox key. Returns the private JWK, or null when not configured. */
 async function inboxKey(env=process.env){
+ if(env.REWARDS_INBOX_KEY){const j=JSON.parse(env.REWARDS_INBOX_KEY);if(j.kty!=='OKP'||j.crv!=='X25519'||!j.d||!j.x)throw Object.assign(Error('REWARDS_INBOX_KEY is not an X25519 JWK'),{code:'INBOX_INVALID'});return j;}   // hosted worker
  const file=env.REWARDS_INBOX_KEY_FILE;if(!file)return null;
  if(!fs.existsSync(file))writeSecret(file,JSON.stringify(await Seal.generate()));
  if((fs.statSync(file).mode&0o077)!==0)throw Object.assign(Error('Inbox key file must not be readable by group/other (chmod 600)'),{code:'INBOX_INSECURE'});
@@ -22,6 +23,7 @@ async function inboxKey(env=process.env){
 /** Create the signer master key only on a host that has never encrypted a signer; a missing file with
  *  existing signers means the secrets volume is missing — never silently replace the key then. */
 async function ensureMasterKey(db,env=process.env){
+ if(env.REWARDS_SIGNER_MASTER_KEY)return{ok:true};
  const f=env.REWARDS_SIGNER_MASTER_KEY_FILE;if(!f)return{ok:false,reason:'REWARDS_SIGNER_MASTER_KEY_FILE is not set on the worker'};
  if(fs.existsSync(f))return{ok:true};
  const n=(await db.query("SELECT count(*)::int n FROM reward_signers WHERE storage='encrypted_local' AND status<>'revoked'")).rows[0].n;

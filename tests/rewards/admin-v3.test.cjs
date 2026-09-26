@@ -60,7 +60,7 @@ test('the primary token and fee wallet can be switched later, but never while a 
   assert.equal(r.replaced,mint);
   assert.equal((await db.query('SELECT status FROM reward_coins WHERE mint=$1',[mint])).rows[0].status,'retired');
   assert.equal((await db.query("SELECT primary_mint FROM reward_platform WHERE namespace='production'")).rows[0].primary_mint,mint2);
-  await db.query("INSERT INTO reward_cycles(id,mint,cycle_number,namespace,policy_version,config_version,anchor,cycle_start,scheduled_end,cutoff_time,state,due_at,funding_mode) VALUES('c1',$1,1,'production','rebound-v3.0',0,0,0,1800,1740,'snapshotting',1800,'manual')",[mint2]);
+  await db.query("INSERT INTO reward_cycles(id,mint,cycle_number,namespace,policy_version,config_version,anchor,cycle_start,scheduled_end,cutoff_time,state,due_at,funding_mode) VALUES('c1',$1,1,'production','rebound-v3.0',0,0,0,1800,1740,'funded',1800,'manual')",[mint2]);
   await assert.rejects(api.registerPrimary(db,admin,s,{namespace:'production',mint,fundingWallet:dev2}),e=>e.code==='PRIMARY_BUSY');
   await assert.rejects(api.registerPrimary(db,admin,s,{namespace:'production',mint:mint2,fundingWallet:dev2}),e=>e.code==='PRIMARY_BUSY');
   await db.query("UPDATE reward_cycles SET state='complete' WHERE id='c1'");

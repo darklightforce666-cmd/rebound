@@ -41,7 +41,10 @@ test('launch (private test, budget): allowlist + any holder + caps from the budg
   assert.equal((await db.query("SELECT budget_requested_at::text t FROM reward_funding_wallets WHERE mint=$1",[mint])).rows[0].t,(await db.query("SELECT budget_requested_at::text t FROM reward_funding_wallets WHERE mint=$1",[mint])).rows[0].t);
   await assert.rejects(api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',budgetPercent:60},{connection:conn(1)}),e=>e.code==='BUDGET_RAISE');
   assert.equal((await api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',budgetPercent:40},{connection:conn(1)})).budgetAction,'lowered');
+  await assert.rejects(api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',fundingModel:'income'},{connection:conn(1)}),e=>e.code==='INVALID_BODY');   // direct settlement: budget only
+  await db.query("UPDATE reward_platform SET settlement='program' WHERE namespace='mainnet_test'");
   await assert.rejects(api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',fundingModel:'income'},{connection:conn(1)}),e=>e.code==='MODEL_SWITCH');
+  await db.query("UPDATE reward_platform SET settlement='direct' WHERE namespace='mainnet_test'");
   const r3=await api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',budgetPercent:50,newBudget:true},{connection:conn(4_000_000_000)});
   assert.equal(r3.budgetAction,'new');assert.equal(r3.budgetEstimate,'2000000000');
   // Any holder of the allowlisted mint may be paid; other mints and the caps still bind.
@@ -52,6 +55,7 @@ test('launch (private test, budget): allowlist + any holder + caps from the budg
   await db.query('BEGIN');await assert.rejects(X.authorize(db,{namespace:'mainnet_test',mint,recipients:[],lamports:'5000000000',fees:'5000'},{env:{REWARDS_MAX_EXECUTION_MODE:'mainnet_test'}}),e=>e.code==='SPEND_CAP_ACTION');await db.query('ROLLBACK');
   // Income model: only fees from now on (opening credit 0 requested for the scheduler).
   const mint2=key(),dev2=key();
+  await db.query("UPDATE reward_platform SET settlement='program' WHERE namespace='production'");   // income funding needs the program
   await api(A.launch)(db,'admin (password)',{},{mint:mint2,feeWallet:dev2,namespace:'production',fundingModel:'income'},{connection:conn(5)});
   const intent=(await db.query("SELECT body FROM reward_intents WHERE job=$1",['opening:'+mint2])).rows[0];assert.equal(intent.body.credit,'0');
  }finally{await db.close();}

@@ -37,4 +37,9 @@ async function authorize(tx,action,{env=process.env}={}){
  }
  return{mode,lamports:total};
 }
-module.exports={RANK,ExecutionBlocked,ceiling,authorize};
+// Effective mode of a namespace right now (platform row capped by the host ceiling; paused wins).
+async function effectiveMode(db,namespace,{env=process.env}={}){
+ const p=(await db.query('SELECT execution_mode,paused FROM reward_platform WHERE namespace=$1',[namespace])).rows[0];if(!p)return{mode:'dry_run',paused:false};
+ const c=ceiling(env);return{mode:RANK[p.execution_mode]<=RANK[c]?p.execution_mode:c,paused:!!p.paused};
+}
+module.exports={RANK,ExecutionBlocked,ceiling,authorize,effectiveMode};

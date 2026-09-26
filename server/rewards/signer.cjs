@@ -11,6 +11,7 @@ const ROLES=new Set(['primary_dev','fee_payer','publisher','verifier']);
 const wipe=kp=>{try{(kp?._keypair?.secretKey||kp?.secretKey)?.fill(0);}catch{}};
 
 async function masterKey(env=process.env){
+ if(env.REWARDS_SIGNER_MASTER_KEY){const k=Buffer.from(String(env.REWARDS_SIGNER_MASTER_KEY).trim(),'hex');if(k.length!==32)throw Object.assign(Error('Signer master key must be 32 bytes (hex)'),{code:'SIGNER_INVALID'});return k;}   // hosted worker: from the secret store
  const file=env.REWARDS_SIGNER_MASTER_KEY_FILE;if(!file)throw Object.assign(Error('Signer master key is not configured on this host'),{code:'SIGNER_UNCONFIGURED'});
  const stat=await fs.stat(file);if((stat.mode&0o077)!==0)throw Object.assign(Error('Signer master key file must not be readable by group/other (chmod 600)'),{code:'SIGNER_INSECURE'});
  const raw=(await fs.readFile(file,'utf8')).trim();const key=/^[0-9a-f]{64}$/i.test(raw)?Buffer.from(raw,'hex'):Buffer.from(raw,'base64');

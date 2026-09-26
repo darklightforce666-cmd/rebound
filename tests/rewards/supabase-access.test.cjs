@@ -7,7 +7,7 @@ const DB=require('../../server/rewards/db.cjs'),Session=require('../../server/re
 const Logs=require('../../server/rewards/logs.cjs'),Metadata=require('../../server/rewards/metadata.cjs'),S=require('../../server/rewards/storage.cjs');
 const wallet=()=>Keypair.generate();
 function signWith(key,text){const pk=crypto.createPrivateKey({key:Buffer.concat([Buffer.from('302e020100300506032b657004220420','hex'),Buffer.from(key.secretKey.subarray(0,32))]),format:'der',type:'pkcs8'});return crypto.sign(null,Buffer.from(text),pk).toString('base64');}
-const PUBLIC_TABLES=['reward_public_tokens','reward_public_cycles','reward_site'];   // reward_site: public site settings (011)
+const PUBLIC_TABLES=['reward_public_tokens','reward_public_cycles','reward_site','reward_public_holders','reward_public_payouts'];   // reward_site: public site settings (011)
 
 async function tables(db){return(await db.query("SELECT c.relname,c.relrowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='rebound' AND c.relkind='r' ORDER BY 1")).rows;}
 async function seedLog(db,message='cycle 1 snapshot stored'){await Logs.log(db,{severity:'info',component:'scheduler',eventType:'snapshot',message});}

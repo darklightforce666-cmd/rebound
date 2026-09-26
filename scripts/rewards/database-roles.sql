@@ -98,3 +98,9 @@ GRANT SELECT, UPDATE ON reward_key_inbox TO rebound_scheduler;   -- ciphertext: 
 GRANT SELECT(id,funding_wallet,address,inbox_public_key,state,reason,created_by,created_at,processed_at) ON reward_key_inbox TO rebound_indexer,rebound_verifier;
 GRANT INSERT ON reward_signers TO rebound_scheduler;
 GRANT UPDATE(status,revoked_at,ciphertext,iv,auth_tag,storage,external_reference) ON reward_signers TO rebound_scheduler;
+
+-- ---------- direct settlement + public holders/payouts (014) ----------
+GRANT SELECT ON reward_public_holders, reward_public_payouts TO rebound_api;
+GRANT INSERT, UPDATE ON reward_public_holders, reward_public_payouts TO rebound_scheduler;
+GRANT USAGE, SELECT ON SEQUENCE reward_public_payouts_id_seq TO rebound_scheduler;
+GRANT UPDATE(settlement) ON reward_platform TO rebound_api;
