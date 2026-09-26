@@ -36,7 +36,7 @@ no newer work needed merging. PR #1 (`rewards-v2-implementation`) is still open 
       (PumpSwap) needed for the buyback. Pyth SOL/USD feed id verified on Hermes.
 - [x] Created `rebound-v3-implementation`. No legacy funds/state removed.
 
-## M1 — Supabase, authentication, data boundaries — implemented; 2 external steps open
+## M1 — Supabase, authentication, data boundaries — implemented; admin wallets pending
 
 Supabase project (owner decision, final): **`zuvefozubbgstyljfxjh`** ("Chainlets" → to be renamed
 "REBOUND"), eu-central-1, Pro. It still runs PokeDrop (see `LEGACY-CHAINLETS-CLEANUP.md`); REBOUND is
@@ -58,12 +58,17 @@ isolated in schema `rebound` and nothing legacy was changed.
 - [x] Live checks on the real project: anon reads only 2 projections / writes nothing; PokeDrop user is
       not admin; anonymous Realtime received INSERT+UPDATE of a public row in ~350 ms; anonymous
       subscriber to admin logs got only `Error 401: Unauthorized` without row data
-- [ ] **External:** Auth → Redirect URLs `https://rebound.wtf/**`, `https://www.rebound.wtf/**`. Live
-      evidence: SIWS for rebound.wtf is rejected ("URI which is not allowed on this server"). Re-run
-      `.probe/web3-spike.cjs` after the change.
-- [ ] **External:** `SUPABASE_SECRET_KEY` + scoped `DATABASE_URL` in Netlify env, then a live metadata upload
+- [x] Auth → Redirect URLs `https://rebound.wtf/**`, `https://www.rebound.wtf/**` added (PokeDrop URLs and
+      Site URL left unchanged). Live SIWS for rebound.wtf now succeeds (identity `web3:solana:…`, domain
+      `rebound.wtf`, `/auth/v1/user` 200; the throwaway user is not admin).
+- [x] Netlify env (site `tourmaline-melomakarona-72b603`, builds stopped): `SUPABASE_URL`,
+      `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY` (new dedicated key `rebound_netlify`, secret,
+      pasted via clipboard — never displayed), `REWARDS_MAX_EXECUTION_MODE=dry_run`, `DATABASE_URL` →
+      scoped login `rebound_api_login` (member of `rebound_api`, SCRAM verifier generated on the owner's
+      Mac, transaction pooler `aws-0-eu-central-1:6543`; verified: reads projections, writes refused).
+      `SOLANA_RPC_URL` already held the owner's Alchemy endpoint (archival, v1 transactions verified).
 - [ ] **External:** admin wallet address(es) from the owner → `reward_admin_wallets`
-- [ ] Rename project display name to "REBOUND" (dashboard only)
+- [x] Project display name renamed to "REBOUND" (ref/API URL unchanged)
 
 Note: this build container cannot reach `*.supabase.co` or Solana RPC (egress policy 403); live probes run
 from the owner's Mac (`Desktop/Projects/Rebound/.probe/`), database changes through the Supabase MCP.
@@ -165,14 +170,14 @@ from the owner's Mac (`Desktop/Projects/Rebound/.probe/`), database changes thro
 
 | Item | Needed by | Status |
 |---|---|---|
-| Supabase project | M1 | **Decided**: repurpose `zuvefozubbgstyljfxjh` (Chainlets) |
-| Supabase: Web3 (Solana) enabled ✓; Redirect URLs `https://rebound.wtf/**` | M1 | **pending (dashboard)** |
-| Supabase secret key for Netlify (Storage uploads) and scoped DB logins | M1/M5 | pending |
+| Supabase project | M1 | done: `zuvefozubbgstyljfxjh`, renamed REBOUND |
+| Supabase: Web3 (Solana) enabled; Redirect URLs rebound.wtf + www | M1 | done; SIWS verified live |
+| Supabase secret key for Netlify; scoped DB logins | M1/M5 | API: done (`rebound_netlify` key, `rebound_api_login`); worker logins (indexer/scheduler/verifier) with the worker host |
 | Admin wallet public addresses | M1 | **requested from owner** |
 | PokeDrop cleanup approval (see LEGACY-CHAINLETS-CLEANUP.md) | any | awaiting owner |
 | Privy app ID (public) + allowed origins `https://rebound.wtf`, previews, localhost | M5 | pending |
-| Netlify site (historical: `tourmaline-melomakarona-72b603`) access, linked branch, env vars | M1/M5 | pending |
-| Mainnet RPC (HTTP+WS) with archival history (e.g. Helius/Triton) — set in Netlify/worker env | M2 | pending |
+| Netlify site `tourmaline-melomakarona-72b603` env vars | M1/M5 | V3 vars set (dry_run ceiling); builds still stopped; branch link + deploy in M6 |
+| Mainnet RPC with archival history | M2 | done: owner's Alchemy endpoint (archival + v1 verified); worker env with the worker host |
 | Primary mint (current config `3SohGcVP…ppump` is an unverified placeholder) | M2 | pending |
 | Dev funding wallet public address; test holder wallets | M2/M6 | pending |
 | Worker host (Docker) | M3/M6 | pending |
@@ -197,6 +202,8 @@ from the owner's Mac (`Desktop/Projects/Rebound/.probe/`), database changes thro
 | 2026-09-26 | M2 local | `pnpm test` | 114 pass, 3 skipped (same) |
 | 2026-09-26 | M2 live | `preview-v3.cjs` on a live Pump mint (owner Mac, public RPC) | history complete, 1 368 events, 0 parser holds; held on SOL/USD (expected without FX source) |
 | 2026-09-26 | M2 live | on-chain Pyth SOL/USD cadence probe | live read OK ($121.63); updates ~53 s apart; update-tx decoder verified |
+| 2026-09-26 | M1 live | SIWS sign-in for https://rebound.wtf after redirect URLs | ok; identity domain rebound.wtf; not admin |
+| 2026-09-26 | M1 live | `rebound_api_login` via transaction pooler from owner Mac | connects; search_path rebound; forbidden write refused |
 | 2026-09-26 | M3 Rust | `cargo test --locked` (contracts/v3) | 8 pass |
 | 2026-09-26 | M3 SBF + compiled | `cargo build-sbf`; `pytest contracts/v3/tests` (LiteSVM + wire parity) | built `ad180f2a…`; 12 pass |
 | 2026-09-26 | M3 local | `pnpm test` (incl. 5 end-to-end cycle tests on the compiled program, 5 worker tests) | 126 pass, 3 skipped (same) |
