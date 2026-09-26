@@ -13,7 +13,10 @@ function build(){
  fs.mkdirSync(path.join(dist,'vendor'),{recursive:true});
  fs.copyFileSync(path.join(chartPackage,'dist/lightweight-charts.standalone.production.js'),path.join(dist,'vendor/lightweight-charts.js'));
  fs.copyFileSync(path.join(chartPackage,'LICENSE'),path.join(dist,'vendor/LICENSE-lightweight-charts.txt'));
- require('esbuild').buildSync({entryPoints:[path.join(root,'src/rewards-entry.js')],outfile:path.join(dist,'src/rewards.js'),bundle:true,platform:'browser',target:['es2022'],minify:true,define:{'process.env.NODE_ENV':'"production"'},logLevel:'warning'});
+ const common={bundle:true,platform:'browser',target:['es2022'],minify:true,define:{'process.env.NODE_ENV':'"production"','global':'globalThis'},logLevel:'warning',legalComments:'none'};
+ require('esbuild').buildSync({...common,entryPoints:[path.join(root,'src/rewards-entry.js')],outfile:path.join(dist,'src/rewards.js'),format:'iife'});
+ // Privy wallet island: loaded on demand only when a Privy app id is configured.
+ require('esbuild').buildSync({...common,entryPoints:[path.join(root,'src/privy-island.js')],outfile:path.join(dist,'src/privy.js'),format:'iife',globalName:'ReboundPrivy'});
  console.log('Built dist with live interface assets. Server code and test data are excluded.');
 }
 if(require.main===module)build();

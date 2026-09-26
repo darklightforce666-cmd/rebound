@@ -42,4 +42,24 @@ buyback) runs in the worker, never in a function request.
 |---|---|---|
 | `wallet-history` | M2/M5 | public (chain-derived) |
 | `admin-register-primary`, `admin-preview`, `admin-connect-funding-wallet`, `admin-set-mode`, `admin-start`/`pause`/`resume`, `admin-retry`, `admin-test-config` | M2–M5 | admin + consent |
-| `launch-draft`, `launch-prepare`, `launch-submit`, `launch-resume`, `activation-prepare`, `activation-confirm` | M4 | draft owner + consent |
+
+## Administrator endpoints (M5)
+
+All require a Supabase session whose REBOUND-domain wallet is an unrevoked admin. Mutations additionally
+require a one-time consent signed by that admin wallet for the exact `payload`
+(`POST consent-challenge` → sign → `POST <action> {wallet, payload, proof}`).
+
+| Method | Action | Payload | Effect |
+|---|---|---|---|
+| GET | `admin-overview` | — | platform rows, coins, funding wallets/accounts, cycles, receipts, buyback jobs, health, admins, signer public fields, on-chain deployment state, host ceiling |
+| POST | `admin-set-mode` | `{namespace, mode, reason}` | `production` refused unless the host sets `REWARDS_ALLOW_PRODUCTION=true`; namespace/mode pairs enforced |
+| POST | `admin-test-config` | `{namespace, mints[], wallets[], capAction, capCycle, capTotal, slippageBps, impactBps}` | private-test allowlists and spend caps (action ≤ cycle ≤ total) |
+| POST | `admin-pause` / `admin-resume` | `{namespace, reason}` | platform pause (all REBOUND-signed spends refused) |
+| POST | `admin-register-primary` | `{namespace, mint, fundingWallet}` | primary coin + dev wallet (manual mode); the dev wallet must be a verified wallet of the same session |
+| POST | `admin-opening-credit` | `{mint, requestedCreditLamports, operationalReserveLamports}` | records a request; the scheduler applies it once against the finalized dev-wallet balance |
+| POST | `admin-add-admin` / `admin-revoke-admin` | `{wallet, label}` | at least one admin remains; you cannot revoke yourself |
+| POST | `admin-program-prepare` | `{wallet, action, params}` | exact unsigned governance transaction (`initialize`, `setBuybackTarget`, `registerPrimary`, `startPrimary`, `setFundingWallet`, `pause`, `requestResume`, `resume`), simulated first |
+| POST | `admin-program-submit` | `{intentId, signedTransaction}` | byte-for-byte check against the prepared intent, persisted, broadcast |
+
+Public: `GET wallet-rewards&wallet=` → the wallet's fixed awards with payment evidence.
+Launch journey: `launch-draft`, `launch-prepare`, `launch-submit`, `GET launch-status&id=`, `activation-prepare`, `activation-submit` (see `server/rewards/launch-v3.cjs`).
