@@ -181,19 +181,45 @@ from the owner's Mac (`Desktop/Projects/Rebound/.probe/`), database changes thro
 Tests: `pump-lifecycle-v3` (4), `third-party-v3` (2), `launch-v3` (3) run the real Pump / PumpSwap / fee binaries
 cloned from mainnet (`scripts/rewards/clone-protocol.cjs contracts/v3/fixtures/mainnet`; fixtures git-ignored).
 
-## M5 — admin dashboard, Privy UI, live discovery
+## M5 — admin dashboard, Privy UI, live discovery — implemented; live wallet check pending Privy App ID
 
-- [ ] Privy island + Supabase session; wallet selection/rejection/disconnect/account change
-- [ ] `#admin`: primary mint, dev wallet, mode, signer, start/pause/resume, preview, approve funding, retry, health, test controls
-- [ ] Realtime logs panel; token list under "Find a Solana token" with Realtime updates
-- [ ] Public copy updated to V3 policy
-- [ ] Browser end-to-end tests
+- [x] Privy island (`src/privy-island.js` → `dist/src/privy.js`, loaded only when `PRIVY_APP_ID` is set): Solana
+      external wallets only, no Privy login/embedded wallets; the selected wallet signs SIWS for the Supabase
+      session and exact transactions; injected-wallet fallback without an app id
+- [x] `#admin` (admin = unrevoked wallet in `reward_admin_wallets` + allowed sign-in domain): status/health,
+      execution mode (production locked by `REWARDS_ALLOW_PRODUCTION`), private-test allowlists/caps, pause,
+      primary registration (dev wallet proven in the session), opening credit, manual funding approval, on-chain
+      governance actions (prepared, simulated, signed by the admin wallet, verified before broadcast), coins,
+      rounds, receipts, buyback/burn, administrators; consent-signed mutations
+- [x] Realtime logs panel; token list under "Find a Solana token" with Realtime updates; wallet awards
+- [x] Launch journey (draft → prepare → sign → status → activation) against the V3 API
+- [x] Public copy updated to the V3 policy (underwater holdings, split once, buy-and-burn)
+- [x] Browser smoke (`tests/browser/smoke-v3.cjs`, Playwright/Chromium): every route on desktop and mobile, no
+      page errors, no horizontal overflow
+- [ ] Live wallet flows with Privy on the deployed preview (needs `PRIVY_APP_ID` and a wallet extension)
 
-## M6 — deployment and capped mainnet acceptance
+## M6 — deployment and capped mainnet acceptance — tooling done and rehearsed; mainnet run waits for the owner
 
-- [ ] Netlify/Supabase/worker deployment docs and configuration
-- [ ] Program deployed + initialized (governed), dry run, capped `mainnet_test`
-- [ ] Runbook §18.2 executed with evidence
+- [x] Release artifact `contracts/v3/release/` (SBPF v0, sha256 `3e169837…`, BUILD.md with the SIMD-0500 finding:
+      mainnet still requires v0–v2; local validators need `--deactivate-feature B8JJXC…`)
+- [x] `keygen-v3.cjs` (operator keys, files 600/700, public output only); `governance-v3.cjs` (status,
+      initialize, set-target, register/start-primary, set-funding-wallet, pause/request-resume/resume; simulate
+      first, `--dry`); `db-login.cjs` (SCRAM verifier SQL, password only in a 600 URL file)
+- [x] Worker: role-scoped DB connections (indexer-only holds no scheduler/verifier login), `*_DATABASE_URL_FILE`,
+      signing preflight (genesis, deployment publisher/verifier, published policy) re-checked every minute,
+      `worker:scheduler` heartbeat; `Dockerfile.rewards` runs `worker-v3.cjs`; `compose.rewards.yml` (indexer,
+      scheduler under profile `settle`, read-only root, secrets mounted read-only); `.env.worker.example`
+- [x] **Gap fixed:** a registered primary never became `active` in the database after on-chain StartPrimary.
+      The scheduler now activates it only when the finalized coin account agrees on kind, policy and dev wallet
+      (`admin-v3.syncPrimary`, tested on the compiled program)
+- [x] **SOL/USD freshness:** with `PYTH_API_KEY` the indexer samples Hermes (fresh) and backfills purchase
+      times from Benchmarks; without it only the on-chain feed (~53 s cadence vs the 30 s policy limit) is used
+- [x] Rehearsal on a mainnet-equivalent local validator: deploy (bytes verified), initialize test-mode,
+      set-target, register-primary, start-primary, pause → request-resume → resume refused (24 h), worker roles
+      with least-privilege logins, preflight pass/fail
+- [x] `docs/MAINNET-TEST-RUNBOOK.md`: budget, commands, dry run, capped test, evidence, rollback
+- [ ] Netlify deploy preview of this branch, then production publish after the owner's OK
+- [ ] Program deployed + initialized on mainnet, dry run, capped `mainnet_test` (runbook §3–§8) with evidence
 
 ## External setup required (no secrets in chat or repository)
 
@@ -209,7 +235,8 @@ cloned from mainnet (`scripts/rewards/clone-protocol.cjs contracts/v3/fixtures/m
 | Mainnet RPC with archival history | M2 | done: owner's Alchemy endpoint (archival + v1 verified); worker env with the worker host |
 | Primary mint (current config `3SohGcVP…ppump` is an unverified placeholder) | M2 | pending |
 | Dev funding wallet public address; test holder wallets | M2/M6 | pending |
-| Worker host (Docker) | M3/M6 | pending |
+| Worker host (Docker) | M3/M6 | pending (compose + env template ready) |
+| Pyth API key for the worker (`PYTH_API_KEY`) | M6 | pending — recommended; without it purchases between on-chain updates stay on hold |
 | Program upgrade authority / governance, publisher, verifier, guardian public keys | M3/M6 | V2 addresses recorded in `.env.example` are unverified |
 | Mainnet test spending budget (explicit cap) | M6 | pending |
 
@@ -242,3 +269,6 @@ cloned from mainnet (`scripts/rewards/clone-protocol.cjs contracts/v3/fixtures/m
 | 2026-09-26 | M3 local | migrations 001–008 on PostgreSQL 16 (fresh DB) | version 8, RLS on new table |
 | 2026-09-26 | M3 live | migration 008 + API grants on Supabase | applied; RLS on, 6 role grants |
 | 2026-09-26 | M3 skipped | Pump swap CPI with cloned programs | M4 (needs cloned mainnet accounts) |
+| 2026-09-26 | M6 rehearsal | `solana-test-validator` 4.2.2 with SIMD-0500 deactivated: deploy + governance-v3 sequence | deployed bytes = `3e169837…`; programdata rent 2.0892 SOL (max-len 300000); all actions finalized; resume refused before 24 h |
+| 2026-09-26 | M6 local | worker `--once` per role with `rebound_{indexer,scheduler,verifier}_login` | indexer ok; scheduler ok with matching genesis, `down` (preflight: wrong network) otherwise |
+| 2026-09-26 | M6 local | `db-login.cjs` SCRAM verifier on PostgreSQL 16 with `scram-sha-256` auth | create + rotate; generated URL logs in; wrong password refused |

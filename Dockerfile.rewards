@@ -1,3 +1,4 @@
+# REBOUND V3 worker image (indexer / scheduler with in-process independent verifier).
 FROM node:24-bookworm-slim
 WORKDIR /app
 RUN npm install --global pnpm@11.19.0 --ignore-scripts
@@ -6,4 +7,4 @@ RUN pnpm install --frozen-lockfile --ignore-scripts --prod
 COPY server ./server
 COPY scripts/rewards ./scripts/rewards
 USER node
-CMD ["node", "server/rewards/worker.cjs"]
+CMD ["node", "server/rewards/worker-v3.cjs"]

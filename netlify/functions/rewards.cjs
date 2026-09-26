@@ -25,6 +25,7 @@ const reply=(event,statusCode,value,extra)=>({statusCode,headers:headersFor(even
 class ApiError extends Error{constructor(status,code,message,retryable=false,extra={}){super(message);Object.assign(this,{status,code,retryable,extra});}}
 const fail=(status,code,message,retryable=false,extra)=>{throw new ApiError(status,code,message,retryable,extra);};
 
+const effective=mode=>{const R={dry_run:0,mainnet_test:1,production:2},c=require('../../server/rewards/execution.cjs').ceiling();return R[mode]<=R[c]?mode:c;};
 async function publicConfig(db){
  const platform=db?(await db.query('SELECT namespace,execution_mode,policy_version,primary_mint,paused FROM reward_platform ORDER BY namespace')).rows:[];
  return{
@@ -32,8 +33,11 @@ async function publicConfig(db){
   supabase:{url:process.env.SUPABASE_URL||null,publishableKey:process.env.SUPABASE_PUBLISHABLE_KEY||null},
   privy:{appId:process.env.PRIVY_APP_ID||null},
   policy:{version:P3.POLICY.version,hash:P3.POLICY_HASH,holdersBps:P3.POLICY.holdersBps,otherBps:P3.POLICY.otherBps,cycleSeconds:P3.POLICY.cycleSeconds,cutoffLeadSeconds:P3.POLICY.cutoffLeadSeconds,lossUnit:P3.POLICY.lossUnit,asset:P3.POLICY.asset,referencePrice:P3.POLICY.referencePrice,priceWindowSeconds:P3.POLICY.priceWindowSeconds},
-  namespaces:platform.map(p=>({namespace:p.namespace,executionMode:p.execution_mode,policyVersion:p.policy_version,primaryMint:p.primary_mint,paused:p.paused})),
-  features:{launches:false,rewards:false,buyback:false},
+  namespaces:platform.map(p=>({namespace:p.namespace,executionMode:effective(p.execution_mode),policyVersion:p.policy_version,primaryMint:p.primary_mint,paused:p.paused})),
+  ...(()=>{const by=Object.fromEntries(platform.map(p=>[p.namespace,p]));const ok=(ns,mode)=>by[ns]&&!by[ns].paused&&effective(by[ns].execution_mode)===mode&&by[ns].primary_mint;
+   const launchNamespace=ok('production','production')?'production':ok('mainnet_test','mainnet_test')?'mainnet_test':null;
+   return{launchNamespace,primaryMint:by.production?.primary_mint||by.mainnet_test?.primary_mint||null,
+    features:{launches:!!launchNamespace,rewards:platform.some(p=>effective(p.execution_mode)!=='dry_run'),buyback:!!launchNamespace,privateTest:launchNamespace==='mainnet_test'}};})(),
  };
 }
 

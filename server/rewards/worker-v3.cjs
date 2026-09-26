@@ -76,7 +76,21 @@ function inputsLoader(db){
 }
 
 // ---------------- samplers ----------------
-async function sampleSolUsd({db,connection}){const o=await FX.onchainAt(connection,process.env.PYTH_SOL_USD_ACCOUNT||FX.DEFAULT_FEED_ACCOUNT);if(o)await FX.persist(db,o);return o;}
+// Live SOL/USD sample: Hermes when PYTH_API_KEY is configured (fresh), otherwise the on-chain Pyth account.
+async function sampleSolUsd({db,connection,hermes=FX.hermesLatest}){
+ let o=null;try{o=await hermes();}catch(e){if(Date.now()-(sampleSolUsd.warned||0)>300000){sampleSolUsd.warned=Date.now();await Logs.log(db,{severity:'warn',component:'indexer',eventType:'sol_usd_hermes_failed',message:e.message+' (falling back to the on-chain feed)',errorCode:e.code});}}
+ if(!o)o=await FX.onchainAt(connection,process.env.PYTH_SOL_USD_ACCOUNT||FX.DEFAULT_FEED_ACCOUNT);
+ if(o)await FX.persist(db,o);return o;
+}
+// Historical SOL/USD for purchases that have no valid sample (bought before sampling started, or
+// between ~53 s on-chain updates). Needs PYTH_API_KEY (Benchmarks); bounded per loop.
+async function backfillSolUsd({db,at=FX.hermesAt,configured=FX.hermesConfig().configured,limit=20},mint){
+ if(!configured)return 0;const age=P3.POLICY.solUsd.maxAgeSeconds;
+ const times=(await db.query(`SELECT DISTINCT (e.data->>'time')::bigint AS t FROM reward_events e WHERE e.mint=$1 AND e.kind='purchase_candidate'
+   AND NOT EXISTS(SELECT 1 FROM reward_sol_usd s WHERE s.feed_id=$2 AND s.publish_time BETWEEN (e.data->>'time')::bigint-$3 AND (e.data->>'time')::bigint) ORDER BY 1 LIMIT $4`,[mint,FX.FEED,age,limit])).rows.map(r=>Number(r.t));
+ let n=0;for(const t of times){const list=await at(t,{window:age});const o=list[list.length-1];if(o){await FX.persist(db,o);n++;}}
+ return n;
+}
 async function heartbeat({db,connection},coin){
  const mint=new PublicKey(coin.mint),curve=Pump.SDK.bondingCurvePda(mint);const r=await connection.getAccountInfoAndContext(curve,'finalized');if(!r.value)return null;
  const bc=Pump.sdk.decodeBondingCurve(r.value);const time=await connection.getBlockTime(r.context.slot);
@@ -120,30 +134,51 @@ async function projectToken({db,connection},coin){
 }
 
 // ---------------- process ----------------
+// Signing preflight: the scheduler signs nothing unless the chain it talks to is the configured
+// network and the on-chain deployment names exactly this worker's publisher/verifier keys and a
+// known policy. Re-checked every loop (one account read), so a key rotation or a wrong RPC stops
+// settlement instead of producing rejected transactions.
+const MAINNET_GENESIS='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
+async function preflightV3({connection,program,publisher,verifier,genesis=process.env.REWARDS_GENESIS_HASH||MAINNET_GENESIS}){
+ const got=await connection.getGenesisHash();if(got!==genesis)return{ok:false,reason:`wrong network (genesis ${got})`};
+ const info=await connection.getAccountInfo(W3.addresses(program).deployment,'finalized');
+ if(!info||!info.owner.equals(program))return{ok:false,reason:'deployment not initialized by this program'};
+ const d=W3.decode('deployment',info.data);
+ if(d.publisher!==publisher.toBase58())return{ok:false,reason:'publisher key does not match the deployment'};
+ if(d.verifier!==verifier.toBase58())return{ok:false,reason:'verifier key does not match the deployment'};
+ const expected=d.testMode?P3.hashOf(P3.TEST_POLICY):P3.POLICY_HASH;if(d.policy!==expected)return{ok:false,reason:'deployment policy is not the published '+(d.testMode?'test':'production')+' policy'};
+ return{ok:true,testMode:d.testMode,paused:d.paused};
+}
+// DATABASE_URL-style values may come from files mounted as secrets (NAME_FILE).
+function envOrFile(name){if(process.env[name])return process.env[name];const f=process.env[name+'_FILE'];return f?require('node:fs').readFileSync(f,'utf8').trim():undefined;}
+
 async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.argv.includes('--once')}={}){
  const worker=`worker:${require('node:os').hostname()}:${process.pid}:${crypto.randomUUID().slice(0,8)}`;
  const rpcUrl=process.env.SOLANA_RPC_URL,historyUrl=process.env.HISTORY_RPC_URL||rpcUrl;if(!rpcUrl)throw Object.assign(Error('SOLANA_RPC_URL is required'),{code:'SETUP_REQUIRED'});
  const connection=new Connection(rpcUrl,'finalized'),rpc=new H.Rpc(historyUrl,{minIntervalMs:Number(process.env.HISTORY_RPC_MIN_INTERVAL_MS||100)});
- const idb=DB.connect(process.env.INDEXER_DATABASE_URL||process.env.DATABASE_URL,{max:3,name:'rebound-indexer'});
- const sdb=DB.connect(process.env.SCHEDULER_DATABASE_URL||process.env.DATABASE_URL,{max:3,name:'rebound-scheduler'});
- const vdb=DB.connect(process.env.VERIFIER_DATABASE_URL||process.env.DATABASE_URL,{max:2,name:'rebound-verifier'});
+ const idb=role!=='scheduler'?DB.connect(envOrFile('INDEXER_DATABASE_URL')||envOrFile('DATABASE_URL'),{max:3,name:'rebound-indexer'}):null;
+ const settles=role==='all'||role==='scheduler';   // an indexer-only process holds no scheduler/verifier connection
+ const sdb=settles?DB.connect(envOrFile('SCHEDULER_DATABASE_URL')||envOrFile('DATABASE_URL'),{max:3,name:'rebound-scheduler'}):null;
+ const vdb=settles?DB.connect(envOrFile('VERIFIER_DATABASE_URL')||envOrFile('DATABASE_URL'),{max:2,name:'rebound-verifier'}):null;
  let stop=false;for(const s of ['SIGTERM','SIGINT'])process.on(s,()=>{stop=true;});
  const program=process.env.REWARDS_PROGRAM_ID?new PublicKey(process.env.REWARDS_PROGRAM_ID):null;if(program)C.bind(program);
  const keyFile=async(env,expected)=>{if(!process.env[env])return null;const k=await require('./config.cjs').keyFromFile(env,expected);return k;};
  const feePayer=program?await keyFile('REWARDS_FEE_PAYER_KEY_FILE',process.env.REWARDS_FEE_PAYER_ADDRESS):null;
  const publisher=program?await keyFile('REWARDS_PUBLISHER_KEY_FILE',process.env.REWARDS_PUBLISHER_ADDRESS):null;
  const verifierKey=program?await keyFile('REWARDS_VERIFIER_KEY_FILE',process.env.REWARDS_VERIFIER_ADDRESS):null;
- const inputs=inputsLoader(idb);
+ const inputs=inputsLoader(idb||sdb);let checked={ok:false,reason:'not checked',at:0};
  do{
   const started=Date.now();
   try{
-   const coins=(await idb.query("SELECT * FROM reward_coins WHERE program_version='v3' AND status IN ('registered','indexing','ready','active','activating','created_pending_activation','paused')")).rows;
+   const cdb=role==='scheduler'?sdb:idb;   // each process only uses its own database login
+   const coins=(await cdb.query("SELECT * FROM reward_coins WHERE program_version='v3' AND status IN ('registered','indexing','ready','active','activating','created_pending_activation','paused')")).rows;
    if(role==='all'||role==='indexer'){
     await sampleSolUsd({db:idb,connection}).catch(e=>Logs.log(idb,{severity:'warn',component:'indexer',eventType:'sol_usd_sample_failed',message:e.message,errorCode:e.code}));
     for(const coin of coins){
      await DB.withLease(idb,'ingest:'+coin.mint,worker,async()=>{
       const r=await ingest({db:idb,rpc},coin);if(r.newTx)await Logs.log(idb,{component:'indexer',eventType:'history_ingested',mint:coin.mint,message:`Ingested ${r.newTx} finalized transaction(s), ${r.newEvents} event(s); coverage ${r.complete?'complete':'INCOMPLETE'} through slot ${r.head}`,metadata:{incomplete:r.incomplete.slice(0,5)}});
       await heartbeat({db:idb,connection},coin).catch(e=>Logs.log(idb,{severity:'warn',component:'indexer',eventType:'heartbeat_failed',mint:coin.mint,message:e.message,errorCode:e.code||'HEARTBEAT_FAILED'}));
+      await backfillSolUsd({db:idb},coin.mint).catch(e=>Logs.log(idb,{severity:'warn',component:'indexer',eventType:'sol_usd_backfill_failed',mint:coin.mint,message:e.message,errorCode:e.code}));
       if(coin.kind==='primary')await reconcileFunding({db:idb,rpc},coin);
       else if(program)await R.scanIntake({db:idb,rpc,program},coin);   // creator-fee income vs setup rent/donations
       await projectToken({db:idb,connection},coin);
@@ -151,12 +186,17 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
     }
     await Logs.heartbeat(idb,'indexer','ok',{coins:coins.length,ms:Date.now()-started});
    }
-   if((role==='all'||role==='scheduler')&&program&&feePayer&&publisher&&verifierKey){
+   const signing=settles&&program&&feePayer&&publisher&&verifierKey;
+   if(signing&&Date.now()-checked.at>60000){checked={...await preflightV3({connection,program,publisher:publisher.publicKey,verifier:verifierKey.publicKey}).catch(e=>({ok:false,reason:'preflight failed: '+e.message})),at:Date.now()};
+    if(!checked.ok)await Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'preflight_failed',message:'Settlement disabled: '+checked.reason,errorCode:'PREFLIGHT'});}
+   if(signing&&!checked.ok)await Logs.heartbeat(sdb,'scheduler','down',{reason:'preflight: '+checked.reason});
+   else if(signing){
     const ports={db:sdb,connection,program,feePayer,publisher,verifierKey:verifierKey.publicKey,worker,inputs,
      verifier:{cosign:V.cosigner({db:vdb,program,key:verifierKey,inputs:inputsLoader(vdb)}),...R.attestor({rpc:new H.Rpc(process.env.VERIFIER_RPC_URL||historyUrl,{minIntervalMs:100}),connection,program,key:verifierKey})},
      cutoffSlot:async t=>(await H.findCutoffSlot(rpc,t)).slot,now:async()=>connection.getBlockTime(await connection.getSlot('finalized')),
      devSigner:async coin=>{const fw=(await sdb.query("SELECT * FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired' AND mode='automatic'",[coin.mint])).rows[0];return fw?.signer?Signer.load(sdb,fw.signer):null;},
      primaryAwaiting:(mint,cutoff)=>primaryAwaiting(sdb,mint,cutoff),sponsorRent:process.env.REWARDS_SPONSOR_RENT==='true'};
+    for(const r of await Admin.syncPrimary(sdb,{connection,program}).catch(e=>(Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'primary_sync_failed',message:e.message}),[])))if(r.state==='active'){const c=coins.find(x=>x.mint===r.mint);if(c)c.status='active';}
     await Admin.applyOpeningRequests(sdb,connection).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'opening_credit_failed',message:e.message}));
     for(const coin of coins.filter(c=>c.status==='active')){
      await C.tick(ports,coin.mint).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'tick_failed',mint:coin.mint,message:e.message,errorCode:e.code||'SCHEDULER_ERROR'}));
@@ -169,12 +209,12 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
      },{seconds:120,busy:()=>null}).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'third_party_step_failed',mint:coin.mint,message:e.message,errorCode:e.code||'SCHEDULER_ERROR'}));
     }
     await Logs.heartbeat(sdb,'scheduler','ok',{coins:coins.length});
-   }else if(role==='all'||role==='scheduler')await Logs.heartbeat(sdb,'scheduler','unconfigured',{reason:'program id or signer files missing; settlement disabled'});
-   await Logs.heartbeat(idb,'worker','ok',{role,worker});
-  }catch(e){await Logs.heartbeat(idb,'worker','degraded',{error:Logs.redactText(e.message)}).catch(()=>{});}
+   }else if(settles)await Logs.heartbeat(sdb,'scheduler','unconfigured',{reason:'program id or signer files missing; settlement disabled'});
+   await Logs.heartbeat(role==='scheduler'?sdb:idb,role==='scheduler'?'worker:scheduler':'worker','ok',{role,worker});
+  }catch(e){await Logs.heartbeat(role==='scheduler'?sdb:idb,role==='scheduler'?'worker:scheduler':'worker','degraded',{error:Logs.redactText(e.message)}).catch(()=>{});}
   if(!once&&!stop)await new Promise(r=>setTimeout(r,Math.max(1000,5000-(Date.now()-started))));
  }while(!once&&!stop);
- await Promise.all([idb.end(),sdb.end(),vdb.end()]);
+ await Promise.all([idb,sdb,vdb].filter(Boolean).map(p=>p.end()));
 }
 if(require.main===module)main().catch(e=>{process.stderr.write('worker failed: '+(e.code||'')+' '+Logs.redactText(e.message)+'\n');process.exitCode=1;});
-module.exports={ingest,inputsLoader,sampleSolUsd,heartbeat,reconcileFunding,primaryAwaiting,projectToken,main};
+module.exports={preflightV3,envOrFile,backfillSolUsd,ingest,inputsLoader,sampleSolUsd,heartbeat,reconcileFunding,primaryAwaiting,projectToken,main};

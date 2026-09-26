@@ -1,31 +1,35 @@
+# REBOUND V3 workers. Secrets are files under ./runtime-secrets (mode 700/600), mounted read-only;
+# they are never baked into the image, committed, or stored in Supabase/Netlify.
+#   docker compose -f compose.rewards.yml --env-file .env.worker up -d --build indexer            # read-only indexing
+#   docker compose -f compose.rewards.yml --env-file .env.worker --profile settle up -d --build   # + scheduler (signs)
+# The scheduler refuses to sign above REWARDS_MAX_EXECUTION_MODE and when the on-chain deployment
+# does not match its keys (preflight). Pause from the admin dashboard or the guardian key.
+x-worker: &worker
+  build:
+    context: .
+    dockerfile: Dockerfile.rewards
+  env_file: .env.worker
+  restart: unless-stopped
+  read_only: true
+  security_opt: ['no-new-privileges:true']
+  volumes: ['./runtime-secrets:/run/secrets:ro']
+  logging:
+    driver: json-file
+    options: {max-size: '10m', max-file: '5'}
 services:
   indexer:
-    build:
-      context: .
-      dockerfile: Dockerfile.rewards
-    env_file: .env
+    <<: *worker
     environment:
       REWARDS_WORKER_ROLE: indexer
-      REWARDS_TRANSFERS_ENABLED: 'false'
-    restart: unless-stopped
-    profiles: [index]
+      INDEXER_DATABASE_URL_FILE: /run/secrets/indexer-database.url
   scheduler:
-    build:
-      context: .
-      dockerfile: Dockerfile.rewards
-    env_file: .env
-    volumes: ['./runtime-secrets:/run/secrets:ro','./runtime-config:/config:ro']
-    restart: unless-stopped
-    profiles: [payments]
-  verifier:
-    build:
-      context: .
-      dockerfile: Dockerfile.rewards
-    command: [node, server/rewards/verifier-server.cjs]
-    env_file: .env
+    <<: *worker
+    profiles: [settle]
     environment:
-      BIND_ADDRESS: 0.0.0.0
-      PORT: '8788'
-    volumes: ['./verifier-secrets:/run/secrets:ro','./runtime-config:/config:ro']
-    restart: unless-stopped
-    profiles: [verify, payments]
+      REWARDS_WORKER_ROLE: scheduler
+      SCHEDULER_DATABASE_URL_FILE: /run/secrets/scheduler-database.url
+      VERIFIER_DATABASE_URL_FILE: /run/secrets/verifier-database.url
+      INDEXER_DATABASE_URL_FILE: /run/secrets/indexer-database.url
+      REWARDS_PUBLISHER_KEY_FILE: /run/secrets/publisher.json
+      REWARDS_VERIFIER_KEY_FILE: /run/secrets/verifier.json
+      REWARDS_FEE_PAYER_KEY_FILE: /run/secrets/fee_payer.json

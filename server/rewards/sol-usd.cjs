@@ -51,6 +51,16 @@ async function hermesAt(t,{window=30,cfg=hermesConfig(),fetchImpl=fetch}={}){
  return list.filter(o=>o.time<=t).sort((a,b)=>a.time-b.time);
 }
 
+// Latest update from Hermes (fresh to ~1 s; the on-chain sponsored feed is only ~every 53 s, which is
+// longer than the policy's 30 s maximum age). Same key as Benchmarks.
+async function hermesLatest({cfg=hermesConfig(),fetchImpl=fetch}={}){
+ if(!cfg.configured)return null;
+ const r=await fetchImpl(`${cfg.hermes}/v2/updates/price/latest?ids[]=0x${FEED}&parsed=true`,{headers:{authorization:'Bearer '+cfg.key,accept:'application/json'},signal:AbortSignal.timeout(10000)});
+ if(r.status===401||r.status===403)throw Object.assign(Error('Pyth API key rejected'),{code:'SOL_USD_SOURCE_UNAUTHORIZED'});
+ if(!r.ok)throw Object.assign(Error('Pyth Hermes unavailable'),{code:'SOL_USD_SOURCE_UNAVAILABLE'});
+ return parseHermes(await r.json(),'pyth-hermes').sort((a,b)=>b.time-a.time)[0]||null;
+}
+
 // ---------- Pyth on-chain PriceUpdateV2 ----------
 // Layout (Anchor): disc[8] write_authority[32] verification_level{0:Partial(u8),1:Full}
 // price_message{feed_id[32] price i64 conf u64 exponent i32 publish_time i64 prev_publish_time i64
@@ -83,7 +93,7 @@ function lookup(series,policy=P3.POLICY){
  const s=[...series].sort((a,b)=>a.time-b.time);
  return time=>{let lo=0,hi=s.length-1,best=null;while(lo<=hi){const m=(lo+hi)>>1;if(s[m].time<=time){best=s[m];lo=m+1;}else hi=m-1;}return best&&valid(best,time,policy).ok?best:null;};
 }
-module.exports={FEED,RECEIVER,PUSH_ORACLE,toPico,observation,valid,hermesConfig,parseHermes,hermesAt,decodePriceUpdateV2,onchainAt,persist,load,lookup};
+module.exports={FEED,RECEIVER,PUSH_ORACLE,toPico,observation,valid,hermesConfig,parseHermes,hermesAt,hermesLatest,decodePriceUpdateV2,onchainAt,persist,load,lookup};
 
 // ---------- on-chain history (free): Pyth push-oracle update transactions ----------
 // A successful `update_price_feed` transaction proves the receiver verified the Merkle price

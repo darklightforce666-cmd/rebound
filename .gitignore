@@ -13,6 +13,7 @@ dist/
 .env
 .env.*
 !.env.example
+!.env.worker.example
 contracts/v2/target/
 contracts/v2/artifact/
 contracts/v2/fixtures/mainnet/

@@ -75,3 +75,29 @@ test('opening credit: the API records the request; only the scheduler applies it
   await assert.rejects(api.openingCredit(db,admin,{mint,requestedCreditLamports:'1',operationalReserveLamports:'0'}),e=>e.code==='ALREADY_RECORDED');
  }finally{await db.close();}
 });
+
+test('primary activation: the scheduler marks a registered primary active only after StartPrimary and exact agreement',async(t)=>{
+ const fs=require('node:fs'),path=require('node:path');if(!fs.existsSync(path.join(__dirname,'../../contracts/v3/target/deploy/rebound_rewards_v3.so')))return t.skip('SBF build missing');
+ const {SvmConnection}=require('./svm-connection.cjs'),{Transaction}=require('@solana/web3.js'),W3=require('../../server/rewards/wire-v3.cjs');
+ const {db,api}=await setup();try{
+  const admin=Keypair.generate(),program=Keypair.generate().publicKey,conn=new SvmConnection({program,admin:admin.publicKey});conn.airdrop(admin.publicKey,10n**10n);
+  const mint=Keypair.generate().publicKey,dev=key(),other=key(),ports={connection:conn,program};
+  const send=async ix=>{const bh=await conn.getLatestBlockhash();const tx=new Transaction({feePayer:admin.publicKey,...bh}).add(ix);tx.sign(admin);await conn.sendRawTransaction(tx.serialize());};
+  await send(W3.I.initialize(program,{admin:admin.publicKey,programData:conn.programData,publisher:Keypair.generate().publicKey,verifier:Keypair.generate().publicKey,guardian:Keypair.generate().publicKey,policy:P3.hashOf(P3.TEST_POLICY),testMode:true}));
+  const md=Buffer.alloc(82);md.writeBigUInt64LE(10n**15n,36);md[44]=6;md[45]=1;const {address:kitAddress}=require('@solana/kit');
+  conn.svm.setAccount({address:kitAddress(mint.toBase58()),lamports:1_461_600n,programAddress:kitAddress('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),executable:false,data:md,space:82n});
+  await db.query("UPDATE reward_platform SET policy_version=$1 WHERE namespace='mainnet_test'",[P3.TEST_POLICY.version]);
+  await api.registerPrimary(db,admin.publicKey.toBase58(),{userId:crypto.randomUUID(),reboundWallets:[dev]},{namespace:'mainnet_test',mint:mint.toBase58(),fundingWallet:dev});
+  const sync=async()=>{await db.query('SET ROLE rebound_scheduler');try{return await A.syncPrimary(db,ports);}finally{await db.query('RESET ROLE');}};
+  const status=async()=>(await db.query('SELECT status,blocked_reason FROM reward_coins WHERE mint=$1',[mint.toBase58()])).rows[0];
+  assert.deepEqual((await sync()).map(r=>r.state),['waiting_for_start']);                          // nothing on chain yet
+  await send(W3.I.registerPrimary(program,{admin:admin.publicKey,mint,fundingWallet:new (require('@solana/web3.js').PublicKey)(other)}));
+  await send(W3.I.startPrimary(program,{admin:admin.publicKey,mint}));
+  assert.deepEqual((await sync()).map(r=>r.state),['blocked']);                                    // chain names a different dev wallet
+  assert.match((await status()).blocked_reason,/funding wallet/);assert.equal((await status()).status,'registered');
+  await send(W3.I.setFundingWallet(program,{admin:admin.publicKey,mint,fundingWallet:new (require('@solana/web3.js').PublicKey)(dev)}));
+  assert.deepEqual((await sync()).map(r=>r.state),['active']);
+  assert.deepEqual(await status(),{status:'active',blocked_reason:null});
+  assert.deepEqual(await sync(),[],'idempotent');
+ }finally{await db.close();}
+});

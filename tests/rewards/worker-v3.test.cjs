@@ -121,3 +121,39 @@ test('v1 transactions are requested and the RPC-reported block index is used wit
   assert.ok((await db.query('SELECT transaction_index FROM reward_events WHERE mint=$1',[mint])).rows.every(e=>e.transaction_index===1));
  }finally{await db.close();}
 });
+
+test('signing preflight: network, deployment keys and policy must match before the scheduler signs',async()=>{
+ const {PublicKey}=require('@solana/web3.js'),W3=require('../../server/rewards/wire-v3.cjs'),P3=require('../../server/rewards/policy-v3.cjs');
+ const program=Keypair.generate().publicKey,publisher=Keypair.generate().publicKey,verifier=Keypair.generate().publicKey,other=Keypair.generate().publicKey;
+ const deployment=(testMode,policyHex)=>Buffer.concat([Buffer.from('RBD3DEP0'),other.toBuffer(),publisher.toBuffer(),verifier.toBuffer(),other.toBuffer(),Buffer.from(policyHex,'hex'),Buffer.from([testMode?1:0,0]),Buffer.alloc(8),new PublicKey(SYS).toBuffer(),new PublicKey(SYS).toBuffer(),Buffer.alloc(8)]);
+ const conn=(genesis,data,owner=program)=>({getGenesisHash:async()=>genesis,getAccountInfo:async a=>{assert.ok(a.equals(W3.addresses(program).deployment));return data?{owner,data}:null;}});
+ const G='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d',ok=deployment(true,P3.hashOf(P3.TEST_POLICY));
+ assert.deepEqual(await Wk.preflightV3({connection:conn(G,ok),program,publisher,verifier,genesis:G}),{ok:true,testMode:true,paused:false});
+ assert.match((await Wk.preflightV3({connection:conn('devnet',ok),program,publisher,verifier,genesis:G})).reason,/wrong network/);
+ assert.match((await Wk.preflightV3({connection:conn(G,null),program,publisher,verifier,genesis:G})).reason,/not initialized/);
+ assert.match((await Wk.preflightV3({connection:conn(G,ok,other),program,publisher,verifier,genesis:G})).reason,/not initialized/);
+ assert.match((await Wk.preflightV3({connection:conn(G,ok),program,publisher:other,verifier,genesis:G})).reason,/publisher/);
+ assert.match((await Wk.preflightV3({connection:conn(G,ok),program,publisher,verifier:other,genesis:G})).reason,/verifier/);
+ assert.match((await Wk.preflightV3({connection:conn(G,deployment(false,P3.hashOf(P3.TEST_POLICY))),program,publisher,verifier,genesis:G})).reason,/production policy/);
+ assert.equal((await Wk.preflightV3({connection:conn(G,deployment(false,P3.POLICY_HASH)),program,publisher,verifier,genesis:G})).ok,true);
+});
+
+test('SOL/USD: Hermes sample preferred when keyed; purchases without a valid sample are backfilled once',async()=>{
+ const FX=require('../../server/rewards/sol-usd.cjs'),P3=require('../../server/rewards/policy-v3.cjs');
+ const db=await supabaseDb();try{
+  const mint=key(),obs=t=>({time:t,price:150n*10n**12n,conf:10n**10n,source:'pyth-benchmarks',evidence:{t}});
+  await db.query("INSERT INTO reward_coins(mint,policy_hash,status,kind,namespace,program_version,policy_version) VALUES($1,$2,'active','primary','mainnet_test','v3','rebound-v3.0-test')",[mint,P3.hashOf(P3.TEST_POLICY)]);
+  const ev=(id,t,kind='purchase_candidate')=>db.query("INSERT INTO reward_events(id,mint,signature,instruction_path,event_index,slot,transaction_index,execution_order,kind,owner,data,raw_digest,parser_version,finalized) VALUES($1,$2,$1,'0',0,$3,0,0,$4,$5,$6,'d','v',true)",[id,mint,t,kind,key(),{time:t}]);
+  await ev('a',1_800_000_000);await ev('b',1_800_000_100);await ev('c',1_800_000_200,'transfer');
+  await FX.persist(db,obs(1_800_000_090));                                                      // b already covered (10 s old)
+  const asked=[];const at=async(t,{window})=>{asked.push([t,window]);return[obs(t-3),obs(t-1)];};
+  assert.equal(await Wk.backfillSolUsd({db,at,configured:false},mint),0,'nothing without a key');
+  assert.equal(await Wk.backfillSolUsd({db,at,configured:true},mint),1);assert.deepEqual(asked,[[1_800_000_000,30]]);
+  assert.equal(await Wk.backfillSolUsd({db,at,configured:true},mint),0,'idempotent');
+  const s=await FX.load(db,1_799_999_990,1_800_000_000);assert.deepEqual(s.map(x=>x.time),[1_799_999_999]);
+  const live=await Wk.sampleSolUsd({db,connection:{getAccountInfoAndContext:async()=>{throw Error('on-chain must not be read');}},hermes:async()=>obs(1_800_000_500)});
+  assert.equal(live.time,1_800_000_500);
+  const fallback=await Wk.sampleSolUsd({db,connection:{getAccountInfoAndContext:async()=>({context:{slot:1},value:null})},hermes:async()=>{throw Object.assign(Error('down'),{code:'SOL_USD_SOURCE_UNAVAILABLE'});}});
+  assert.equal(fallback,null);assert.ok((await db.query("SELECT 1 FROM reward_logs WHERE event_type='sol_usd_hermes_failed'")).rows.length);
+ }finally{await db.close();}
+});

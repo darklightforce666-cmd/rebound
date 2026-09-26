@@ -10,8 +10,10 @@
     "rewards:migrate": "node scripts/rewards/manage.cjs migrate",
     "rewards:dry-run": "node scripts/rewards/manage.cjs dry-run",
     "rewards:preflight": "node scripts/rewards/manage.cjs preflight",
-    "rewards:index": "node server/rewards/worker.cjs",
-    "rewards:verifier": "node server/rewards/verifier-server.cjs"
+    "rewards:worker": "node server/rewards/worker-v3.cjs",
+    "rewards:governance": "node scripts/rewards/governance-v3.cjs",
+    "rewards:keygen": "node scripts/rewards/keygen-v3.cjs",
+    "rewards:db-login": "node scripts/rewards/db-login.cjs"
   },
   "engines": {
     "node": ">=24"

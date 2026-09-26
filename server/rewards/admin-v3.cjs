@@ -118,6 +118,28 @@ async function applyOpeningRequests(db,connection){
  return out;
 }
 
+/**
+ * Scheduler side: a registered primary becomes `active` in the database only after the chain says so
+ * (StartPrimary finalized) AND the on-chain coin agrees with the database on kind, policy hash and
+ * dev funding wallet. The schedule itself is always read from the chain, never copied.
+ */
+async function syncPrimary(db,{connection,program}){
+ const rows=(await db.query("SELECT c.*,p.hash AS policy_hash_db FROM reward_coins c JOIN reward_policies p ON p.version=c.policy_version WHERE c.kind='primary' AND c.program_version='v3' AND c.status IN ('registered','indexing','ready')")).rows;const out=[];
+ for(const c of rows){
+  const info=await connection.getAccountInfo(W3.addresses(program,new PublicKey(c.mint)).coin,'finalized');const on=info&&info.owner.equals(program)?W3.decode('coin',info.data):null;
+  if(!on||!on.active){out.push({mint:c.mint,state:'waiting_for_start'});continue;}
+  const fw=(await db.query("SELECT address FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired'",[c.mint])).rows[0];
+  const reason=on.kind!=='primary'?'on-chain coin is not a primary':on.policy!==c.policy_hash_db?'on-chain policy differs from the database policy':!fw||on.fundingWallet!==fw.address?'on-chain dev funding wallet differs from the registered one':null;
+  if(reason){if(c.blocked_reason!==reason){await db.query('UPDATE reward_coins SET blocked_reason=$2,updated_at=now() WHERE mint=$1',[c.mint,reason]);
+    await Logs.log(db,{severity:'critical',component:'scheduler',eventType:'primary_mismatch',mint:c.mint,message:'Primary not activated: '+reason,errorCode:'PRIMARY_MISMATCH'});}
+   out.push({mint:c.mint,state:'blocked',reason});continue;}
+  await db.query("UPDATE reward_coins SET status='active',blocked_reason=NULL,updated_at=now() WHERE mint=$1",[c.mint]);
+  await Logs.log(db,{severity:'warn',component:'scheduler',eventType:'primary_active',mint:c.mint,message:`Primary active on chain (anchor ${on.anchor}, ${on.cycleSeconds}s cycles); scheduling enabled`});
+  out.push({mint:c.mint,state:'active'});
+ }
+ return out;
+}
+
 // ---------------- on-chain governance (admin wallet signs) ----------------
 const CHAIN_ACTIONS=new Set(['initialize','setBuybackTarget','registerPrimary','startPrimary','setFundingWallet','pause','requestResume','resume']);
 function chainInstruction(program,admin,action,p){
@@ -162,4 +184,4 @@ async function revokeAdmin(db,actor,{wallet}){wallet=address(wallet,'wallet');if
  const left=(await db.query('SELECT count(*)::int n FROM reward_admin_wallets WHERE revoked_at IS NULL AND wallet<>$1',[wallet])).rows[0].n;if(!left)fail('FORBIDDEN','At least one admin must remain',409);
  await db.query('UPDATE reward_admin_wallets SET revoked_at=now(),revoked_by=$2 WHERE wallet=$1',[wallet,actor]);await audit(db,actor,'admin_revoke',{wallet});return{wallet,revoked:true};}
 
-module.exports={overview,setMode,testConfig,pause,registerPrimary,openingCredit,applyOpeningRequests,chainPrepare,chainSubmit,addAdmin,revokeAdmin,CHAIN_ACTIONS};
+module.exports={overview,setMode,testConfig,pause,registerPrimary,openingCredit,applyOpeningRequests,syncPrimary,chainPrepare,chainSubmit,addAdmin,revokeAdmin,CHAIN_ACTIONS};
