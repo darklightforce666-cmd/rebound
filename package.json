@@ -22,6 +22,7 @@
   "dependencies": {
     "@coral-xyz/anchor": "0.31.1",
     "@netlify/blobs": "11.1.0",
+    "@noble/curves": "1.9.7",
     "@privy-io/react-auth": "3.45.0",
     "@pump-fun/pump-sdk": "2.0.0",
     "@pump-fun/pump-swap-sdk": "1.20.0",

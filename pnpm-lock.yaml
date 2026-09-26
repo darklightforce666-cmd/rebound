@@ -20,6 +20,9 @@ importers:
       '@netlify/blobs':
         specifier: 11.1.0
         version: 11.1.0
+      '@noble/curves':
+        specifier: 1.9.7
+        version: 1.9.7
       '@privy-io/react-auth':
         specifier: 3.45.0
         version: 3.45.0(9422cf221fc3c7312c15632ec1738582)

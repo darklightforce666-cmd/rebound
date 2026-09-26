@@ -6,6 +6,10 @@
 // The API only ever sees {ephemeral, iv, ciphertext}; without the worker's private inbox key (a file on
 // the worker host) they are useless. The AAD binds the ciphertext to one funding wallet row, its address
 // and the worker key it was sealed to, so it cannot be replayed against another wallet.
+// X25519 scalar multiplication for the worker side uses @noble/curves: some hosted runtimes (Supabase Edge)
+// implement X25519 in WebCrypto only partially (no private-key export/import). The browser seals with WebCrypto;
+// both follow RFC 7748, so the shared secret is identical.
+const {x25519}=require('@noble/curves/ed25519');
 const subtle=()=>{const s=globalThis.crypto?.subtle;if(!s)throw Error('WebCrypto is not available');return s;};
 const INFO='rebound-key-inbox-v1';
 const enc=s=>new TextEncoder().encode(s);
@@ -33,16 +37,16 @@ async function seal(secret,{fundingWallet,address,inboxPublicKey}){
 }
 /** Worker side: open with the private inbox key (JWK {kty:'OKP',crv:'X25519',d,x}). Returns Uint8Array. */
 async function open(sealed,jwk,{fundingWallet,address}){
- const priv=await subtle().importKey('jwk',{kty:'OKP',crv:'X25519',d:jwk.d,x:jwk.x},{name:'X25519'},false,['deriveBits']);
- const ephRaw=b64u.decode(sealed.ephemeralPublicKey),workerRaw=b64u.decode(jwk.x);
- const pub=await subtle().importKey('raw',ephRaw,{name:'X25519'},false,[]);
- const shared=new Uint8Array(await subtle().deriveBits({name:'X25519',public:pub},priv,256));
+ const ephRaw=b64u.decode(sealed.ephemeralPublicKey),workerRaw=b64u.decode(jwk.x),d=b64u.decode(jwk.d);
+ if(ephRaw.length!==32||d.length!==32)throw Error('Invalid sealed key');
+ const shared=x25519.getSharedSecret(d,ephRaw);d.fill(0);
+ if(shared.every(v=>v===0))throw Error('Invalid ephemeral key');   // low-order point
  const key=await aesKey(shared,ephRaw,workerRaw,'decrypt');shared.fill(0);
  return new Uint8Array(await subtle().decrypt({name:'AES-GCM',iv:b64u.decode(sealed.iv),additionalData:enc(binding({fundingWallet,address,inboxPublicKey:jwk.x}))},key,b64u.decode(sealed.ciphertext)));
 }
 /** New inbox key pair as a private JWK (the public part is jwk.x). */
 async function generate(){
- const kp=await subtle().generateKey({name:'X25519'},true,['deriveBits']);
- const j=await subtle().exportKey('jwk',kp.privateKey);return{kty:'OKP',crv:'X25519',d:j.d,x:j.x};
+ const d=x25519.utils.randomPrivateKey(),x=x25519.getPublicKey(d);
+ const j={kty:'OKP',crv:'X25519',d:b64u.encode(d),x:b64u.encode(x)};d.fill(0);return j;
 }
 module.exports={seal,open,generate,binding,b64u,INFO};
