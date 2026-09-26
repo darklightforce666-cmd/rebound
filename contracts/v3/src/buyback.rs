@@ -102,6 +102,11 @@ pub fn process(program:&Pubkey,accounts:&[AccountInfo],command:Command)->Program
   invoke_signed(&Instruction{program_id,accounts:metas,data},fwd,&[seeds])?;
   let after=token_amount(&fwd[out_account],&j.target_mint,buyer.key,&token_program)?;
   let sol_after=if program_id==PUMP{buyer.lamports()}else{token_amount(&fwd[6],&SOL,buyer.key,&TOKEN)?};
+  if program_id==AMM{
+   // Unwrap any unspent WSOL back to the buyer PDA so CloseBuyback can return it to the reserve.
+   invoke_signed(&Instruction{program_id:TOKEN,accounts:vec![AccountMeta::new(*fwd[6].key,false),AccountMeta::new(*buyer.key,false),AccountMeta::new_readonly(*buyer.key,true)],data:vec![9]},
+    &[fwd[6].clone(),buyer.clone(),fwd[12].clone()],&[seeds])?;
+  }
   require(buyer.lamports()>=rent,Error::Funds)?;
   let spent=sub(sol_before,sol_after)?;let acquired=sub(after,before)?;
   purchased(&mut j,spent,acquired,min_out,clock()?.slot)?;store(jb,&j)?;

@@ -36,6 +36,13 @@ class SvmConnection{
  async getAccountInfo(pk){return this._info(pk);}
  async getAccountInfoAndContext(pk){return{context:{slot:await this.getSlot()},value:this._info(pk)};}
  async getMultipleAccountsInfo(pks){return pks.map(p=>this._info(p));}
+ async getMultipleAccountsInfoAndContext(pks){return{context:{slot:await this.getSlot()},value:pks.map(p=>this._info(p))};}
+ async getTokenAccountBalance(pk){const i=this._info(pk);if(!i)throw Error('account not found');return{context:{slot:await this.getSlot()},value:{amount:i.data.readBigUInt64LE(64).toString()}};}
+ // Cloned mainnet programs/accounts (contracts/v3/fixtures/mainnet, read-only capture).
+ loadProtocol(dir){const m=JSON.parse(fs.readFileSync(path.join(dir,'manifest.json'),'utf8'));
+  for(const p of m.programs)this.svm.addProgramFromFile(A(p.id),path.join(dir,p.file));
+  for(const a of m.accounts)if(!a.missing)this.svm.setAccount({address:A(a.id),lamports:BigInt(a.lamports),programAddress:A(a.owner),executable:a.executable,data:Buffer.from(a.data,'base64'),space:BigInt(Buffer.from(a.data,'base64').length)});
+  return m;}
  async getBalance(pk){return Number(this.svm.getBalance(A(pk))||0n);}
  async simulateTransaction(tx,signers){if(signers)tx.sign(...signers);const r=this.svm.simulateTransaction(kit.getTransactionDecoder().decode(tx.serialize({requireAllSignatures:false,verifySignatures:false})));
   const failed=typeof r.err==='function';return{value:{err:failed?String(r.err()):null,logs:failed?r.meta().logs():r.meta?.().logs?.()||[]}};}

@@ -80,7 +80,7 @@ async function heartbeat({db,connection},coin){
  const mint=new PublicKey(coin.mint),curve=Pump.SDK.bondingCurvePda(mint);const r=await connection.getAccountInfoAndContext(curve,'finalized');if(!r.value)return null;
  const bc=Pump.sdk.decodeBondingCurve(r.value);const time=await connection.getBlockTime(r.context.slot);
  if(!bc.complete){await db.query("INSERT INTO reward_price_observations(mint,slot,observed_at,market,base_reserve,real_quote,virtual_quote,evidence,quote_model,block_time,heartbeat) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'curve',$3,true) ON CONFLICT DO NOTHING",
-  [coin.mint,r.context.slot,time,curve.toBase58(),bc.virtualTokenReserves.toString(),bc.realSolReserves.toString(),bc.virtualSolReserves.toString(),stable({source:'bonding_curve_account',slot:r.context.slot})]);return{market:'curve',slot:r.context.slot};}
+  [coin.mint,r.context.slot,time,curve.toBase58(),bc.virtualTokenReserves.toString(),(bc.realQuoteReserves??bc.realSolReserves).toString(),(bc.virtualQuoteReserves??bc.virtualSolReserves).toString(),stable({source:'bonding_curve_account',slot:r.context.slot})]);return{market:'curve',slot:r.context.slot};}
  const pool=Pump.SDK.canonicalPumpPoolPda(mint);const p=await connection.getAccountInfo(pool,'finalized');if(!p)return null;
  const state=Pump.SDK.getPumpAmmProgram(connection).coder.accounts.decode('pool',p.data);
  const [base,quote]=await Promise.all([connection.getTokenAccountBalance(state.poolBaseTokenAccount,'finalized'),connection.getTokenAccountBalance(state.poolQuoteTokenAccount,'finalized')]);
@@ -142,7 +142,7 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
     for(const coin of coins){
      await DB.withLease(idb,'ingest:'+coin.mint,worker,async()=>{
       const r=await ingest({db:idb,rpc},coin);if(r.newTx)await Logs.log(idb,{component:'indexer',eventType:'history_ingested',mint:coin.mint,message:`Ingested ${r.newTx} finalized transaction(s), ${r.newEvents} event(s); coverage ${r.complete?'complete':'INCOMPLETE'} through slot ${r.head}`,metadata:{incomplete:r.incomplete.slice(0,5)}});
-      await heartbeat({db:idb,connection},coin).catch(()=>null);
+      await heartbeat({db:idb,connection},coin).catch(e=>Logs.log(idb,{severity:'warn',component:'indexer',eventType:'heartbeat_failed',mint:coin.mint,message:e.message,errorCode:e.code||'HEARTBEAT_FAILED'}));
       if(coin.kind==='primary')await reconcileFunding({db:idb,rpc},coin);
       await projectToken({db:idb,connection},coin);
      },{seconds:300,busy:()=>null}).catch(e=>Logs.log(idb,{severity:'error',component:'indexer',eventType:'ingest_failed',mint:coin.mint,message:e.message,errorCode:e.code||'INDEXER_ERROR'}));

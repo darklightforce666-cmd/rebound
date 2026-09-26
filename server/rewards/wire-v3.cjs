@@ -55,6 +55,11 @@ const I={
  // Holder-only primary deposit. The DEV WALLET signs (manual: in the browser; automatic: server signer).
  depositHolders:(program,{fundingWallet,mint,amount})=>{const a=addresses(program,mint);return ix(program,TAG.DepositHolders,[meta(fundingWallet,true,true),meta(a.deployment),meta(a.coin,true),meta(SYSTEM)],u64(amount));},
  prepareCoin:(program,{payer,mint})=>{const a=addresses(program,mint);return ix(program,TAG.PrepareCoin,[meta(payer,true,true),meta(a.deployment),meta(a.coin,true),meta(a.intake,true),meta(mint,false,true),meta(SYSTEM)]);},
+ // Pump fee-sharing setup, signed by the intake PDA inside the program. `official` = the SDK's
+ // createFeeSharingConfig (13 keys) / updateFeeSharesV2 (20 keys) instruction, forwarded verbatim.
+ createSharing:(program,{mint,official})=>{const a=addresses(program,mint);return ix(program,TAG.CreateSharing,[meta(a.deployment),meta(a.coin,true),meta(a.intake,true),...official.keys.map(k=>({...k,isSigner:false}))]);},
+ lockSharing:(program,{mint,official})=>{const a=addresses(program,mint);return ix(program,TAG.LockSharing,[meta(a.deployment),meta(a.coin,true),meta(a.intake,true),...official.keys.map(k=>({...k,isSigner:false}))]);},
+ activate:(program,{mint,curve,sharingConfig})=>{const a=addresses(program,mint);return ix(program,TAG.Activate,[meta(a.deployment),meta(a.coin,true),meta(a.intake),meta(mint),meta(curve),meta(sharingConfig)]);},
  fund:(program,{payer,publisher,verifier,mint,cycle,root,count,cutoffSlot,snapshot,manifest})=>{const a=addresses(program,mint,{cycle});return ix(program,TAG.Fund,[meta(payer,true,true),meta(publisher,false,true),meta(verifier,false,true),meta(a.deployment),meta(a.coin,true),meta(a.round,true),meta(SYSTEM)],u64(cycle),nodeBytes(root),u32(count),u64(cutoffSlot),bytes32(snapshot),bytes32(manifest));},
  pay:(program,{payer,mint,cycle,index,wallet,amount,proof})=>{const a=addresses(program,mint,{cycle,index});return ix(program,TAG.Pay,[meta(payer,true,true),meta(a.deployment),meta(a.coin,true),meta(a.round,true),meta(a.paid,true),meta(wallet,true),meta(SYSTEM)],u64(cycle),u32(index),u64(amount),nodes(proof));},
  pause:(program,{authority})=>ix(program,TAG.Pause,[meta(authority,false,true),meta(addresses(program).deployment,true)]),
