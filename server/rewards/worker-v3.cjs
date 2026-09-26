@@ -217,7 +217,7 @@ async function preflightV3({connection,program,publisher,verifier,genesis=proces
 function envOrFile(name){if(process.env[name])return process.env[name];const f=process.env[name+'_FILE'];return f?require('node:fs').readFileSync(f,'utf8').trim():undefined;}
 
 async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.argv.includes('--once')}={}){
- const worker=`worker:${require('node:os').hostname()}:${process.pid}:${crypto.randomUUID().slice(0,8)}`;
+ const host=(()=>{try{return require('node:os').hostname();}catch{return 'hosted';}})(),worker=`worker:${host}:${process.pid||0}:${crypto.randomUUID().slice(0,8)}`;
  const rpcUrl=process.env.SOLANA_RPC_URL,historyUrl=process.env.HISTORY_RPC_URL||rpcUrl;if(!rpcUrl)throw Object.assign(Error('SOLANA_RPC_URL is required'),{code:'SETUP_REQUIRED'});
  const connection=new Connection(rpcUrl,'finalized'),rpc=new H.Rpc(historyUrl,{minIntervalMs:Number(process.env.HISTORY_RPC_MIN_INTERVAL_MS||100)});
  const asRole=r=>process.env.REWARDS_DB_SET_ROLE==='true'?r:null;   // hosted worker: one URL, per-role privileges
