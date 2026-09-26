@@ -234,9 +234,20 @@ async function chainSubmit(db,{connection},adminWallets,{intentId,signedTransact
  return{state:r.state,signature:r.signature};
 }
 
+/** Make `wallet` THE administrator wallet: add (or un-revoke) it and revoke every other admin wallet. */
+async function setAdminWallet(db,actor,{wallet,label}){
+ wallet=address(wallet,'admin wallet');
+ await DB.transaction(db,async t=>{
+  await t.query('INSERT INTO reward_admin_wallets(wallet,label,added_by) VALUES($1,$2,$3) ON CONFLICT(wallet) DO UPDATE SET revoked_at=NULL,revoked_by=NULL,label=EXCLUDED.label',[wallet,String(label||'owner').slice(0,60),actor]);
+  await t.query('UPDATE reward_admin_wallets SET revoked_at=now(),revoked_by=$2 WHERE wallet<>$1 AND revoked_at IS NULL',[wallet,actor]);
+ });
+ await audit(db,actor,'admin_set_wallet',{wallet});
+ await Logs.log(db,{severity:'warn',component:'admin',eventType:'admin_wallet_changed',message:`Administrator wallet set to ${wallet} by ${actor}`});
+ return{wallet};
+}
 async function addAdmin(db,actor,{wallet,label}){wallet=address(wallet,'wallet');await db.query('INSERT INTO reward_admin_wallets(wallet,label,added_by) VALUES($1,$2,$3) ON CONFLICT(wallet) DO UPDATE SET revoked_at=NULL,revoked_by=NULL',[wallet,String(label||'admin').slice(0,60),actor]);await audit(db,actor,'admin_add',{wallet});return{wallet};}
 async function revokeAdmin(db,actor,{wallet}){wallet=address(wallet,'wallet');if(wallet===actor)fail('FORBIDDEN','You cannot revoke your own admin wallet',409);
  const left=(await db.query('SELECT count(*)::int n FROM reward_admin_wallets WHERE revoked_at IS NULL AND wallet<>$1',[wallet])).rows[0].n;if(!left)fail('FORBIDDEN','At least one admin must remain',409);
  await db.query('UPDATE reward_admin_wallets SET revoked_at=now(),revoked_by=$2 WHERE wallet=$1',[wallet,actor]);await audit(db,actor,'admin_revoke',{wallet});return{wallet,revoked:true};}
 
-module.exports={overview,setMode,testConfig,pause,registerPrimary,site,setSite,launch,tokenMeta,openingCredit,applyOpeningRequests,syncPrimary,chainPrepare,chainSubmit,addAdmin,revokeAdmin,CHAIN_ACTIONS};
+module.exports={setAdminWallet,overview,setMode,testConfig,pause,registerPrimary,site,setSite,launch,tokenMeta,openingCredit,applyOpeningRequests,syncPrimary,chainPrepare,chainSubmit,addAdmin,revokeAdmin,CHAIN_ACTIONS};

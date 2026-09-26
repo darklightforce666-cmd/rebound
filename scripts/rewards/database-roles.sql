@@ -40,7 +40,7 @@ GRANT UPDATE(status,blocked_reason,name,symbol,image_uri,metadata_uri,pinned,upd
 GRANT INSERT,UPDATE(reward_status,updated_at) ON reward_public_tokens TO rebound_api;   -- publish a verified launch
 GRANT INSERT ON reward_funding_wallets TO rebound_api;
 GRANT UPDATE(mode,signer,status,retired_at) ON reward_funding_wallets TO rebound_api;   -- opening columns: scheduler only (010)
-GRANT INSERT,UPDATE(revoked_at,revoked_by) ON reward_admin_wallets TO rebound_api;
+GRANT INSERT,UPDATE(revoked_at,revoked_by,label) ON reward_admin_wallets TO rebound_api;
 GRANT UPDATE(state,body,body_hash,mint,updated_at) ON reward_intents TO rebound_api;   -- manual plans / launch intents: refresh, mark submitted
 GRANT INSERT,UPDATE ON reward_chain_attempts TO rebound_api;   -- persist user-signed bytes before broadcast
 GRANT UPDATE(state,due_at,next_retry_at,updated_at) ON reward_jobs TO rebound_api;
@@ -83,3 +83,6 @@ GRANT EXECUTE ON FUNCTION reward_user_wallets(uuid) TO rebound_api;
 -- ---------- site settings (011) ----------
 GRANT SELECT, UPDATE(site_open,primary_mint,primary_name,primary_symbol,fee_wallet,namespace,privy_app_id,updated_by,updated_at) ON reward_site TO rebound_api;
 GRANT SELECT ON reward_site TO rebound_indexer, rebound_scheduler, rebound_verifier;
+
+-- ---------- admin dashboard password (012) ----------
+GRANT SELECT, UPDATE(password_hash,setup_hash,setup_expires,session_version,failed,locked_until,updated_at) ON reward_admin_auth TO rebound_api;

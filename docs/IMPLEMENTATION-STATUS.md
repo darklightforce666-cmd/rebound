@@ -207,7 +207,13 @@ cloned from mainnet (`scripts/rewards/clone-protocol.cjs contracts/v3/fixtures/m
 - [x] `reward_site` (migration 011, applied live): public settings row, Realtime; API-only writes (admin + consent)
 - [x] Site follows the setting live: password gate skipped when open; token card name + copy-on-click address and
       the chart switch to the configured mint without reload (Realtime, 60 s poll fallback)
-- [ ] Owner: first admin wallet address; Privy App ID; the real token mint
+- [x] Password access to `#admin` (migration 012, applied live): scrypt hash, HMAC sessions (12 h, bound to
+      `session_version`), 5 wrong attempts → 15 min lock + per-IP rate limit; first password via a one-time setup code
+      (only its SHA-256 stored; code delivered to the owner's Mac, 7-day expiry); change password (signs out other
+      sessions); **Administrator wallet** set/replaced from the dashboard; password sessions approve dashboard changes
+      but never sign Solana transactions
+- [x] Privy App ID set (site settings)
+- [ ] Owner: create the password with the setup code; set the admin wallet; enter the real token mint
 
 ## M6 — deployment and capped mainnet acceptance — tooling done and rehearsed; mainnet run waits for the owner
 
@@ -300,3 +306,4 @@ cloned from mainnet (`scripts/rewards/clone-protocol.cjs contracts/v3/fixtures/m
 | 2026-09-26 | M6 live | migration 010 on Supabase | applied; privileges verified; no advisor findings in schema `rebound` |
 | 2026-09-26 | M6 preview | Netlify branch deploy `a0d5132`, requests from an authenticated browser | health/config/tokens 200 (dry_run, worker offline, no primary); admin-overview 401; `pnpm test` 151 tests: 148 pass, 3 skipped |
 | 2026-09-26 | Admin launch panel | `pnpm test`; browser render with mocked wallet/session/API; migration 011 live | 154 tests: 151 pass, 3 skipped; gate skipped when open; panel renders desktop/mobile, no overflow; anon read-only, RLS on, Realtime on |
+| 2026-09-27 | Admin password | `pnpm test`; browser render of sign-in → dashboard (mocked API); migration 012 live | 158 tests: 155 pass, 3 skipped; anon cannot read reward_admin_auth |

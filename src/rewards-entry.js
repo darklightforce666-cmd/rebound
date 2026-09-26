@@ -21,9 +21,15 @@ const when=t=>t?new Date(typeof t==='number'?t*1000:t).toLocaleString():'—';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
 let cfg=null,supabase=null,session=null,me=null,cfgPromise=null;
+// Admin dashboard password session (tab-scoped; 12 h server-side expiry).
+const ADMIN_KEY='rebound-admin-session';
+const adminToken=()=>{try{return sessionStorage.getItem(ADMIN_KEY)||null;}catch{return null;}};
+const setAdminToken=t=>{try{t?sessionStorage.setItem(ADMIN_KEY,t):sessionStorage.removeItem(ADMIN_KEY);}catch{}};
 async function api(action,{query={},body,auth=false,signal}={}){
  const headers={};if(body)headers['content-type']='application/json';
- if(auth){const t=await accessToken();headers.authorization='Bearer '+t;}
+ const adm=action.startsWith('admin-')?adminToken():null;
+ if(adm)headers['x-admin-session']=adm;
+ else if(auth){const t=await accessToken();headers.authorization='Bearer '+t;}
  const r=await fetch(endpoint+'?'+new URLSearchParams({action,...query}),{method:body?'POST':'GET',headers,body:body?JSON.stringify(body,(k,v)=>typeof v==='bigint'?String(v):v):undefined,cache:'no-store',signal});
  if(!r.headers.get('content-type')?.includes('application/json'))throw Error('The REBOUND service is unavailable on this host. Nothing was changed.');
  const data=await r.json();if(!r.ok)throw Object.assign(Error(data.message||'Request failed'),{code:data.code,status:r.status});return data;
@@ -75,7 +81,7 @@ async function consent(action,payload,binding={}){
  const c=await api('consent-challenge',{body:{wallet:wallet.address,action,payload,binding},auth:true});
  const sig=await wallet.signMessage(c.message);return{id:c.id,signature:b64(sig)};
 }
-async function adminCall(action,payload,binding){const proof=await consent(action,payload,binding);return api(action,{body:{wallet:wallet.address,payload,proof},auth:true});}
+async function adminCall(action,payload,binding){if(adminToken())return api(action,{body:{payload}});const proof=await consent(action,payload,binding);return api(action,{body:{wallet:wallet.address,payload,proof},auth:true});}
 async function signB64(b64tx,extraSigners=[]){const t=Transaction.from(raw(b64tx));if(extraSigners.length)t.partialSign(...extraSigners);const signed=await wallet.signTransaction(t);return b64(signed.serialize({requireAllSignatures:true,verifySignatures:true}));}
 
 // ---------------- public: policy/health summary ----------------
@@ -181,10 +187,11 @@ async function follow(flow,attemptId,toast){
 // ---------------- administrator dashboard ----------------
 let logsChannel=null;
 async function mountAdmin(host,toast){
- if(!wallet?.address){host.innerHTML='<p>Connect your administrator wallet.</p>';return;}
- let who;try{who=await whoami();}catch(e){host.innerHTML='<p>'+esc(e.message)+'</p>';return;}
- if(!who.admin){host.innerHTML='<p>This wallet is not a REBOUND administrator.</p>';return;}
- let o;try{o=await api('admin-overview',{auth:true});}catch(e){host.innerHTML='<p>'+esc(e.message)+'</p>';return;}
+ if(!adminToken()){
+  let viaWallet=false;if(wallet?.address)try{viaWallet=(await whoami()).admin;}catch{}
+  if(!viaWallet)return adminLogin(host,toast);
+ }
+ let o;try{o=await api('admin-overview',{auth:true});}catch(e){if(adminToken()&&(e.status===401||e.status===403)){setAdminToken(null);return adminLogin(host,toast,'Your admin session ended. Sign in again.');}host.innerHTML='<p>'+esc(e.message)+'</p>';return;}
  const plat=Object.fromEntries(o.platform.map(p=>[p.namespace,p])),t=plat.mainnet_test||{};
  const rows=(list,cols)=>list.length?'<div class="table-container"><table class="token-table"><thead><tr>'+cols.map(c=>'<th>'+esc(c[0])+'</th>').join('')+'</tr></thead><tbody>'+list.map(r=>'<tr>'+cols.map(c=>'<td>'+c[1](r)+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>':'<p>None yet.</p>';
  const st=o.site||{},tok=o.siteToken,ns=st.namespace||'production',pl=plat[ns]||{},coin=o.coins.find(c=>c.mint===st.primary_mint);
@@ -219,7 +226,7 @@ async function mountAdmin(host,toast){
   '<section class="card live-card"><h2>Rounds</h2>'+rows(o.cycles,[['Mint',r=>esc(short(r.mint))],['#',r=>esc(r.cycle_number)],['State',r=>esc(r.state)+(r.reason?' · '+esc(r.reason):'')],['Snapshot',r=>when(Number(r.cutoff_time))],['Total',r=>sol(r.total_lamports)],['Holders',r=>esc(r.eligible_count??'—')]])+'</section>'+
   '<section class="card live-card"><h2>Creator-fee receipts</h2>'+rows(o.receipts,[['Mint',r=>esc(short(r.mint))],['Amount',r=>sol(r.amount_lamports)],['State',r=>esc(r.state)+(r.reason?' · '+esc(r.reason):'')],['85 / 15',r=>sol(r.holder_lamports)+' / '+sol(r.buyback_lamports)],['Collection',r=>tx(r.signature,'tx')]])+'</section>'+
   '<section class="card live-card"><h2>Buyback & burn</h2>'+rows(o.buybackJobs,[['From',r=>esc(short(r.source_mint))],['Budget',r=>sol(r.budget_lamports)],['State',r=>esc(r.state)+(r.reason?' · '+esc(r.reason):'')],['Spent',r=>sol(r.spent_lamports)],['Burned (raw)',r=>esc(r.burned_raw||'—')],['Evidence',r=>tx(r.purchase_signature,'buy')+' '+tx(r.burn_signature,'burn')]])+'</section>'+
-  '</details><section class="card live-card"><h2>Administrators</h2>'+rows(o.admins,[['Wallet',r=>acct(r.wallet)],['Label',r=>esc(r.label)],['Added',r=>when(r.added_at)],['Revoked',r=>r.revoked_at?when(r.revoked_at):'—']])+'<form id="adm-add"><label>Add admin wallet<input name="wallet"></label><label>Label<input name="label" maxlength="60"></label><button class="btn outline">Approve with wallet</button></form></section>';
+  '</details>'+adminAccountHtml(o);
  const sub=(id,fn)=>{const f=host.querySelector(id);if(f)f.onsubmit=async e=>{e.preventDefault();const b=e.submitter;if(b)b.disabled=true;try{const r=await fn(new FormData(f),e.submitter);toast('Done');if(r!==false)mountAdmin(host,toast);}catch(err){toast(err.message);}finally{if(b)b.disabled=false;}};};
  sub('#adm-mode',f=>adminCall('admin-set-mode',{namespace:f.get('namespace'),mode:f.get('mode'),reason:f.get('reason')}));
  sub('#adm-pause',(f,b)=>adminCall(b?.value==='resume'?'admin-resume':'admin-pause',{namespace:'mainnet_test',reason:'admin dashboard'}));
@@ -227,7 +234,9 @@ async function mountAdmin(host,toast){
  sub('#adm-test',f=>adminCall('admin-test-config',{namespace:'mainnet_test',mints:lines(f.get('mints')),wallets:lines(f.get('wallets')),capAction:String(lamportsOf(f.get('a'))),capCycle:String(lamportsOf(f.get('c'))),capTotal:String(lamportsOf(f.get('t'))),slippageBps:Number(f.get('s')),impactBps:Number(f.get('i'))}));
  sub('#adm-primary',f=>adminCall('admin-register-primary',{namespace:f.get('namespace'),mint:String(f.get('mint')).trim(),fundingWallet:String(f.get('fundingWallet')).trim()},{mint:String(f.get('mint')).trim(),fundingMode:'manual'}));
  sub('#adm-opening',f=>adminCall('admin-opening-credit',{mint:String(f.get('mint')).trim(),requestedCreditLamports:String(lamportsOf(f.get('credit'))),operationalReserveLamports:String(lamportsOf(f.get('reserve')))},{mint:String(f.get('mint')).trim()}));
- sub('#adm-add',f=>adminCall('admin-add-admin',{wallet:String(f.get('wallet')).trim(),label:f.get('label')}));
+ sub('#adm-set-wallet',f=>adminCall('admin-set-wallet',{wallet:String(f.get('wallet')).trim(),label:'owner'}));
+ sub('#adm-password',async f=>{if(f.get('next')!==f.get('confirm'))throw Error('The new passwords do not match.');const r=await api('admin-password',{body:{current:f.get('current'),next:f.get('next')}});setAdminToken(r.token);});
+ const out=host.querySelector('#adm-signout');if(out)out.onclick=()=>{setAdminToken(null);adminLogin(host,toast,'Signed out.');};
  sub('#adm-launch',async f=>{const r=await adminCall('admin-launch',{mint:String(f.get('mint')).trim(),feeWallet:String(f.get('feeWallet')).trim(),namespace:f.get('namespace')});if(r.exists===false)toast('Saved. No token exists at this address on mainnet yet.');});
  sub('#adm-site-open',(f,b)=>adminCall('admin-site',{open:b?.value==='true'}));
  sub('#adm-privy',f=>adminCall('admin-site',{privyAppId:String(f.get('appId')||'').trim()||null}));
@@ -245,6 +254,25 @@ async function mountAdmin(host,toast){
  await drawLogs();
  try{if(supabase){await supabase.realtime.setAuth(session?.access_token);logsChannel?.unsubscribe();logsChannel=supabase.channel('admin-logs').on('postgres_changes',{event:'INSERT',schema:'rebound',table:'reward_logs'},p=>{const l=document.querySelector('#adm-logs table tbody');if(l&&!filter.search&&!filter.severity)l.insertAdjacentHTML('afterbegin',logRows([p.new],true));}).subscribe();}}catch{}
 }
+function adminAccountHtml(o){
+ const active=o.admins.filter(a=>!a.revoked_at);
+ return '<section class="card live-card adm-launch"><h2>Administrator wallet</h2><p>This wallet can also open the dashboard by signing in, and it signs on-chain program actions (it must be the program’s upgrade authority for those). Setting a new wallet replaces the old one.</p>'+
+  '<div class="adm-current"><div><span>Current admin wallet</span><b>'+(active.length?active.map(a=>esc(a.wallet)).join('<br>'):'not set')+'</b></div></div>'+
+  '<form id="adm-set-wallet" class="adm-form"><label>Admin wallet address<input name="wallet" required autocomplete="off" spellcheck="false"></label><div><button class="btn">Set admin wallet</button></div></form></section>'+
+  '<section class="card live-card"><h2>Dashboard password</h2>'+(o.access?.via==='password'?'<p class="live-caption">Signed in with the password'+(o.access.expiresAt?' · session until '+when(o.access.expiresAt):'')+'.</p>':'')+
+  '<form id="adm-password" class="adm-form"><label>Current password<input name="current" type="password" autocomplete="current-password" required></label><label>New password (at least 10 characters)<input name="next" type="password" autocomplete="new-password" minlength="10" required></label><label>Repeat the new password<input name="confirm" type="password" autocomplete="new-password" minlength="10" required></label><div><button class="btn outline">Change password</button> '+(o.access?.via==='password'?'<button type="button" class="btn outline" id="adm-signout">Sign out</button>':'')+'</div></form><p class="live-caption">Changing the password signs out every other session.</p></section>';
+}
+async function adminLogin(host,toast,message){
+ let st;try{st=await api('admin-auth-state');}catch(e){host.innerHTML='<p>'+esc(e.message)+'</p>';return;}
+ const note=message?'<p class="live-caption">'+esc(message)+'</p>':'';
+ if(st.passwordSet){
+  host.innerHTML='<section class="card live-card adm-launch"><h2>Administrator sign-in</h2>'+note+'<form id="adm-login" class="adm-form"><label>Password<input name="password" type="password" autocomplete="current-password" required autofocus></label><div><button class="btn">Sign in</button></div></form><p class="live-caption">Or connect the administrator wallet and reload this page.</p></section>';
+  host.querySelector('#adm-login').onsubmit=async e=>{e.preventDefault();const b=e.submitter;if(b)b.disabled=true;try{const r=await api('admin-login',{body:{password:new FormData(e.target).get('password')}});setAdminToken(r.token);mountAdmin(host,toast);}catch(err){toast(err.message);}finally{if(b)b.disabled=false;}};
+ }else if(st.setupOpen){
+  host.innerHTML='<section class="card live-card adm-launch"><h2>Create the administrator password</h2>'+note+'<p>Enter the one-time setup code you were given, then choose the dashboard password.</p><form id="adm-setup" class="adm-form"><label>Setup code<input name="code" required autocomplete="off" spellcheck="false"></label><label>New password (at least 10 characters)<input name="password" type="password" autocomplete="new-password" minlength="10" required></label><label>Repeat the password<input name="confirm" type="password" autocomplete="new-password" minlength="10" required></label><div><button class="btn">Create password</button></div></form></section>';
+  host.querySelector('#adm-setup').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target),b=e.submitter;if(f.get('password')!==f.get('confirm')){toast('The passwords do not match.');return;}if(b)b.disabled=true;try{const r=await api('admin-setup',{body:{code:String(f.get('code')).trim(),password:f.get('password')}});setAdminToken(r.token);toast('Password created');mountAdmin(host,toast);}catch(err){toast(err.message);}finally{if(b)b.disabled=false;}};
+ }else host.innerHTML='<section class="card live-card"><h2>Administration</h2>'+note+'<p>The dashboard password has not been set up yet. Ask the operator for a one-time setup code.</p></section>';
+}
 function logRows(list,rowsOnly){const r=list.map(l=>'<tr class="sev-'+esc(l.severity)+'"><td>'+when(l.timestamp_utc)+'</td><td>'+esc(l.severity)+'</td><td>'+esc(l.component)+'</td><td>'+esc(l.event_type)+'</td><td>'+esc(l.mint?short(l.mint):'')+'</td><td>'+esc(l.safe_message)+(l.error_code?' <code>'+esc(l.error_code)+'</code>':'')+'</td></tr>').join('');
  return rowsOnly?r:'<div class="table-container"><table class="token-table"><thead><tr><th>Time</th><th>Severity</th><th>Component</th><th>Event</th><th>Mint</th><th>Message</th></tr></thead><tbody>'+r+'</tbody></table></div>';}
 
@@ -258,7 +286,7 @@ async function mount({route,mint,toast,signal}){
  if(route==='token'&&q('#token-rewards'))mountToken(q('#token-rewards'),mint,signal);
  if(route==='admin'&&q('#admin-root'))mountAdmin(q('#admin-root'),toast);
 }
-async function isAdmin(){try{if(!wallet?.address)return false;await config();if(!supabase)return false;const s=(await supabase.auth.getSession()).data.session;if(!s||!verifiedAddresses(s.user).includes(wallet.address))return false;session=s;return (await whoami()).admin;}catch{return false;}}
+async function isAdmin(){try{if(adminToken())return true;if(!wallet?.address)return false;await config();if(!supabase)return false;const s=(await supabase.auth.getSession()).data.session;if(!s||!verifiedAddresses(s.user).includes(wallet.address))return false;session=s;return (await whoami()).admin;}catch{return false;}}
 // Site settings (REBOUND token, name) follow the admin dashboard in real time; a slow poll covers
 // dropped Realtime connections.
 let siteChannel=null;

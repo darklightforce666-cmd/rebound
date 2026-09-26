@@ -8,7 +8,7 @@ const crypto=require('node:crypto');
 const DB=require('../../server/rewards/db.cjs'),P=require('../../server/rewards/policy.cjs'),P3=require('../../server/rewards/policy-v3.cjs');
 const W=require('../../server/rewards/wire.cjs'),Auth=require('../../server/rewards/auth.cjs'),Session=require('../../server/rewards/session.cjs');
 const Consent=require('../../server/rewards/consent.cjs'),Logs=require('../../server/rewards/logs.cjs'),Metadata=require('../../server/rewards/metadata.cjs');
-const Cycle=require('../../server/rewards/cycle-v3.cjs'),Launch=require('../../server/rewards/launch-v3.cjs'),Admin=require('../../server/rewards/admin-v3.cjs');
+const AdminAuth=require('../../server/rewards/admin-auth.cjs'),Cycle=require('../../server/rewards/cycle-v3.cjs'),Launch=require('../../server/rewards/launch-v3.cjs'),Admin=require('../../server/rewards/admin-v3.cjs');
 
 let pool;
 const MAX_BODY=3000000;
@@ -52,6 +52,12 @@ function chain(db){
  return{...chainPorts,db};
 }
 let rpcOnly;const rpcConnection=()=>{if(!process.env.SOLANA_RPC_URL)return null;if(!rpcOnly){const {Connection}=require('@solana/web3.js');rpcOnly=new Connection(process.env.SOLANA_RPC_URL,'confirmed');}return rpcOnly;};
+// Admin access: a password session (x-admin-session) or a signed-in administrator wallet.
+async function adminAccess(db,event){
+ const p=await AdminAuth.session(db,event.headers);
+ if(p)return{...p,userId:null,reboundWallets:[],adminWallets:(await db.query('SELECT wallet FROM reward_admin_wallets WHERE revoked_at IS NULL')).rows.map(r=>r.wallet)};
+ return{...(await Session.authenticate(db,event.headers,{need:'admin'})),via:'wallet'};
+}
 const PLAN_ERRORS={FORBIDDEN:403,PLAN_STALE:409,PLAN_EXPIRED:409,INVALID_TRANSACTION:400,TRANSACTION_TOO_LARGE:400,INVALID_BODY:400};
 async function planCall(fn){try{return await fn();}catch(e){if(PLAN_ERRORS[e.code])fail(PLAN_ERRORS[e.code],e.code,e.message);if(e.status&&e.code&&/^[A-Z_]+$/.test(e.code))fail(e.status,e.code,e.message,e.status>=500);throw e;}}
 const uuid=v=>{if(typeof v!=='string'||!/^[0-9a-f-]{36}$/.test(v))fail(400,'INVALID_BODY','Invalid id');return v;};
@@ -98,15 +104,16 @@ const handlers={
    return{plan:await planCall(()=>Cycle.manualPlan(chain(db),{mint,wallets:s.reboundWallets}))};
   },
   async 'launch-status'({db,event,q}){const s=await Session.authenticate(db,event.headers);return planCall(()=>Launch.status(launchPorts(db),{session:s,attemptId:uuid(q.id)}));},
-  async 'admin-overview'({db,event}){await Session.authenticate(db,event.headers,{need:'admin'});
+  async 'admin-overview'({db,event}){const who=await adminAccess(db,event);
    const ports=process.env.SOLANA_RPC_URL&&process.env.REWARDS_PROGRAM_ID?chain(db):{};const o=await Admin.overview(db,{connection:ports.connection,program:ports.program});
-   const st=await Admin.site(db);const meta=st?.primary_mint&&rpcConnection()?await Admin.tokenMeta(rpcConnection(),st.primary_mint):null;return{...o,site:st,siteToken:meta};},
+   const st=await Admin.site(db);const meta=st?.primary_mint&&rpcConnection()?await Admin.tokenMeta(rpcConnection(),st.primary_mint):null;return{...o,site:st,siteToken:meta,access:{via:who.via,expiresAt:who.expiresAt||null},passwordSet:(await AdminAuth.state(db)).passwordSet};},
   // Public, chain-derived: a wallet's fixed awards and their payment evidence.
+  async 'admin-auth-state'({db}){return AdminAuth.state(db);},
   async 'wallet-rewards'({db,q}){try{W.pk(q.wallet);}catch{fail(400,'INVALID_BODY','Invalid wallet');}
    const rows=(await db.query("SELECT a.cycle_id,a.leaf_index,a.mint,a.amount_lamports,a.state,a.settlement_signature,a.settled_slot,a.receipt_address,c.cycle_number,c.scheduled_end,c.cutoff_time FROM reward_awards a JOIN reward_cycles c ON c.id=a.cycle_id WHERE a.recipient=$1 ORDER BY c.cutoff_time DESC LIMIT 100",[q.wallet])).rows;
    return{wallet:q.wallet,awards:rows};},
   async 'admin-logs'({db,event,q}){
-   await Session.authenticate(db,event.headers,{need:'admin'});
+   await adminAccess(db,event);
    const where=[],args=[];const add=(sql,v)=>{args.push(v);where.push(sql.replace('?','$'+args.length));};
    if(q.mint)add('mint=?',q.mint);if(q.cycle)add('cycle_id=?',q.cycle);if(q.severity)add('severity=?',q.severity);if(q.component)add('component=?',q.component);
    if(q.before&&/^\d+$/.test(q.before))add('id<?',q.before);if(q.search)add("safe_message ILIKE '%'||?||'%'",String(q.search).slice(0,80));
@@ -114,7 +121,7 @@ const handlers={
    return{logs:rows,next:rows.length===100?rows.at(-1).id:null};
   },
   async 'admin-health'({db,event}){
-   await Session.authenticate(db,event.headers,{need:'admin'});
+   await adminAccess(db,event);
    return{components:(await db.query('SELECT * FROM reward_health ORDER BY component')).rows,now:new Date().toISOString()};
   },
  },
@@ -147,16 +154,24 @@ const handlers={
    ['admin-pause',(db,a,d)=>Admin.pause(db,a,{...d,paused:true})],['admin-resume',(db,a,d)=>Admin.pause(db,a,{...d,paused:false})],
    ['admin-register-primary',(db,a,d,s)=>Admin.registerPrimary(db,a,s,d)],['admin-opening-credit',(db,a,d)=>Admin.openingCredit(db,a,d)],
    ['admin-site',(db,a,d)=>Admin.setSite(db,a,d)],['admin-launch',(db,a,d,s)=>Admin.launch(db,a,s,d,{connection:rpcConnection()})],
+   ['admin-set-wallet',(db,a,d)=>Admin.setAdminWallet(db,a,d)],
    ['admin-add-admin',(db,a,d)=>Admin.addAdmin(db,a,d)],['admin-revoke-admin',(db,a,d)=>Admin.revokeAdmin(db,a,d)]].map(([name,fn])=>[name,async({db,event,data,origin})=>{
-   const s=await Session.authenticate(db,event.headers,{need:'admin'});const wallet=String(data.wallet||'');
-   if(!s.adminWallets.includes(wallet))fail(403,'FORBIDDEN','Approve with your administrator wallet');
-   const payload=data.payload&&typeof data.payload==='object'?data.payload:{};
-   await Consent.consume(db,s,{origin,wallet,action:name,payload,proof:data.proof});
-   return planCall(()=>fn(db,wallet,payload,s));}])),
-  async 'admin-program-prepare'({db,event,data}){const s=await Session.authenticate(db,event.headers,{need:'admin'});const wallet=String(data.wallet||'');
+   const s=await adminAccess(db,event);const payload=data.payload&&typeof data.payload==='object'?data.payload:{};let actor;
+   if(s.via==='password')actor=s.actor;   // password session: the dashboard password is the approval
+   else{const wallet=String(data.wallet||'');if(!s.adminWallets.includes(wallet))fail(403,'FORBIDDEN','Approve with your administrator wallet');
+    await Consent.consume(db,s,{origin,wallet,action:name,payload,proof:data.proof});actor=wallet;}
+   return planCall(()=>fn(db,actor,payload,s));}])),
+  // Password access to the dashboard.
+  async 'admin-login'({db,event,data}){await Auth.rateLimit(db,'admin-login:'+(event.headers['x-nf-client-connection-ip']||'unknown'),10).catch(e=>fail(429,'RATE_LIMITED',e.message,true));
+   const r=await planCall(()=>AdminAuth.login(db,{password:data.password}));await Logs.log(db,{severity:'warn',component:'admin',eventType:'admin_password_login',message:'Admin signed in with the dashboard password'});return r;},
+  async 'admin-setup'({db,event,data}){await Auth.rateLimit(db,'admin-login:'+(event.headers['x-nf-client-connection-ip']||'unknown'),10).catch(e=>fail(429,'RATE_LIMITED',e.message,true));
+   const r=await planCall(()=>AdminAuth.setup(db,{code:data.code,password:data.password}));await Logs.log(db,{severity:'warn',component:'admin',eventType:'admin_password_created',message:'Admin dashboard password created with the one-time setup code'});return r;},
+  async 'admin-password'({db,event,data}){await adminAccess(db,event);
+   const r=await planCall(()=>AdminAuth.change(db,{current:data.current,next:data.next}));await Logs.log(db,{severity:'warn',component:'admin',eventType:'admin_password_changed',message:'Admin dashboard password changed; other sessions signed out'});return r;},
+  async 'admin-program-prepare'({db,event,data}){const s=await adminAccess(db,event);const wallet=String(data.wallet||'');
    if(!s.adminWallets.includes(wallet))fail(403,'FORBIDDEN','Use your administrator wallet');
    return planCall(()=>Admin.chainPrepare(db,chain(db),{admin:wallet,action:String(data.action||''),params:data.params&&typeof data.params==='object'?data.params:{}}));},
-  async 'admin-program-submit'({db,event,data}){const s=await Session.authenticate(db,event.headers,{need:'admin'});
+  async 'admin-program-submit'({db,event,data}){const s=await adminAccess(db,event);
    return planCall(()=>Admin.chainSubmit(db,chain(db),s.adminWallets,{intentId:uuid(data.intentId),signedTransaction:b64tx(data.signedTransaction)}));},
   async 'metadata-upload'({db,event,data,origin,requestId}){
    const s=await Session.authenticate(db,event.headers);const payload=data.payload||{};
@@ -179,7 +194,7 @@ exports.handler=async event=>{
  const requestId=crypto.randomUUID(),q=event.queryStringParameters||{},method=event.httpMethod,action=(method==='POST'?q.action:q.action||'health')||'';
  try{
   if(method==='OPTIONS'){const o=event.headers?.origin;if(!origins().has(o))return{statusCode:403,headers:{},body:''};
-   return{statusCode:204,headers:{...headersFor(event),'access-control-allow-methods':'GET,POST','access-control-allow-headers':'authorization,content-type,idempotency-key','access-control-max-age':'600'},body:''};}
+   return{statusCode:204,headers:{...headersFor(event),'access-control-allow-methods':'GET,POST','access-control-allow-headers':'authorization,content-type,idempotency-key,x-admin-session','access-control-max-age':'600'},body:''};}
   if(method==='GET'&&(action==='metadata'||action==='image'))return await legacyAsset(event,q);
   const handler=handlers[method]?.[action];if(!handler)fail(method==='GET'||method==='POST'?404:405,'NOT_FOUND','Unknown endpoint');
   if(!process.env.DATABASE_URL){if(action==='health'||action==='config')return reply(event,200,await handler({db:null,event,q}));fail(503,'SETUP_REQUIRED','REBOUND setup is incomplete. No launch or payout is available yet.',true);}
