@@ -90,19 +90,33 @@ test('manual mode waits for the dev wallet signature; an unsigned plan expires w
   w.conn.setTime(T0+1740+1800,3000);await C.tick(w.ports,w.mintS);
   assert.equal((await cycleRow(w)).state,'expired');assert.ok((await awards(w)).every(a=>a.state==='released'));
   const c=W3.decode('coin',(await w.conn.getAccountInfo(W3.addresses(w.program,w.mint).coin)).data);assert.equal(c.deposits,0n);
-  // Cycle 2 is planned in the same tick after the expiry; the owner signs its exact plan.
+  // Cycle 2 is planned in the same tick after the expiry; the owner gets the exact plan to sign.
   const row2=await cycleRow(w,2);assert.equal(row2.state,'awaiting_funding_signature');
-  const i2=(await w.db.query('SELECT * FROM reward_intents WHERE id=$1',[row2.funding_intent])).rows[0].body;
-  const ix={programId:new PublicKey(i2.instruction.programId),keys:i2.instruction.keys.map(k=>({pubkey:new PublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable})),data:Buffer.from(i2.instruction.data,'base64')};
-  const tx=new Transaction({feePayer:w.dev.publicKey,recentBlockhash:i2.blockhash}).add(ix);tx.sign(w.dev);
-  const tampered=new Transaction({feePayer:w.dev.publicKey,recentBlockhash:i2.blockhash}).add({...ix,data:W3.I.depositHolders(w.program,{fundingWallet:w.dev.publicKey,mint:w.mint,amount:1n}).data});tampered.sign(w.dev);
-  const intentArg={instructions:[ix],signer:w.dev.publicKey.toBase58(),blockhash:i2.blockhash,lastValidBlockHeight:i2.lastValidBlockHeight,id:row2.funding_intent};
-  const settle=async()=>{const k=W3.decode('coin',(await w.conn.getAccountInfo(W3.addresses(w.program,w.mint).coin)).data);return k.deposits>=BigInt(i2.amount)?{settled:true}:{definitivelyUnsettled:true};};
-  const spend={namespace:'mainnet_test',mint:w.mintS,recipients:[],lamports:i2.amount,fees:'5000',cycleId:row2.id,kind:'holder_deposit'};
-  await assert.rejects(T.submitSigned({db:w.db,connection:w.conn,job:'deposit:'+row2.id,intent:intentArg,serialized:tampered.serialize().toString('base64'),readSettlement:settle,spend}),e=>e.code==='FORBIDDEN');
-  const sub=await T.submitSigned({db:w.db,connection:w.conn,job:'deposit:'+row2.id,intent:intentArg,serialized:tx.serialize().toString('base64'),readSettlement:settle,spend});assert.equal(sub.state,'submitted');
-  await w.db.query("UPDATE reward_cycles SET state='funding_pending' WHERE id=$1",[row2.id]);   // API transition after a signed submission
+  const owner=[w.dev.publicKey.toBase58()];
+  // Owner-facing calls run with the API's own database role (grants are part of what is tested).
+  const asApi=async fn=>{await w.db.query('SET ROLE rebound_api');try{return await fn();}finally{await w.db.query('RESET ROLE');}};
+  const Api={manualPlan:(...a)=>asApi(()=>C.manualPlan(...a)),submitManualDeposit:(...a)=>asApi(()=>C.submitManualDeposit(...a))};
+  await assert.rejects(Api.manualPlan(w.ports,{mint:w.mintS,wallets:[Keypair.generate().publicKey.toBase58()]}),e=>e.code==='FORBIDDEN');   // only the funding wallet
+  let plan=await Api.manualPlan(w.ports,{mint:w.mintS,wallets:owner});
+  assert.equal(plan.holderOnly,true);assert.equal(plan.signer,owner[0]);assert.equal(plan.amountLamports,row2.total_lamports);
+  const signPlan=p=>{const tx=Transaction.from(Buffer.from(p.transaction,'base64'));tx.sign(w.dev);return tx.serialize().toString('base64');};
+  // A tampered amount is refused before anything is broadcast.
+  const t0=Transaction.from(Buffer.from(plan.transaction,'base64'));const bad=new Transaction({feePayer:w.dev.publicKey,recentBlockhash:t0.recentBlockhash})
+   .add({...t0.instructions[0],data:W3.I.depositHolders(w.program,{fundingWallet:w.dev.publicKey,mint:w.mint,amount:1n}).data});bad.sign(w.dev);
+  await assert.rejects(Api.submitManualDeposit(w.ports,{mint:w.mintS,intentId:plan.intentId,serialized:bad.serialize().toString('base64'),wallets:owner}),e=>e.code==='FORBIDDEN');
+  assert.equal(w.conn.sent,0);
+  // The signed deposit never reaches the network: once its blockhash has expired the plan returns to the owner.
+  w.conn.faults.rejectSend=2;                                                       // submission and the first rebroadcast both refused
+  let sub=await Api.submitManualDeposit(w.ports,{mint:w.mintS,intentId:plan.intentId,serialized:signPlan(plan),wallets:owner});assert.equal(sub.state,'uncertain');
+  assert.equal((await cycleRow(w,2)).state,'awaiting_funding_signature');           // the API never moves cycles
+  await C.tick(w.ports,w.mintS);assert.equal((await cycleRow(w,2)).state,'funding_pending');   // still possibly landing: identical bytes rebroadcast
+  w.conn.advance({blocks:300});await C.tick(w.ports,w.mintS);                       // blockhash expired, never landed → back to the owner
+  assert.equal((await cycleRow(w,2)).state,'awaiting_funding_signature');
+  const stale=plan.lastValidBlockHeight;plan=await Api.manualPlan(w.ports,{mint:w.mintS,wallets:owner});assert.ok(plan.lastValidBlockHeight>stale);   // fresh blockhash, same deposit
+  sub=await Api.submitManualDeposit(w.ports,{mint:w.mintS,intentId:plan.intentId,serialized:signPlan(plan),wallets:owner});assert.equal(sub.state,'submitted');
   await ticks(w);assert.equal((await cycleRow(w,2)).state,'funded');
+  const c2=W3.decode('coin',(await w.conn.getAccountInfo(W3.addresses(w.program,w.mint).coin)).data);assert.equal(c2.deposits,BigInt(row2.total_lamports));   // exactly one deposit
+  await assert.rejects(Api.submitManualDeposit(w.ports,{mint:w.mintS,intentId:plan.intentId,serialized:signPlan(plan),wallets:owner}),e=>e.code==='PLAN_STALE');
  }finally{await w.db.close();}
 });
 

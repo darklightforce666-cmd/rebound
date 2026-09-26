@@ -32,6 +32,8 @@ buyback) runs in the worker, never in a function request.
 | GET | `metadata|image&hash=` | public | legacy V2 content-addressed objects (Netlify Blobs), hash-verified |
 | POST | `session` | user | `{userId, wallets, reboundWallets, admin}` (server-derived) |
 | POST | `consent-challenge` | user | `{id, message, expires}` for `{wallet, action, payload, binding}` |
+| GET | `funding-plan&mint=` | user linked to the registered funding wallet | `{plan}` or `{plan:null}`: `{intentId, cycle, signer, amountLamports, holderOnly:true, expiresAt, lastValidBlockHeight, transaction}` — the unsigned holder-only `DepositHolders` transaction (fee payer = dev wallet); the blockhash is refreshed when stale. `403 FORBIDDEN` for any other wallet |
+| POST | `funding-submit` | user linked to the funding wallet; the wallet's transaction signature is the authority | body `{mint, intentId, signedTransaction}` (base64). Verified byte-for-byte against the stored plan (program, accounts, data, signer, blockhash; compute-budget instructions tolerated), passed through the execution gate, persisted, then broadcast → `{state: submitted|uncertain|finalized|dry_run|blocked, signature, code}`. The scheduler moves the cycle to `funding_pending`, follows the signature, and returns the plan to the owner if it expires unlanded. `409 PLAN_STALE`/`PLAN_EXPIRED`, `400 INVALID_TRANSACTION` |
 | POST | `metadata-upload` | user + consent | validated image/metadata stored immutably in Supabase Storage → `{hash, uri, image, data}` |
 
 ## Planned (later milestones; same conventions)
@@ -40,5 +42,4 @@ buyback) runs in the worker, never in a function request.
 |---|---|---|
 | `wallet-history` | M2/M5 | public (chain-derived) |
 | `admin-register-primary`, `admin-preview`, `admin-connect-funding-wallet`, `admin-set-mode`, `admin-start`/`pause`/`resume`, `admin-retry`, `admin-test-config` | M2–M5 | admin + consent |
-| `admin-funding-prepare` / `admin-funding-submit` (manual mode: exact transaction for the dev wallet to sign) | M3 | admin + funding-wallet signature |
 | `launch-draft`, `launch-prepare`, `launch-submit`, `launch-resume`, `activation-prepare`, `activation-confirm` | M4 | draft owner + consent |

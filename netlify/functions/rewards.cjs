@@ -8,6 +8,7 @@ const crypto=require('node:crypto');
 const DB=require('../../server/rewards/db.cjs'),P=require('../../server/rewards/policy.cjs'),P3=require('../../server/rewards/policy-v3.cjs');
 const W=require('../../server/rewards/wire.cjs'),Auth=require('../../server/rewards/auth.cjs'),Session=require('../../server/rewards/session.cjs');
 const Consent=require('../../server/rewards/consent.cjs'),Logs=require('../../server/rewards/logs.cjs'),Metadata=require('../../server/rewards/metadata.cjs');
+const Cycle=require('../../server/rewards/cycle-v3.cjs');
 
 let pool;
 const MAX_BODY=3000000;
@@ -35,6 +36,18 @@ async function publicConfig(db){
   features:{launches:false,rewards:false,buyback:false},
  };
 }
+
+// Chain access for owner-signed transactions (manual primary funding). Fails closed when unset.
+let chainPorts;
+function chain(db){
+ if(!process.env.SOLANA_RPC_URL||!process.env.REWARDS_PROGRAM_ID)fail(503,'SETUP_REQUIRED','Settlement is not configured yet. Nothing was changed.',true);
+ if(!chainPorts){const {Connection,PublicKey}=require('@solana/web3.js');const connection=new Connection(process.env.SOLANA_RPC_URL,'confirmed');
+  chainPorts={connection,program:new PublicKey(process.env.REWARDS_PROGRAM_ID),now:async()=>connection.getBlockTime(await connection.getSlot('finalized'))};}
+ return{...chainPorts,db};
+}
+const PLAN_ERRORS={FORBIDDEN:403,PLAN_STALE:409,PLAN_EXPIRED:409,INVALID_TRANSACTION:400,TRANSACTION_TOO_LARGE:400};
+async function planCall(fn){try{return await fn();}catch(e){if(PLAN_ERRORS[e.code])fail(PLAN_ERRORS[e.code],e.code,e.message);throw e;}}
+const validMint=m=>{try{W.pk(m);return m;}catch{fail(400,'MINT_INVALID','Invalid mint address');}};
 
 const PAGE=24;
 async function tokens(db,q){
@@ -69,6 +82,11 @@ const handlers={
    const cycles=(await db.query('SELECT * FROM reward_public_cycles WHERE mint=$1 ORDER BY cycle_number DESC LIMIT 20',[q.mint])).rows;
    return{token,cycles};
   },
+  // The exact holder-only deposit the connected dev wallet is asked to sign (manual primary funding).
+  async 'funding-plan'({db,event,q}){
+   const s=await Session.authenticate(db,event.headers);const mint=validMint(q.mint);
+   return{plan:await planCall(()=>Cycle.manualPlan(chain(db),{mint,wallets:s.wallets}))};
+  },
   async 'admin-logs'({db,event,q}){
    await Session.authenticate(db,event.headers,{need:'admin'});
    const where=[],args=[];const add=(sql,v)=>{args.push(v);where.push(sql.replace('?','$'+args.length));};
@@ -90,6 +108,12 @@ const handlers={
   async 'consent-challenge'({db,event,data,origin}){
    const s=await Session.authenticate(db,event.headers);
    return Consent.challenge(db,s,{origin,wallet:data.wallet,action:data.action,payload:data.payload||{},binding:data.binding||{}});
+  },
+  // Owner-signed holder deposit: verified byte-for-byte against the stored plan, persisted, then broadcast.
+  async 'funding-submit'({db,event,data}){
+   const s=await Session.authenticate(db,event.headers);const mint=validMint(data.mint);
+   if(typeof data.intentId!=='string'||!/^[0-9a-f-]{36}$/.test(data.intentId)||typeof data.signedTransaction!=='string'||data.signedTransaction.length>4000)fail(400,'INVALID_BODY','Invalid funding submission');
+   return planCall(()=>Cycle.submitManualDeposit(chain(db),{mint,intentId:data.intentId,serialized:data.signedTransaction,wallets:s.wallets}));
   },
   async 'metadata-upload'({db,event,data,origin,requestId}){
    const s=await Session.authenticate(db,event.headers);const payload=data.payload||{};

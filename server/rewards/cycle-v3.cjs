@@ -127,7 +127,7 @@ function bind(program){ctxProgram=W3.pk(program);ctxDeployment=W3.addresses(prog
 async function prepareManualDeposit(ports,coinRow,c,row,deposit,expires){
  const {db,connection,program}=ports;const ix=W3.I.depositHolders(program,{fundingWallet:c.fundingWallet,mint:row.mint,amount:deposit});
  const bh=await connection.getLatestBlockhash('confirmed');
- const body={kind:'primary_funding',mint:row.mint,cycle:String(row.cycle_number),amount:String(deposit),signer:c.fundingWallet,blockhash:bh.blockhash,lastValidBlockHeight:bh.lastValidBlockHeight,
+ const body={kind:'primary_funding',mint:row.mint,cycle:String(row.cycle_number),amount:String(deposit),baseline:String(c.deposits),signer:c.fundingWallet,blockhash:bh.blockhash,lastValidBlockHeight:bh.lastValidBlockHeight,
   instruction:{programId:ix.programId.toBase58(),keys:ix.keys.map(k=>({pubkey:k.pubkey.toBase58(),isSigner:k.isSigner,isWritable:k.isWritable})),data:Buffer.from(ix.data).toString('base64')}};
  const intent=require('node:crypto').randomUUID();
  await db.query("INSERT INTO reward_intents(id,kind,mint,cycle_id,job,namespace,body,body_hash,amount_lamports,signer_role,state) VALUES($1,'primary_funding',$2,$3,$4,$5,$6,$7,$8,'primary_dev','awaiting_signature') ON CONFLICT(kind,job) DO NOTHING",
@@ -155,7 +155,25 @@ async function fundingStep(ports,coinRow,c,row,t,{signer,deposit}){
  const total=b(row.total_lamports),onchain=b(c.holderUnallocated);
  if(onchain<total){
   const need=total-onchain;
-  if(row.state==='awaiting_funding_signature')return{cycle:n,state:'awaiting_funding_signature'};   // owner signs via API (submitSigned)
+  if(row.state==='awaiting_funding_signature'){
+   // The owner signs through the API (submitManualDeposit), which persists and broadcasts the exact bytes.
+   const st=(await db.query('SELECT state FROM reward_intents WHERE id=$1',[row.funding_intent])).rows[0]?.state;
+   if(st!=='submitted')return{cycle:n,state:'awaiting_funding_signature'};
+   await setState(db,row.id,'funding_pending',{},{mint,cycle:n,message:`Cycle ${n}: dev wallet signed the holder deposit; following it on chain`});row={...row,state:'funding_pending'};
+  }
+  if(row.funding_intent&&!signer){
+   // Manual plan the owner already signed: follow that signature only; never sign for the owner.
+   const intent=(await db.query('SELECT * FROM reward_intents WHERE id=$1',[row.funding_intent])).rows[0];
+   const prior=(await db.query('SELECT * FROM reward_chain_attempts WHERE job=$1 ORDER BY created_at DESC LIMIT 1',['deposit:'+row.id])).rows[0];
+   const r=!prior?{state:'expired'}:['prepared','broadcast','uncertain'].includes(prior.state)?await T.reconcile(db,connection,prior,depositSettlement(ports,mint,b(intent.body.baseline)+b(intent.body.amount))):{state:prior.state};
+   if(r.state==='expired'||r.state==='failed'){
+    await db.query("UPDATE reward_intents SET state='awaiting_signature',updated_at=now() WHERE id=$1",[intent.id]);
+    await setState(db,row.id,'awaiting_funding_signature',{},{mint,cycle:n,message:`Cycle ${n}: the signed holder deposit did not land (${r.state}); the dev wallet can sign the plan again`});
+    return{cycle:n,state:'awaiting_funding_signature',deposit:r.state};
+   }
+   if(r.state!=='finalized')return{cycle:n,state:row.state,deposit:r.state};
+   return{cycle:n,state:row.state,deposit:'finalized'};   // Fund on the next tick, from fresh on-chain balances
+  }
   const dev=signer||(ports.devSigner&&await ports.devSigner(coinRow));if(!dev)return{cycle:n,state:row.state,reason:'dev_signer_unavailable'};
   const baseline=b(c.deposits);
   const r=await T.submit({db,connection,job:'deposit:'+row.id,kind:'primary_funding',signerRole:'primary_dev',feePayer:ports.feePayer,signers:[dev],
@@ -211,4 +229,43 @@ async function payStep(ports,coinRow,row){
  const state=left.d===left.n?'partially_paid':'paying';if(state!==row.state)await setState(db,row.id,state,{},{mint,cycle:n,message:`Cycle ${n}: ${left.n} award(s) outstanding (${left.d} waiting for rent-exempt recipient accounts)`});
  return{cycle:n,state,pending:left.n};
 }
-module.exports={tick,advance,openCycle,bind,chainCoin,chainRound,chainPaid,TERMINAL};
+
+// ---------------- manual funding (dev wallet signs in the browser) ----------------
+function planInstruction(body){const {TransactionInstruction,PublicKey}=require('@solana/web3.js');const i=body.instruction;
+ return new TransactionInstruction({programId:new PublicKey(i.programId),keys:i.keys.map(k=>({pubkey:new PublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable})),data:Buffer.from(i.data,'base64')});}
+async function awaitingPlan(db,mint){
+ const row=(await db.query("SELECT * FROM reward_cycles WHERE mint=$1 AND state='awaiting_funding_signature' ORDER BY cycle_number LIMIT 1",[mint])).rows[0];if(!row)return null;
+ const intent=(await db.query('SELECT * FROM reward_intents WHERE id=$1',[row.funding_intent])).rows[0];return intent?{row,intent}:null;
+}
+const ownerOnly=(intent,wallets)=>{if(!wallets.includes(intent.body.signer))throw Object.assign(Error('Only the registered funding wallet can sign this deposit'),{code:'FORBIDDEN'});};
+/** The exact holder-only deposit the dev wallet is asked to sign (blockhash refreshed when stale). */
+async function manualPlan(ports,{mint,wallets}){
+ const {db,connection}=ports;const p=await awaitingPlan(db,mint);if(!p)return null;ownerOnly(p.intent,wallets);
+ let body=p.intent.body;
+ if(await connection.getBlockHeight('confirmed')>Number(body.lastValidBlockHeight)-20){
+  const bh=await connection.getLatestBlockhash('confirmed');body={...body,blockhash:bh.blockhash,lastValidBlockHeight:bh.lastValidBlockHeight};
+  await db.query("UPDATE reward_intents SET body=$2,body_hash=$3,updated_at=now() WHERE id=$1 AND state='awaiting_signature'",[p.intent.id,stable(body),P3.canonicalHash(body)]);
+ }
+ const {Transaction,PublicKey}=require('@solana/web3.js');
+ const tx=new Transaction({feePayer:new PublicKey(body.signer),blockhash:body.blockhash,lastValidBlockHeight:body.lastValidBlockHeight}).add(planInstruction(body));
+ return{intentId:p.intent.id,cycle:Number(p.row.cycle_number),mint,signer:body.signer,amountLamports:body.amount,holderOnly:true,
+  expiresAt:Number(p.row.plan_expires_at),lastValidBlockHeight:body.lastValidBlockHeight,transaction:tx.serialize({requireAllSignatures:false,verifySignatures:false}).toString('base64')};
+}
+/** Runs with the API database role: persist + broadcast the owner-signed bytes; the scheduler follows them to Fund. */
+async function submitManualDeposit(ports,{mint,intentId,serialized,wallets}){
+ const {db,connection}=ports;const p=await awaitingPlan(db,mint);
+ if(!p||p.intent.id!==intentId||p.intent.state!=='awaiting_signature')throw Object.assign(Error('This funding plan is no longer awaiting a signature'),{code:'PLAN_STALE'});
+ ownerOnly(p.intent,wallets);
+ const t=await ports.now();if(t>=Number(p.row.plan_expires_at))throw Object.assign(Error('The funding window for this cycle has closed'),{code:'PLAN_EXPIRED'});
+ const body=p.intent.body,coinRow=(await db.query('SELECT namespace FROM reward_coins WHERE mint=$1',[mint])).rows[0];
+ const r=await T.submitSigned({db,connection,job:'deposit:'+p.row.id,serialized,
+  intent:{id:p.intent.id,instructions:[planInstruction(body)],signer:body.signer,blockhash:body.blockhash,lastValidBlockHeight:body.lastValidBlockHeight},
+  readSettlement:depositSettlement(ports,mint,b(body.baseline)+b(body.amount)),
+  spend:{namespace:coinRow.namespace,mint,recipients:[],lamports:String(body.amount),fees:'5000',cycleId:p.row.id,kind:'holder_deposit'}});
+ if(['submitted','uncertain','finalized'].includes(r.state)){
+  await db.query("UPDATE reward_intents SET state='submitted',updated_at=now() WHERE id=$1",[p.intent.id]);   // the scheduler moves the cycle on
+  await Logs.log(db,{component:'api',eventType:'holder_deposit_signed',mint,cycleId:p.row.id,message:`Cycle ${p.row.cycle_number}: dev wallet signed the holder-only deposit (${r.state})`,metadata:{signature:r.signature||null}}).catch(()=>{});
+ }
+ return{state:r.state,signature:r.signature||null,code:r.code||null};
+}
+module.exports={tick,advance,openCycle,bind,chainCoin,chainRound,chainPaid,TERMINAL,manualPlan,submitManualDeposit};

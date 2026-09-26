@@ -34,13 +34,13 @@ GRANT SELECT ON reward_policies,reward_platform,reward_config_versions,reward_co
 -- ---------- API (short requests; admin actions are audited in reward_config_versions) ----------
 GRANT INSERT,UPDATE ON reward_challenges,reward_rate_limits,reward_launch_attempts,reward_leases TO rebound_api;
 GRANT INSERT ON reward_assets,reward_logs,reward_config_versions,reward_jobs,reward_intents TO rebound_api;
-GRANT UPDATE(execution_mode,primary_mint,config_version,test_allowlist_mints,test_allowlist_wallets,spend_cap_action_lamports,spend_cap_cycle_lamports,spend_cap_total_lamports,buyback_max_slippage_bps,buyback_max_impact_bps,paused,pause_reason,updated_at) ON reward_platform TO rebound_api;
+GRANT UPDATE(execution_mode,primary_mint,config_version,test_allowlist_mints,test_allowlist_wallets,spend_cap_action_lamports,spend_cap_cycle_lamports,spend_cap_total_lamports,buyback_max_slippage_bps,buyback_max_impact_bps,paused,pause_reason,spent_total_lamports,updated_at) ON reward_platform TO rebound_api;
 GRANT INSERT ON reward_coins TO rebound_api;
 GRANT UPDATE(status,blocked_reason,name,symbol,image_uri,metadata_uri,pinned,updated_at,launch_signature,launch_time,launch_slot,activation_signature,activation_time,activation_slot,activation_evidence,schedule_anchor,cycle_seconds,cutoff_lead_seconds) ON reward_coins TO rebound_api;
 GRANT INSERT ON reward_funding_wallets TO rebound_api;
 GRANT UPDATE(mode,signer,operational_reserve_lamports,opening_balance_lamports,opening_credit_lamports,opening_slot,status,retired_at) ON reward_funding_wallets TO rebound_api;
 GRANT INSERT,UPDATE(revoked_at,revoked_by) ON reward_admin_wallets TO rebound_api;
-GRANT UPDATE(state,updated_at) ON reward_intents TO rebound_api;
+GRANT UPDATE(state,body,body_hash,updated_at) ON reward_intents TO rebound_api;   -- manual plans: refresh blockhash, mark submitted
 GRANT INSERT,UPDATE ON reward_chain_attempts TO rebound_api;   -- persist user-signed bytes before broadcast
 GRANT UPDATE(state,due_at,next_retry_at,updated_at) ON reward_jobs TO rebound_api;
 
