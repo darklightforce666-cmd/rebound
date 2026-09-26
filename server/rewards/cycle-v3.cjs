@@ -160,7 +160,7 @@ async function fundingStep(ports,coinRow,c,row,t,{signer,deposit}){
   const baseline=b(c.deposits);
   const r=await T.submit({db,connection,job:'deposit:'+row.id,kind:'primary_funding',signerRole:'primary_dev',feePayer:ports.feePayer,signers:[dev],
    instructions:[W3.I.depositHolders(program,{fundingWallet:dev.publicKey,mint,amount:deposit??need})],readSettlement:depositSettlement(ports,mint,baseline+(deposit??need)),
-   spend:{namespace:coinRow.namespace,mint,recipients:[],lamports:String(deposit??need),fees:'5000',cycleId:row.id,kind:'holder_deposit'},context:{cycle:n}});
+   spend:{namespace:coinRow.namespace,mint,recipients:[],lamports:String(deposit??need),fees:'5000',cycleId:row.id,kind:'holder_deposit'},context:{cycle:n,amount:String(deposit??need)}});
   if(r.state!=='finalized')return{cycle:n,state:row.state,deposit:r.state,code:r.code};
  }
  // Publisher builds, independent verifier recomputes and co-signs, then Fund.
