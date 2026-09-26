@@ -36,7 +36,7 @@ async function launchAllowed(db,namespace,wallet){
 
 /** 1. Draft (idempotent per user + key). Metadata must already be stored immutably (metadata-upload). */
 async function draft(ports,{session,wallet,idempotencyKey,metadataHash,name,symbol,initialBuyLamports=0n,namespace='mainnet_test'}){
- const {db}=ports;if(!session.wallets.includes(wallet))fail('FORBIDDEN','Connect and verify this wallet first',403);
+ const {db}=ports;if(!(session.reboundWallets||session.wallets).includes(wallet))fail('FORBIDDEN','Connect and verify this wallet first',403);
  if(!/^[A-Za-z0-9_-]{8,80}$/.test(idempotencyKey||''))fail('INVALID_BODY','Invalid idempotency key');
  const buy=BigInt(initialBuyLamports||0);if(buy<0n||buy>100n*10n**9n)fail('INVALID_AMOUNT','Initial buy out of range');
  PV.metadata({name,symbol,uri:'https://x'});

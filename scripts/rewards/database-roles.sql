@@ -65,6 +65,9 @@ GRANT UPDATE(paused,pause_reason,spent_total_lamports,updated_at) ON reward_plat
 GRANT INSERT ON reward_logs,reward_audit TO rebound_verifier;
 GRANT INSERT,UPDATE ON reward_nonce_uses,reward_leases,reward_health TO rebound_verifier;
 
+-- ---------- admin operations through the API (admin session + one-time consent) ----------
+GRANT INSERT ON reward_audit TO rebound_api;   -- funding ledgers stay scheduler-only (opening credit is an intent the worker applies)
+
 -- ---------- incremental history cursors (008) and third-party receipts (009) ----------
 GRANT SELECT,INSERT,UPDATE ON reward_history_cursors,reward_intake_receipts TO rebound_indexer;
 GRANT SELECT ON reward_history_cursors TO rebound_scheduler,rebound_verifier,rebound_api;

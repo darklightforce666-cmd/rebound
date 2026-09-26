@@ -11,7 +11,7 @@ const {Connection,PublicKey}=require('@solana/web3.js');
 const DB=require('./db.cjs'),P3=require('./policy-v3.cjs'),H=require('./history-v3.cjs'),I=require('./indexer.cjs'),Pump=require('./pump.cjs');
 const FX=require('./sol-usd.cjs'),F=require('./primary-funding.cjs'),FS=require('./funding-store.cjs'),C=require('./cycle-v3.cjs'),V=require('./verifier-v3.cjs');
 const Logs=require('./logs.cjs'),Signer=require('./signer.cjs'),W3=require('./wire-v3.cjs'),{stable}=require('./policy.cjs');
-const R=require('./receipts-v3.cjs'),BB=require('./buyback-v3.cjs');
+const R=require('./receipts-v3.cjs'),BB=require('./buyback-v3.cjs'),Admin=require('./admin-v3.cjs');
 const b=x=>BigInt(x);
 
 // ---------------- history ingestion ----------------
@@ -157,6 +157,7 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
      cutoffSlot:async t=>(await H.findCutoffSlot(rpc,t)).slot,now:async()=>connection.getBlockTime(await connection.getSlot('finalized')),
      devSigner:async coin=>{const fw=(await sdb.query("SELECT * FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired' AND mode='automatic'",[coin.mint])).rows[0];return fw?.signer?Signer.load(sdb,fw.signer):null;},
      primaryAwaiting:(mint,cutoff)=>primaryAwaiting(sdb,mint,cutoff),sponsorRent:process.env.REWARDS_SPONSOR_RENT==='true'};
+    await Admin.applyOpeningRequests(sdb,connection).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'opening_credit_failed',message:e.message}));
     for(const coin of coins.filter(c=>c.status==='active')){
      await C.tick(ports,coin.mint).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'tick_failed',mint:coin.mint,message:e.message,errorCode:e.code||'SCHEDULER_ERROR'}));
      if(coin.kind!=='third_party')continue;

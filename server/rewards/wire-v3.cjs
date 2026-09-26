@@ -97,5 +97,5 @@ function decode(kind,data){
  if(kind==='job'){if(magic!=='RBD3JOB0')throw Error('Not a V3 job');return{coin:p(),id:q(),cycle:q(),targetMint:p(),targetTokenProgram:p(),configVersion:q(),budget:q(),state:['reserved','purchased','burned','closed'][by()],spent:q(),acquired:q(),burned:q(),maxSlippageBps:w(),maxImpactBps:w(),purchaseSlot:q(),burnSlot:q()};}
  throw Error('Unknown account kind');
 }
-function errorName(err){const m=/"Custom":(\d+)|Custom\((\d+)\)/.exec(typeof err==='string'?err:JSON.stringify(err||{}));const code=m&&Number(m[1]||m[2]);return code&&ERRORS[code]||null;}
+function errorName(err){const m=/"Custom":(\d+)|Custom\((\d+)\)|Custom \{ code: (\d+) \}/.exec(typeof err==='string'?err:JSON.stringify(err||{}));const code=m&&Number(m[1]||m[2]||m[3]);return code&&ERRORS[code]||null;}
 module.exports={TAG,ERRORS,pk,key,u64,i64,u32,u16,hash,bytes32,pda,addresses,leaf,parent,tree,verify,nodes,I,receiptMessage,receiptEvent,credit,decode,errorName};

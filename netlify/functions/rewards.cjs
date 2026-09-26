@@ -8,7 +8,7 @@ const crypto=require('node:crypto');
 const DB=require('../../server/rewards/db.cjs'),P=require('../../server/rewards/policy.cjs'),P3=require('../../server/rewards/policy-v3.cjs');
 const W=require('../../server/rewards/wire.cjs'),Auth=require('../../server/rewards/auth.cjs'),Session=require('../../server/rewards/session.cjs');
 const Consent=require('../../server/rewards/consent.cjs'),Logs=require('../../server/rewards/logs.cjs'),Metadata=require('../../server/rewards/metadata.cjs');
-const Cycle=require('../../server/rewards/cycle-v3.cjs'),Launch=require('../../server/rewards/launch-v3.cjs');
+const Cycle=require('../../server/rewards/cycle-v3.cjs'),Launch=require('../../server/rewards/launch-v3.cjs'),Admin=require('../../server/rewards/admin-v3.cjs');
 
 let pool;
 const MAX_BODY=3000000;
@@ -45,7 +45,7 @@ function chain(db){
   chainPorts={connection,program:new PublicKey(process.env.REWARDS_PROGRAM_ID),now:async()=>connection.getBlockTime(await connection.getSlot('finalized'))};}
  return{...chainPorts,db};
 }
-const PLAN_ERRORS={FORBIDDEN:403,PLAN_STALE:409,PLAN_EXPIRED:409,INVALID_TRANSACTION:400,TRANSACTION_TOO_LARGE:400};
+const PLAN_ERRORS={FORBIDDEN:403,PLAN_STALE:409,PLAN_EXPIRED:409,INVALID_TRANSACTION:400,TRANSACTION_TOO_LARGE:400,INVALID_BODY:400};
 async function planCall(fn){try{return await fn();}catch(e){if(PLAN_ERRORS[e.code])fail(PLAN_ERRORS[e.code],e.code,e.message);if(e.status&&e.code&&/^[A-Z_]+$/.test(e.code))fail(e.status,e.code,e.message,e.status>=500);throw e;}}
 const uuid=v=>{if(typeof v!=='string'||!/^[0-9a-f-]{36}$/.test(v))fail(400,'INVALID_BODY','Invalid id');return v;};
 const b64tx=v=>{if(typeof v!=='string'||v.length>4000)fail(400,'INVALID_BODY','Invalid transaction');return v;};
@@ -88,9 +88,15 @@ const handlers={
   // The exact holder-only deposit the connected dev wallet is asked to sign (manual primary funding).
   async 'funding-plan'({db,event,q}){
    const s=await Session.authenticate(db,event.headers);const mint=validMint(q.mint);
-   return{plan:await planCall(()=>Cycle.manualPlan(chain(db),{mint,wallets:s.wallets}))};
+   return{plan:await planCall(()=>Cycle.manualPlan(chain(db),{mint,wallets:s.reboundWallets}))};
   },
   async 'launch-status'({db,event,q}){const s=await Session.authenticate(db,event.headers);return planCall(()=>Launch.status(launchPorts(db),{session:s,attemptId:uuid(q.id)}));},
+  async 'admin-overview'({db,event}){await Session.authenticate(db,event.headers,{need:'admin'});
+   const ports=process.env.SOLANA_RPC_URL&&process.env.REWARDS_PROGRAM_ID?chain(db):{};return Admin.overview(db,{connection:ports.connection,program:ports.program});},
+  // Public, chain-derived: a wallet's fixed awards and their payment evidence.
+  async 'wallet-rewards'({db,q}){try{W.pk(q.wallet);}catch{fail(400,'INVALID_BODY','Invalid wallet');}
+   const rows=(await db.query("SELECT a.cycle_id,a.leaf_index,a.mint,a.amount_lamports,a.state,a.settlement_signature,a.settled_slot,a.receipt_address,c.cycle_number,c.scheduled_end,c.cutoff_time FROM reward_awards a JOIN reward_cycles c ON c.id=a.cycle_id WHERE a.recipient=$1 ORDER BY c.cutoff_time DESC LIMIT 100",[q.wallet])).rows;
+   return{wallet:q.wallet,awards:rows};},
   async 'admin-logs'({db,event,q}){
    await Session.authenticate(db,event.headers,{need:'admin'});
    const where=[],args=[];const add=(sql,v)=>{args.push(v);where.push(sql.replace('?','$'+args.length));};
@@ -117,7 +123,7 @@ const handlers={
   async 'funding-submit'({db,event,data}){
    const s=await Session.authenticate(db,event.headers);const mint=validMint(data.mint);
    if(typeof data.intentId!=='string'||!/^[0-9a-f-]{36}$/.test(data.intentId)||typeof data.signedTransaction!=='string'||data.signedTransaction.length>4000)fail(400,'INVALID_BODY','Invalid funding submission');
-   return planCall(()=>Cycle.submitManualDeposit(chain(db),{mint,intentId:data.intentId,serialized:data.signedTransaction,wallets:s.wallets}));
+   return planCall(()=>Cycle.submitManualDeposit(chain(db),{mint,intentId:data.intentId,serialized:data.signedTransaction,wallets:s.reboundWallets}));
   },
   // Third-party launch journey (docs/API-V3.md). The browser generates the mint key; the server never sees it.
   async 'launch-draft'({db,event,data}){const s=await Session.authenticate(db,event.headers);
@@ -128,6 +134,21 @@ const handlers={
   async 'activation-submit'({db,event,data}){const s=await Session.authenticate(db,event.headers);
    if(!['create_fee_sharing','lock_fee_sharing','activate'].includes(data.step))fail(400,'INVALID_BODY','Unknown setup step');
    return planCall(()=>Launch.activationSubmit(launchPorts(db),{session:s,attemptId:uuid(data.attemptId),step:data.step,signedTransaction:b64tx(data.signedTransaction)}));},
+  // Administrator mutations: admin wallet + one-time signed consent for the exact payload.
+  ...Object.fromEntries([['admin-set-mode',(db,a,d)=>Admin.setMode(db,a,d)],['admin-test-config',(db,a,d)=>Admin.testConfig(db,a,d)],
+   ['admin-pause',(db,a,d)=>Admin.pause(db,a,{...d,paused:true})],['admin-resume',(db,a,d)=>Admin.pause(db,a,{...d,paused:false})],
+   ['admin-register-primary',(db,a,d,s)=>Admin.registerPrimary(db,a,s,d)],['admin-opening-credit',(db,a,d)=>Admin.openingCredit(db,a,d)],
+   ['admin-add-admin',(db,a,d)=>Admin.addAdmin(db,a,d)],['admin-revoke-admin',(db,a,d)=>Admin.revokeAdmin(db,a,d)]].map(([name,fn])=>[name,async({db,event,data,origin})=>{
+   const s=await Session.authenticate(db,event.headers,{need:'admin'});const wallet=String(data.wallet||'');
+   if(!s.adminWallets.includes(wallet))fail(403,'FORBIDDEN','Approve with your administrator wallet');
+   const payload=data.payload&&typeof data.payload==='object'?data.payload:{};
+   await Consent.consume(db,s,{origin,wallet,action:name,payload,proof:data.proof});
+   return planCall(()=>fn(db,wallet,payload,s));}])),
+  async 'admin-program-prepare'({db,event,data}){const s=await Session.authenticate(db,event.headers,{need:'admin'});const wallet=String(data.wallet||'');
+   if(!s.adminWallets.includes(wallet))fail(403,'FORBIDDEN','Use your administrator wallet');
+   return planCall(()=>Admin.chainPrepare(db,chain(db),{admin:wallet,action:String(data.action||''),params:data.params&&typeof data.params==='object'?data.params:{}}));},
+  async 'admin-program-submit'({db,event,data}){const s=await Session.authenticate(db,event.headers,{need:'admin'});
+   return planCall(()=>Admin.chainSubmit(db,chain(db),s.adminWallets[0],{intentId:uuid(data.intentId),signedTransaction:b64tx(data.signedTransaction)}));},
   async 'metadata-upload'({db,event,data,origin,requestId}){
    const s=await Session.authenticate(db,event.headers);const payload=data.payload||{};
    await Consent.consume(db,s,{origin,wallet:data.wallet,action:'metadata-upload',payload,proof:data.proof});

@@ -7,7 +7,7 @@ const W=require('./wire.cjs'),{stable}=require('./policy.cjs'),DB=require('./db.
 const {AuthError,ownsWallet}=require('./session.cjs');
 
 const ACTIONS=new Set(['metadata-upload','launch-prepare','launch-next','launch-submit','activation-prepare','activation-confirm',
- 'admin-register-primary','admin-connect-funding-wallet','admin-set-mode','admin-start','admin-pause','admin-resume','admin-approve-funding','admin-retry','admin-test-config','admin-add-admin','admin-revoke-admin']);
+ 'admin-register-primary','admin-connect-funding-wallet','admin-set-mode','admin-start','admin-pause','admin-resume','admin-approve-funding','admin-retry','admin-test-config','admin-add-admin','admin-revoke-admin','admin-opening-credit']);
 const TTL_MS=120000;
 const payloadHash=(action,payload)=>{if(!ACTIONS.has(action))throw new AuthError('FORBIDDEN','Unsupported signed action',403);return W.hash(stable({action,payload})).toString('hex');};
 
