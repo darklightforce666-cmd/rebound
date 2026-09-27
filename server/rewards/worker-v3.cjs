@@ -31,8 +31,8 @@ async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCh
  const incomplete=[];let newEvents=0,newTx=0,budget=Number.isFinite(maxTx)?Math.max(1,Math.floor(maxTx)):100000;
  for(const [address,role] of [[m.mint,'mint'],[m.curve,'curve'],[m.pool,'pool']])
   await db.query('INSERT INTO reward_history_cursors(mint,address,role,discovered_slot) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING',[mint,address,role,head]);
- const listInto=async cur=>{
-  const r=await H.signaturesFor(rpc,cur.address,{until:cur.newest_signature||null});
+ const listInto=async(cur,pre)=>{
+  const r=pre||await H.signaturesFor(rpc,cur.address,{until:cur.newest_signature||null});
   if(!r.complete){incomplete.push({address:cur.address,reason:r.reason});return false;}
   const rows=r.signatures.filter(x=>!x.err).map(x=>({signature:x.signature,slot:x.slot,block_index:Number.isInteger(x.transactionIndex)?x.transactionIndex:null}));
   if(rows.length)await db.query(`INSERT INTO reward_history_queue(mint,signature,slot,block_index) SELECT $1,signature,slot,block_index FROM jsonb_to_recordset($2::jsonb) AS x(signature text,slot bigint,block_index int) ON CONFLICT DO NOTHING`,[mint,JSON.stringify(rows)]);
@@ -72,7 +72,13 @@ async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCh
  await fetchPending();
  // 2. Transfers: reconcile real holder balances with the history, once nothing is pending.
  let hc=(await db.query('SELECT * FROM reward_checkpoints WHERE name=$1',['holders:'+mint])).rows[0],holders=null,mismatched=null,holderError=null;
- if(await pendingCount()===0&&(!hc||!hc.complete||Date.now()-new Date(hc.updated_at).getTime()>=holderCheckSeconds*1000)){
+ // Due when never done, incomplete, or a round's snapshot time passed since the last reconciliation
+ // (so each snapshot has one right after it). holderCheckSeconds is a floor between checks.
+ const nowS=Math.floor(Date.now()/1000),anchor=Number(coin.schedule_anchor||0),len=Number(coin.cycle_seconds||0),lead=Number(coin.cutoff_lead_seconds||0);
+ let lastCutoff=0;if(anchor&&len){const n=Math.floor((nowS-anchor)/len)+1;lastCutoff=anchor+n*len-lead;if(lastCutoff>nowS)lastCutoff-=len;}
+ const since=hc?Math.floor(new Date(hc.updated_at).getTime()/1000):0;
+ const due=!hc||!hc.complete||(lastCutoff&&Number(hc.through_time||0)<lastCutoff&&nowS-since>=5)||(!anchor&&nowS-since>=holderCheckSeconds);
+ if(await pendingCount()===0&&due){
   try{holders=await H.currentHolderAccounts(rpc,mint);}catch(e){holderError=String(e.message||e).slice(0,120);}
   let ok=false,slot=head;
   if(holders){
@@ -80,11 +86,10 @@ async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCh
    const known=new Map((await db.query(`SELECT DISTINCT ON (a->>'account') a->>'account' AS account, a->>'amount' AS amount FROM reward_events e, jsonb_array_elements(e.data->'accounts') a
     WHERE e.mint=$1 AND e.kind='token_balances' ORDER BY a->>'account', e.slot DESC, e.transaction_index DESC, e.execution_order DESC`,[mint])).rows.map(r=>[r.account,r.amount]));
    const diff=holders.accounts.filter(h=>known.get(h.account)!==h.amount);mismatched=diff.length;ok=true;
-   for(const h of diff){
-    await db.query("INSERT INTO reward_history_cursors(mint,address,role,discovered_slot) VALUES($1,$2,'token_account',$3) ON CONFLICT DO NOTHING",[mint,h.account,slot]);
-    const cur=(await db.query('SELECT * FROM reward_history_cursors WHERE mint=$1 AND address=$2',[mint,h.account])).rows[0];
-    if(!await listInto(cur))ok=false;
-   }
+   for(const h of diff)await db.query("INSERT INTO reward_history_cursors(mint,address,role,discovered_slot) VALUES($1,$2,'token_account',$3) ON CONFLICT DO NOTHING",[mint,h.account,slot]);
+   const curs=diff.length?(await db.query('SELECT * FROM reward_history_cursors WHERE mint=$1 AND address=ANY($2::text[])',[mint,diff.map(h=>h.account)])).rows:[];
+   const lists=await H.signaturesForMany(rpc,curs.map(c=>({address:c.address,until:c.newest_signature||null})));
+   for(const cur of curs)if(!await listInto(cur,lists.get(cur.address)))ok=false;
    await fetchPending();if(await pendingCount()>0)ok=false;
   }else{
    // Fallback: follow every token account ever seen in the history (more requests, same result),
@@ -93,7 +98,9 @@ async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCh
     const added=(await db.query(`INSERT INTO reward_history_cursors(mint,address,role,discovered_slot)
      SELECT DISTINCT $1,a->>'account','token_account',e.slot FROM reward_events e, jsonb_array_elements(e.data->'accounts') a WHERE e.mint=$1 AND e.kind='token_balances' ON CONFLICT DO NOTHING RETURNING address`,[mint])).rows.length;
     if(round>0&&!added)break;
-    for(const cur of (await db.query("SELECT * FROM reward_history_cursors WHERE mint=$1 AND role='token_account'",[mint])).rows)await listInto(cur);
+    const curs=(await db.query("SELECT * FROM reward_history_cursors WHERE mint=$1 AND role='token_account'",[mint])).rows;
+    const lists=await H.signaturesForMany(rpc,curs.map(c=>({address:c.address,until:c.newest_signature||null})));
+    for(const cur of curs)await listInto(cur,lists.get(cur.address));
     await fetchPending();if(budget<=0)break;
    }
    ok=(await pendingCount())===0&&!incomplete.length;

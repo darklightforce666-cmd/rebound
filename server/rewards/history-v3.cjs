@@ -55,6 +55,22 @@ async function signaturesFor(rpc,address,{until=null,maxPages=200,pageSize=1000}
  return{signatures:out,complete:false,reason:'signature_page_limit'};
 }
 
+// Signatures for many addresses: first pages in one JSON-RPC batch; only addresses whose first page is
+// full (more than `pageSize` new signatures) continue page by page.
+async function signaturesForMany(rpc,items,{pageSize=1000,chunk=50}={}){
+ const out=new Map();
+ if(typeof rpc.batch!=='function'){for(const it of items)out.set(it.address,await signaturesFor(rpc,it.address,{until:it.until}));return out;}
+ for(let i=0;i<items.length;i+=chunk){
+  const part=items.slice(i,i+chunk);
+  const res=await rpc.batch(part.map(it=>['getSignaturesForAddress',[it.address,{limit:pageSize,commitment:'finalized',...(it.until?{until:it.until}:{})}]]));
+  for(const [j,it] of part.entries()){
+   const first=res[j]||[];
+   if(first.length<pageSize){out.set(it.address,{signatures:first,complete:true});continue;}
+   const rest=await signaturesFor(rpc,it.address,{until:it.until});out.set(it.address,rest);
+  }
+ }
+ return out;
+}
 // Mainnet carries v1 transactions (message `transactionConfig`); jsonParsed keeps the v0 shape we read.
 // Requesting a lower version makes the RPC refuse the transaction (-32015), which would silently
 // become incomplete coverage for every mint touched by v1 traffic.
@@ -115,7 +131,23 @@ function parseAll(history,coin){
 }
 // Token accounts that hold the mint right now (one request): {account, owner, amount}. Token or Token-2022.
 // Returns {slot, accounts:[{account, owner, amount}]} (amount > 0) at a finalized slot.
+// Tries getProgramAccounts, then the DAS `getTokenAccounts` method (Helius, and other providers that
+// support DAS); throws when neither is available.
 async function currentHolderAccounts(rpc,mint){
+ try{return await holdersByProgram(rpc,mint);}
+ catch(e){try{return await holdersByDas(rpc,mint);}catch(e2){throw Object.assign(Error(`${e.message}; DAS: ${e2.message}`),{code:'HOLDERS_UNAVAILABLE'});}}
+}
+async function holdersByDas(rpc,mint){
+ const accounts=[];
+ for(let page=1;page<=200;page++){
+  const r=await rpc.call('getTokenAccounts',{mint,page,limit:1000});
+  const list=r?.token_accounts;if(!Array.isArray(list))throw Error('unsupported');
+  for(const a of list)if(a.address&&String(a.amount)!=='0')accounts.push({account:a.address,owner:a.owner,amount:String(a.amount)});
+  if(list.length<1000)return{slot:null,accounts};
+ }
+ throw Error('too many holder pages');
+}
+async function holdersByProgram(rpc,mint){
  const info=await rpc.call('getAccountInfo',[mint,{encoding:'base64',commitment:'finalized'}]);
  const program=info?.value?.owner;if(!program)throw Object.assign(Error('mint not found'),{code:'MINT_NOT_FOUND'});
  const filters=[{memcmp:{offset:0,bytes:mint}}];if(program==='TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')filters.unshift({dataSize:165});
@@ -123,7 +155,7 @@ async function currentHolderAccounts(rpc,mint){
  const list=Array.isArray(r)?r:(r?.value||[]),slot=Array.isArray(r)?null:(r?.context?.slot??null);
  return{slot,accounts:list.map(a=>({account:a.pubkey,owner:a.account?.data?.parsed?.info?.owner,amount:a.account?.data?.parsed?.info?.tokenAmount?.amount})).filter(a=>a.account&&a.amount&&a.amount!=='0')};
 }
-module.exports={Rpc,marketAddresses,signaturesFor,collect,parseAll,TX_VERSION,reportedIndex,currentHolderAccounts};
+module.exports={Rpc,marketAddresses,signaturesFor,signaturesForMany,collect,parseAll,TX_VERSION,reportedIndex,currentHolderAccounts};
 
 // Latest produced, finalized slot whose block time is ≤ cutoff (spec §9). Never slides forward.
 // f(x) = time(first produced slot ≥ x) ≤ cutoff is monotone (true, then false): binary search the
