@@ -183,18 +183,23 @@ test('v3.2: a purchase counts after 15 minutes; any sale or transfer excludes th
  }finally{await w.done();}
 });
 
-test('85/15: without a budget, a round pays at most 85 % of the fees that reached the dev wallet after launch',async()=>{
+test('85/15 vault: a round pays at most 20 % of the holders\' 85 %; the 15 % on the wallet is never touched',async()=>{
  const w=await world({income:true});try{
   const DBm=require('../../server/rewards/db.cjs'),FS=require('../../server/rewards/funding-store.cjs');
-  const none=await D.available(w.db,w.conn,(await w.db.query('SELECT * FROM reward_funding_wallets WHERE mint=$1',[w.mint])).rows[0]);
-  assert.equal(none.lamports,0n);assert.equal(none.reason,'no_new_fees','the balance the wallet had at launch is not holder money');
+  const fw=async()=>(await w.db.query('SELECT * FROM reward_funding_wallets WHERE mint=$1',[w.mint])).rows[0];
+  const none=await D.available(w.db,w.conn,await fw());
+  assert.equal(none.lamports,0n);assert.equal(none.reason,'no_new_fees','nothing credited yet: nothing to pay');
   await DBm.transaction(w.db,async tx=>{await tx.query("INSERT INTO reward_funding_accounts(mint,kind) VALUES($1,'primary') ON CONFLICT DO NOTHING",[w.mint]);
    await FS.applyCredits(tx,w.mint,[{id:'fee1',signature:'fee-sig-1',slot:5,time:T0+5,gross:2n*SOL}]);});
+  const a0=await D.available(w.db,w.conn,await fw());
+  assert.equal(a0.vault,17n*SOL/10n,'the vault is 85 % of 2 SOL');assert.equal(a0.lamports,17n*SOL/50n,'a round may take 20 % of it: 0.34 SOL');
   w.conn.setTime(T0+90,1500);await w.tick();
   const as=await w.awards(1);const total=as.reduce((x,a)=>x+BigInt(a.amount_lamports),0n);
-  assert.equal((await w.cycle(1)).state,'funded');assert.ok(total<=17n*SOL/10n&&total>=17n*SOL/10n-3n,'85 % of 2 SOL: '+total);
-  const after=await D.available(w.db,w.conn,(await w.db.query('SELECT * FROM reward_funding_wallets WHERE mint=$1',[w.mint])).rows[0]);
-  assert.ok(after.lamports<=3n,'the holder share is used up until new fees arrive');
+  assert.equal((await w.cycle(1)).state,'funded');assert.ok(total<=17n*SOL/50n&&total>=17n*SOL/50n-3n,'20 % of the vault: '+total);
+  const after=await D.available(w.db,w.conn,await fw());
+  assert.equal(after.vault,17n*SOL/10n-total,'the rest stays in the vault for later rounds');assert.ok(after.lamports>0n&&after.lamports<=after.vault/5n,'the next round takes 20 % of what is left');
+  // The 15 % share still on the wallet (0.3 SOL) is held out of what any round may spend.
+  assert.equal(after.kept,3n*SOL/10n,'the 15 % share is kept');
  }finally{await w.done();}
 });
 

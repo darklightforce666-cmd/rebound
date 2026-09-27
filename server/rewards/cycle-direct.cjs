@@ -24,6 +24,10 @@ const DB=require('./db.cjs'),P3=require('./policy-v3.cjs'),S=require('./snapshot
 const X=require('./execution.cjs'),Logs=require('./logs.cjs'),{stable}=require('./policy.cjs');
 const b=x=>BigInt(String(x??0).split('.')[0]);
 const BATCH=16,FEE_RESERVE=10_000_000n;
+// Owner rule (2026-09-28): the holders' 85 % is a vault. A round pays out at most 20 % of what is in the
+// vault at its snapshot, so the vault keeps refilling and every later round has money to pay. The other
+// 15 % is never touched by payouts: whatever of it is still on the wallet stays out of every round.
+const VAULT_ROUND_BPS=2000n;
 const DONE=['complete','skipped_no_funds','skipped_no_eligible_holders','missed','expired','failed_action_required','dry_run'];
 const cycleId=(mint,n)=>`${mint}:${n}`;
 const PRE=['scheduled','snapshotting','waiting_for_data'];
@@ -60,21 +64,28 @@ async function available(db,connection,fw){
 }
 
 /**
- * Income model (policy 85/15): 85 % of every lamport that reached the dev wallet after launch belongs to
- * holders (the scheduler's per-transaction reconciliation splits it once; 15 % stays on the wallet). A round
- * may reserve what of that holder share no award has taken yet — never more than the wallet can pay.
+ * Income model (policy 85/15): 85 % of the wallet's balance at launch and of every lamport that reaches it
+ * later belongs to holders — the vault (the scheduler's per-transaction reconciliation splits it once; 15 %
+ * stays on the wallet). A round may reserve 20 % of what is in the vault and not yet taken by an award —
+ * never more than the wallet can pay without touching the 15 % share still on it.
  */
 async function incomeAvailable(db,connection,fw){
  if(fw.opening_slot==null)return{lamports:0n,reason:'income_ledger_not_opened_yet'};
  // The ledger's holder share not yet moved out of the wallet (reconciled payouts and program deposits are
  // already subtracted), minus awards that still have to leave it: reserved/deferred ones, and paid ones whose
  // transaction the reconciliation has not reached yet.
- const awaiting=b((await db.query('SELECT holder_awaiting_transfer s FROM reward_funding_accounts WHERE mint=$1',[fw.mint])).rows[0]?.s);
+ const acc=(await db.query('SELECT holder_awaiting_transfer,other_settled FROM reward_funding_accounts WHERE mint=$1',[fw.mint])).rows[0];
+ const awaiting=b(acc?.holder_awaiting_transfer),other=b(acc?.other_settled);
  const q=(await db.query(`SELECT COALESCE(sum(a.amount_lamports) FILTER (WHERE a.state IN ('reserved','deferred_rent')),0) unpaid,
    COALESCE(sum(a.amount_lamports) FILTER (WHERE a.state='paid' AND NOT EXISTS(SELECT 1 FROM reward_wallet_movements m WHERE m.id=a.settlement_signature||':holder')),0) pending
   FROM reward_awards a JOIN reward_cycles c ON c.id=a.cycle_id WHERE c.funding_wallet=$1 AND a.state IN ('reserved','paid','deferred_rent')`,[fw.id])).rows[0];
- const left=awaiting-b(q.unpaid)-b(q.pending),bal=b(await connection.getBalance(new PublicKey(fw.address),'confirmed'))-FEE_RESERVE-b(q.unpaid);
- const v=left<bal?left:bal;return{lamports:v>0n?v:0n,budget:awaiting,used:b(q.pending),unpaid:b(q.unpaid),reason:v>0n?null:left<=0n?'no_new_fees':'wallet_balance_low'};
+ // The 15 % share still on the wallet: everything credited to it, less what already left the wallet other
+ // than payouts (owner withdrawals, and for launched coins the buy-and-burn of that share).
+ const out=b((await db.query("SELECT COALESCE(sum(lamports),0)::text s FROM reward_wallet_movements WHERE mint=$1 AND address=$2 AND classification='owner_withdrawal'",[fw.mint,fw.address])).rows[0].s);
+ const kept=other>out?other-out:0n;
+ let vault=awaiting-b(q.unpaid)-b(q.pending);if(vault<0n)vault=0n;
+ const round=vault*VAULT_ROUND_BPS/10000n,bal=b(await connection.getBalance(new PublicKey(fw.address),'confirmed'))-FEE_RESERVE-b(q.unpaid)-kept;
+ const v=round<bal?round:bal;return{lamports:v>0n?v:0n,budget:awaiting,vault,used:b(q.pending),unpaid:b(q.unpaid),kept,reason:v>0n?null:vault<=0n?'no_new_fees':'wallet_balance_low'};
 }
 // Reserved-but-unpaid awards of a fee wallet (lamports still owed from its balance).
 async function unpaidOf(db,fwId){return b((await db.query("SELECT COALESCE(sum(a.amount_lamports),0) s FROM reward_awards a JOIN reward_cycles c ON c.id=a.cycle_id WHERE c.funding_wallet=$1 AND a.state IN ('reserved','deferred_rent')",[fwId])).rows[0].s);}
@@ -297,4 +308,4 @@ async function markPaid(db,row,indexes,signature){
  if(paidNow)await log(db,{severity:'warn',eventType:'payout_sent',mint:row.mint,cycleId:row.id,message:`Round ${row.cycle_number}: paid ${paidNow} holder(s) in one transaction`,metadata:{signature}});
 }
 
-module.exports={tick,available,schedule,cycleAt,times,unpaidOf,BATCH,FEE_RESERVE};
+module.exports={tick,available,schedule,cycleAt,times,unpaidOf,BATCH,FEE_RESERVE,VAULT_ROUND_BPS};

@@ -20,7 +20,7 @@ const reduced=()=>typeof matchMedia==='function'&&matchMedia('(prefers-reduced-m
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const shortAddr=a=>a.length>12?a.slice(0,4)+'…'+a.slice(-4):a;
 const CHECK='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>';
-export const ROUND_STATE={scheduled:'Scheduled',snapshotting:'Taking snapshot',waiting_for_data:'Taking snapshot',funded:'Reserved — paying at round end',paying:'Paying',partially_paid:'Partly paid',complete:'Settled',dry_run:'Dry run — nothing sent',skipped_no_funds:'No funds this round',skipped_no_eligible_holders:'Nobody underwater',missed:'Skipped'};
+export const ROUND_STATE={scheduled:'Scheduled',snapshotting:'Taking snapshot',waiting_for_data:'Taking snapshot',funded:'Reserved, paying at round end',paying:'Paying',partially_paid:'Partly paid',complete:'Settled',dry_run:'Dry run, nothing sent',skipped_no_funds:'No funds this round',skipped_no_eligible_holders:'Nobody underwater',missed:'Skipped'};
 const REASON={paused:'paused',snapshot_window_closed:'snapshot window closed',price_window_incomplete:'waiting for a 15-minute price',history_incomplete:'loading history',history_behind_cutoff:'verifying trades',positions_behind_cutoff:'applying trades',cutoff_slot_unproven:'confirming the snapshot slot',fee_wallet_key_missing:'fee wallet key missing',dry_run:'dry run',no_funds:'no funds',budget_used_up:'budget used up',no_new_fees:'no new fees'};
 const PRE=['scheduled','snapshotting','waiting_for_data'],CATCHING=['history_behind_cutoff','positions_behind_cutoff','history_incomplete','cutoff_slot_unproven'];
 const SETTLED=['funded','paying','partially_paid','complete'];
@@ -67,7 +67,7 @@ export async function mountHome(host,{api,realtime,esc,signal,isAddress}){
    '<div class="ck-burst" id="ck-burst" aria-hidden="true"></div><span class="ck-pill" id="ck-pill" role="status"></span>'+
    '<button type="button" class="ghost-link ck-preview" id="ck-preview">Preview a payout</button>';
   q('#ck-preview').addEventListener('click',()=>{const last=lastPaidRound();
-   burst(last?'Last payout: +'+solText(last.paid_lamports)+' SOL to '+last.paid_recipients+' holder'+(last.paid_recipients==1?'':'s'):'Preview — no payout yet',true);});
+   burst(last?'Last payout: +'+solText(last.paid_lamports)+' SOL to '+last.paid_recipients+' holder'+(last.paid_recipients==1?'':'s'):'Preview: no payout yet',true);});
  }
  function head(){return st.data?.headline||null;}
  function timing(){const h=head(),cs=h?.cycles||[],c=cs[0];if(!c)return null;
@@ -136,8 +136,8 @@ export async function mountHome(host,{api,realtime,esc,signal,isAddress}){
  function renderStats(first){
   const box=q('#stats');if(!box)return;const d=st.data,coins=d?.coins||[];
   if(!box.firstChild)box.innerHTML='<div><span class="st-num"><span id="st-pool">—</span> <small>SOL</small></span><span class="st-label" id="st-pool-l">in this round’s pool, across all coins</span></div>'+
-   '<div><span class="st-num" id="st-under">—</span><span class="st-label">holders underwater right now</span></div>'+
-   '<div><span class="st-num"><span id="st-paid">—</span> <small>SOL</small></span><span class="st-label">paid back to holders so far</span></div>'+
+   '<div><span class="st-num" id="st-under">—</span><span class="st-label">holders underwater now, across all coins</span></div>'+
+   '<div><span class="st-num"><span id="st-paid">—</span> <small>SOL</small></span><span class="st-label">paid back to holders, all coins</span></div>'+
    '<div><span class="st-num" id="st-burn">—</span><span class="st-label" id="st-burn-l">$REBOUND bought and burned</span></div>';
   if(!d)return;
   let pool=0n,known=false,under=0,paid=0n,burned=0n;
@@ -145,8 +145,8 @@ export async function mountHome(host,{api,realtime,esc,signal,isAddress}){
    const r=c.round;if(r&&r.available_lamports!=null&&(PRE.includes(r.state)||['funded','paying'].includes(r.state))){pool+=big(r.available_lamports);known=true;}}
   const dec=Number(coins.find(c=>c.featured)?.decimals??6),sym=(st.cfg?.siteSettings?.symbol||'REBOUND').replace(/^\$/,'');
   const sol=v=>solText(BigInt(Math.round(v)),3);
-  if(known)tween(q('#st-pool'),Number(pool),sol,first);else{q('#st-pool').textContent='—';q('#st-pool').dataset.v=0;}
-  q('#st-pool-l').textContent=known?'in this round’s pool, across all coins':'in this round’s pool — fixed at each snapshot';
+  if(known||!coins.length)tween(q('#st-pool'),Number(pool),sol,first);else{q('#st-pool').textContent='—';q('#st-pool').dataset.v=0;}
+  q('#st-pool-l').textContent=known||!coins.length?'in this round’s pool, across all coins':'in this round’s pool across all coins, set at each snapshot';
   tween(q('#st-under'),under,v=>Math.round(v).toLocaleString('en-US'),first);
   tween(q('#st-paid'),Number(paid),sol,first);
   tween(q('#st-burn'),Number(burned)/10**dec,v=>v>0?compact(v):'0',first);
