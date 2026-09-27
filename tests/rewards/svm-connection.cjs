@@ -13,8 +13,10 @@ const A=x=>kit.address(typeof x==='string'?x:x.toBase58());
 
 class SvmConnection{
  constructor({program=Keypair.generate().publicKey,admin}={}){
-  if(!fs.existsSync(SO))throw Error('Build contracts/v3 first (cargo build-sbf)');
-  this.svm=new LiteSVM();this.program=program;this.svm.addProgramFromFile(A(program),SO);
+  // The V3 program is loaded when built (program tests are skipped without it); plain SOL transfers — direct
+  // settlement — need no program, so those tests also run on CI where contracts/v3 is not compiled.
+  if(admin&&!fs.existsSync(SO))throw Error('Build contracts/v3 first (cargo build-sbf)');
+  this.svm=new LiteSVM();this.program=program;if(fs.existsSync(SO))this.svm.addProgramFromFile(A(program),SO);
   this.faults={dropResponse:0,rejectSend:0};this.statuses=new Map();this.parsed=new Map();this.height=100;this.sent=0;this.landed=[];
   if(admin){ // upgradeable-loader authority fixture checked by Initialize
    const programData=PublicKey.findProgramAddressSync([program.toBuffer()],LOADER)[0];this.programData=programData;
