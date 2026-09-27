@@ -40,11 +40,19 @@ END $$;
 REVOKE ALL ON FUNCTION rebound.worker_store_rpc(text,text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION rebound.worker_store_rpc(text,text) TO rebound_api;
 
--- 4. Every 20 seconds: one bounded pass (the function answers at once and works in the background).
-SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname='rebound-worker';
-SELECT cron.schedule('rebound-worker','20 seconds',$cron$
+-- 4. Every 20 seconds, two separate bounded passes (the function answers at once and works in the
+--    background): the indexer (history → verified events) and the scheduler (positions → rounds → payouts).
+--    Separate calls: a slow history pass never delays a round; each has its own time and database budget.
+SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname IN ('rebound-worker','rebound-indexer','rebound-scheduler');
+SELECT cron.schedule('rebound-indexer','20 seconds',$cron$
  SELECT net.http_post(
   url:='https://zuvefozubbgstyljfxjh.supabase.co/functions/v1/rebound-worker',
   headers:=jsonb_build_object('content-type','application/json','x-rebound-cron',(SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name='rebound_worker_cron_token')),
-  body:='{}'::jsonb, timeout_milliseconds:=5000)
+  body:='{"role":"indexer"}'::jsonb, timeout_milliseconds:=5000)
+$cron$);
+SELECT cron.schedule('rebound-scheduler','20 seconds',$cron$
+ SELECT net.http_post(
+  url:='https://zuvefozubbgstyljfxjh.supabase.co/functions/v1/rebound-worker',
+  headers:=jsonb_build_object('content-type','application/json','x-rebound-cron',(SELECT decrypted_secret FROM vault.decrypted_secrets WHERE name='rebound_worker_cron_token')),
+  body:='{"role":"scheduler"}'::jsonb, timeout_milliseconds:=5000)
 $cron$);

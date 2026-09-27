@@ -59,3 +59,7 @@ tr.sev-warn td{color:#eec191}tr.sev-error td,tr.sev-critical td{color:#ffb1b1}
 .history-progress span{color:#dfe9e2}.history-progress small{display:block;color:#8fa197;margin-top:6px}
 .history-progress progress{width:100%;height:8px;margin-top:8px;accent-color:#c5f36b}
 .tile-loading{color:#e9dca0}
+.data-fresh{margin:6px 0 14px;font-size:.86rem;color:#8fa197}
+.data-fresh.ok::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;background:#c5f36b;margin-right:7px;vertical-align:1px}
+.data-fresh.warn{padding:10px 12px;border:1px solid #6b5a2a;border-radius:10px;background:#1f1a0e;color:#e9dca0}
+.data-fresh.info{color:#dfe9e2}

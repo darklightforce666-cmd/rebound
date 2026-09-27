@@ -54,9 +54,11 @@ function observationFrom(ev){
  * @param opts.throughSlot  replay events with slot ≤ throughSlot only
  * @param opts.parserHolds  holds reported by the parser ({wallet?, reason, signature})
  */
-function replay(events,{excluded=new Set(),fx=()=>null,credits=[],throughSlot=Infinity,parserHolds=[]}={}){
- const ordered=events.filter(e=>Number(e.slot)<=Number(throughSlot)).sort((a,b)=>Number(a.slot)-Number(b.slot)||a.transactionIndex-b.transactionIndex||a.order-b.order||(a.eventIndex||0)-(b.eventIndex||0));
- const owners=new Map(),accounts=new Map(),observations=[],movements=[],mintHolds=[];let seq=0;
+function replay(events,{excluded=new Set(),fx=()=>null,credits=[],throughSlot=Infinity,parserHolds=[],state=null}={}){
+ const ordered=events.filter(e=>Number(e.slot)<=Number(throughSlot)).sort(chainOrder);
+ // `state` resumes a replay (ready-made positions): the owners and token accounts it touches, and the lot
+ // counter. Applying events in batches on top of the stored state gives exactly the result of one replay.
+ const owners=state?.owners||new Map(),accounts=state?.accounts||new Map(),observations=[],movements=[],mintHolds=[];let seq=state?Number(state.seq||0):0;
  const book=o=>{if(!owners.has(o))owners.set(o,{lots:[],holds:[]});return owners.get(o);};
  const hold=(o,reason,ev)=>{const b=book(o);if(!b.holds.some(h=>h.reason===reason))b.holds.push({reason,signature:ev?.signature||null,slot:ev?Number(ev.slot):null});};
  for(const h of parserHolds){if(h.wallet)hold(h.wallet,h.reason,h);else mintHolds.push(h);}
@@ -87,9 +89,7 @@ function replay(events,{excluded=new Set(),fx=()=>null,credits=[],throughSlot=In
   }
   const touched=new Set();
   for(const ev of txe){
-   const obs=observationFrom(ev);if(obs)observations.push(obs);
-   if(ev.kind==='graduation')observations.push({time:ev.time,slot:ev.slot,market:'graduation',graduation:true,evidence:ev.id});
-   if(ev.kind==='market_invalidation')observations.push({time:ev.time,slot:ev.slot,invalidated:true,evidence:ev.id});
+   const obs=marketObservation(ev);if(obs)observations.push(obs);
    switch(ev.kind){
     case'market_delivery':{
      const owner=ev.owner,qty=n(ev.data.amount);if(!owner||excluded.has(owner))break;touched.add(owner);
@@ -122,6 +122,14 @@ function replay(events,{excluded=new Set(),fx=()=>null,credits=[],throughSlot=In
  }
  applyCreditsThrough(Number.isFinite(Number(throughSlot))?Number(throughSlot):(lastSlot??0));
  for(const c of pendingCredits)if(Number(c.slot)<=Number(throughSlot))mintHolds.push({reason:'credit_lot_missing',lotId:c.lotId,award:c.award});
- return{owners,observations,movements,mintHolds,throughSlot:lastSlot};
+ return{owners,accounts,seq,observations,movements,mintHolds,throughSlot:lastSlot};
 }
-module.exports={SUPPORTED,replay,tradeCost,tradeQuantity,observationFrom};
+const chainOrder=(a,b)=>Number(a.slot)-Number(b.slot)||a.transactionIndex-b.transactionIndex||a.order-b.order||(a.eventIndex||0)-(b.eventIndex||0);
+// Market state (price sample, graduation, invalidation) carried by one event, or null.
+function marketObservation(ev){
+ if(ev.kind==='graduation')return{time:ev.time,slot:ev.slot,market:'graduation',graduation:true,evidence:ev.id};
+ if(ev.kind==='market_invalidation')return{time:ev.time,slot:ev.slot,invalidated:true,evidence:ev.id};
+ return observationFrom(ev);
+}
+const MARKET_KINDS=['purchase_candidate','sale','pool_balances','graduation','market_invalidation'];
+module.exports={SUPPORTED,replay,tradeCost,tradeQuantity,observationFrom,marketObservation,MARKET_KINDS,chainOrder};

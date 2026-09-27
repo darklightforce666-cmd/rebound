@@ -10,10 +10,12 @@ const SCHEMA='rebound';
 // relied upon anywhere: coordination uses durable row leases (reward_leases).
 // `role`: run every statement of this pool as that REBOUND group role (startup option), for hosts that
 // connect with one privileged URL (the Supabase-hosted worker) but must keep per-role privileges.
-function connect(url=process.env.DATABASE_URL,{max=6,name='rebound-rewards-v3',role=null}={}){
+// Resource limits: every statement ≤ statementTimeoutMs, lock waits ≤ lockTimeoutMs, and a transaction left
+// idle is aborted — background work can never hold the shared database hostage.
+function connect(url=process.env.DATABASE_URL,{max=6,name='rebound-rewards-v3',role=null,statementTimeoutMs=20000,lockTimeoutMs=5000,idleTxMs=60000}={}){
  if(!url)throw Error('DATABASE_URL is required');
  if(role&&!/^rebound_(indexer|scheduler|verifier)$/.test(role))throw Error('Unsupported database role');
- return new Pool({connectionString:url,max,application_name:name,statement_timeout:20000,connectionTimeoutMillis:10000,options:`-c search_path=${SCHEMA},public`+(role?` -c role=${role}`:'')});
+ return new Pool({connectionString:url,max,application_name:name,statement_timeout:statementTimeoutMs,connectionTimeoutMillis:10000,options:`-c search_path=${SCHEMA},public -c lock_timeout=${lockTimeoutMs} -c idle_in_transaction_session_timeout=${idleTxMs}`+(role?` -c role=${role}`:'')});
 }
 async function transaction(db,fn,{serializable=true}={}){
  const client=typeof db.connect==='function'&&typeof db.release!=='function'?await db.connect():db;

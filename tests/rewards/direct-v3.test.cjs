@@ -1,12 +1,22 @@
 'use strict';
 // Direct settlement (no program): snapshot → reserve within the fee-wallet budget → batched SOL transfers
 // signed by the imported fee-wallet key at the end of the round; public projections; dry run; no double pay.
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const nodeTest=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {Keypair,PublicKey}=require('@solana/web3.js');
 const {SvmConnection}=require('./svm-connection.cjs'),{supabaseDb}=require('./pg.cjs'),{chain}=require('./chain-fixture.cjs');
 const P3=require('../../server/rewards/policy-v3.cjs'),D=require('../../server/rewards/cycle-direct.cjs'),A=require('../../server/rewards/admin-v3.cjs'),Signer=require('../../server/rewards/signer.cjs');
 const SOL=10n**9n,T0=1_800_000_000;
 process.env.REWARDS_MAX_EXECUTION_MODE='mainnet_test';
+const Pos=require('../../server/rewards/positions-v3.cjs'),I=require('../../server/rewards/indexer.cjs');
+// Every test runs twice: rounds from a full replay of the history, and rounds from ready-made positions
+// (migration 017). Both must give exactly the same awards and payouts.
+let MODE='replay';const SAME={};
+const test=(name,fn)=>{for(const m of ['replay','positions'])nodeTest(`${name} [${m}]`,async()=>{MODE=m;return fn();});};
+async function storeEvents(db,mint,events){
+ const rows=events.map(e=>({id:e.id,signature:e.signature,path:e.path,event_index:e.order,slot:e.slot,tx:e.transactionIndex,order:e.order,kind:e.kind,owner:e.owner,data:{...e.data,time:e.time}}));
+ await db.query(`INSERT INTO reward_events(id,mint,signature,instruction_path,event_index,slot,transaction_index,execution_order,kind,owner,data,raw_digest,parser_version,finalized)
+  SELECT id,$1,signature,path,event_index,slot,tx,"order",kind,owner,data,'test',$3,true FROM jsonb_to_recordset($2::jsonb) AS x(id text,signature text,path text,event_index int,slot bigint,tx int,"order" int,kind text,owner text,data jsonb)`,[mint,JSON.stringify(rows),I.PARSER]);
+}
 
 async function world({mode='mainnet_test',holders=3,budget=5n*SOL,key=true,wallet=10n*SOL}={}){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'rebound-direct-'));const env={...process.env,REWARDS_SIGNER_MASTER_KEY_FILE:path.join(dir,'master.key')};
@@ -29,6 +39,13 @@ async function world({mode='mainnet_test',holders=3,budget=5n*SOL,key=true,walle
  await db.query("INSERT INTO reward_public_tokens(mint,namespace,kind,reward_status,pinned,test) VALUES($1,'mainnet_test','primary','active',true,true)",[mint]);
  const inputs=async(coinRow,n,cutoff,slot)=>({credits:await require('../../server/rewards/worker-v3.cjs').loadCredits(db,mint,slot),events:c.events,coverage:{complete:true,throughSlot:10_000},excluded:new Set(['CurvePDA']),fx:()=>null,solSeries:[]});
  const ports={db,connection:conn,worker:'w1',inputs,env,cutoffSlot:async t=>1000+(t-T0),now:async()=>conn.getBlockTime(),signer:fw=>Signer.load(db,fw.signer,{env})};
+ if(MODE==='positions'){
+  await storeEvents(db,mint,c.events);
+  await db.query("INSERT INTO reward_checkpoints(name,through_slot,through_time,start_slot,complete,parser_version,digest) VALUES($1,10000,$2,0,true,$3,'')",['verified:'+mint,T0+10000,I.PARSER]);
+  const excluded=new Set(['CurvePDA']);
+  ports.inputs=async()=>{throw Error('a round must not replay the history in positions mode');};
+  ports.positions={project:(coin,o={})=>Pos.project({db},coin,{maxEvents:2,excluded,...o}),inputsAt:(coin,cut,slot)=>Pos.inputsAt(db,coin,cut,slot),applyCredits:Pos.applyCredits};
+ }
  const coin=async()=>(await db.query('SELECT * FROM reward_coins WHERE mint=$1',[mint])).rows[0];
  const tick=async(k=3)=>{let r;for(let i=0;i<k;i++){conn.finalizeAll();r=await D.tick(ports,await coin());}return r;};
  return{conn,db,ports,mint,dev,people,tick,dir,cycle:async n=>(await db.query('SELECT * FROM reward_cycles WHERE id=$1',[`${mint}:${n}`])).rows[0],
@@ -41,6 +58,10 @@ test('direct round: snapshot at the cutoff reserves within the budget; the fee w
   w.conn.setTime(T0+90,1500);await w.tick();                                        // cutoff: 30 s before the end of a 120 s round
   const row=await w.cycle(1);assert.equal(row.state,'funded');
   const as=await w.awards(1);assert.equal(as.length,3);assert.ok(as.every(a=>a.state==='reserved'));
+  // Same awards whichever way the round was computed.
+  const key=as.map(a=>[w.people.indexOf(a.recipient),String(a.amount_lamports),String(a.credit_usd)].join(':')).sort().join(',');
+  if(MODE==='replay')SAME.first=key;else{assert.equal(key,SAME.first);
+   const st=(await w.db.query('SELECT * FROM reward_projection_state WHERE mint=$1',[w.mint])).rows[0];assert.equal(Number(st.applied_slot),1090,'positions stand at the cutoff slot');assert.ok(Number(st.credits_applied)>=3);}
   const total=as.reduce((s,a)=>s+BigInt(a.amount_lamports),0n);assert.ok(total<=5n*SOL&&total>=5n*SOL-3n,'the whole budget (minus rounding): losses exceed it');
   // Pro rata to the loss: the biggest loser gets the most, nobody more than their loss.
   const pos=new Map((await w.db.query('SELECT owner,loss_usd FROM reward_snapshot_positions WHERE cycle_id=$1',[row.id])).rows.map(r=>[r.owner,BigInt(r.loss_usd)]));
@@ -64,6 +85,7 @@ test('direct round: snapshot at the cutoff reserves within the budget; the fee w
   // Next round: the budget is used up, so nothing more leaves the wallet (never above 50 %).
   w.conn.setTime(T0+210,2000);await w.tick();
   const r2=await w.cycle(2);assert.ok(['skipped_no_funds','funded'].includes(r2.state));assert.ok(BigInt(r2.total_lamports||0)<=5n*SOL-total,'round 2 can only use the rounding dust left of the budget: '+JSON.stringify(r2));
+  const k2=JSON.stringify([r2.state,String(r2.total_lamports||0)]);if(MODE==='replay')SAME.second=k2;else assert.equal(k2,SAME.second);
   const holders2=(await w.db.query('SELECT owner,compensated_lamports FROM reward_public_holders WHERE mint=$1 AND owner=ANY($2)',[w.mint,w.people])).rows;
   assert.equal(holders2.reduce((s,h)=>s+BigInt(h.compensated_lamports),0n),total,'round 2 counts round 1 as compensation');
  }finally{await w.done();}

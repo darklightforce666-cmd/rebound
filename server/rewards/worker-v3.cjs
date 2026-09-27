@@ -11,7 +11,7 @@ const {Connection,PublicKey}=require('@solana/web3.js');
 const DB=require('./db.cjs'),P3=require('./policy-v3.cjs'),H=require('./history-v3.cjs'),I=require('./indexer.cjs'),Pump=require('./pump.cjs');
 const FX=require('./sol-usd.cjs'),F=require('./primary-funding.cjs'),FS=require('./funding-store.cjs'),C=require('./cycle-v3.cjs'),V=require('./verifier-v3.cjs');
 const Logs=require('./logs.cjs'),Signer=require('./signer.cjs'),W3=require('./wire-v3.cjs'),{stable}=require('./policy.cjs');
-const R=require('./receipts-v3.cjs'),BB=require('./buyback-v3.cjs'),Admin=require('./admin-v3.cjs'),Inbox=require('./key-inbox.cjs'),Direct=require('./cycle-direct.cjs');
+const R=require('./receipts-v3.cjs'),BB=require('./buyback-v3.cjs'),Admin=require('./admin-v3.cjs'),Inbox=require('./key-inbox.cjs'),Direct=require('./cycle-direct.cjs'),Positions=require('./positions-v3.cjs');
 const b=x=>BigInt(x);
 
 // ---------------- history ingestion ----------------
@@ -26,7 +26,7 @@ const b=x=>BigInt(x);
 //    is fetched at most once, in JSON-RPC batches. maxTx bounds one pass; the queue carries the rest.
 //  * Coverage is complete only after a reconciliation at or after head found nothing left to fetch.
 // If the RPC cannot list holders, it falls back to following every token account seen in history.
-async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCheckSeconds=30,timeBudgetMs=Infinity}={}){
+async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCheckSeconds=30,verifySeconds=120,timeBudgetMs=Infinity}={}){
  const deadline=Date.now()+timeBudgetMs;
  const mint=coin.mint,m=H.marketAddresses(mint),head=await rpc.call('getSlot',[{commitment:'finalized'}]);
  const incomplete=[];let newEvents=0,newTx=0,budget=Number.isFinite(maxTx)?Math.max(1,Math.floor(maxTx)):100000;
@@ -78,7 +78,8 @@ async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCh
  const nowS=Math.floor(Date.now()/1000),anchor=Number(coin.schedule_anchor||0),len=Number(coin.cycle_seconds||0),lead=Number(coin.cutoff_lead_seconds||0);
  let lastCutoff=0;if(anchor&&len){const n=Math.floor((nowS-anchor)/len)+1;lastCutoff=anchor+n*len-lead;if(lastCutoff>nowS)lastCutoff-=len;}
  const since=hc?Math.floor(new Date(hc.updated_at).getTime()/1000):0;
- const due=!hc||!hc.complete||(lastCutoff&&Number(hc.through_time||0)<lastCutoff&&nowS-since>=5)||(!anchor&&nowS-since>=holderCheckSeconds);
+ // Also every `verifySeconds`, so the verified frontier (and the positions behind it) stays minutes fresh.
+ const due=!hc||!hc.complete||(lastCutoff&&Number(hc.through_time||0)<lastCutoff&&nowS-since>=5)||(!anchor&&nowS-since>=holderCheckSeconds)||nowS-since>=verifySeconds;
  if(await pendingCount()===0&&due){
   try{holders=await H.currentHolderAccounts(rpc,mint);}catch(e){holderError=String(e.message||e).slice(0,120);}
   let ok=false,slot=head;
@@ -122,7 +123,18 @@ async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCh
  await db.query(`INSERT INTO reward_checkpoints(name,through_slot,through_time,start_slot,complete,parser_version,digest,incident) VALUES($1,$2,$3,$2,$4,$5,'',$6)
   ON CONFLICT(name) DO UPDATE SET through_slot=CASE WHEN EXCLUDED.complete THEN EXCLUDED.through_slot ELSE reward_checkpoints.through_slot END,through_time=CASE WHEN EXCLUDED.complete THEN EXCLUDED.through_time ELSE reward_checkpoints.through_time END,complete=EXCLUDED.complete,incident=EXCLUDED.incident,updated_at=now()`,
   ['history:'+mint,through,await rpc.call('getBlockTime',[through]),complete,I.PARSER,complete?null:stable({incomplete:incomplete.slice(0,20)})]);
- await db.query('UPDATE reward_public_tokens SET history_fetched=$2,history_total=$3,history_complete=$4 WHERE mint=$1',[mint,q.fetched,q.total,complete]).catch(()=>{});
+ // Verified frontier: every transaction at or before it is stored. Only complete passes move it (forward).
+ let verified=null;
+ if(complete){verified={slot:through,time:await rpc.call('getBlockTime',[through])};
+  await db.query(`INSERT INTO reward_checkpoints(name,through_slot,through_time,start_slot,complete,parser_version,digest) VALUES($1,$2,$3,$2,true,$4,'')
+   ON CONFLICT(name) DO UPDATE SET through_slot=greatest(reward_checkpoints.through_slot,EXCLUDED.through_slot),through_time=CASE WHEN EXCLUDED.through_slot>=reward_checkpoints.through_slot THEN EXCLUDED.through_time ELSE reward_checkpoints.through_time END,complete=true,updated_at=now()`,
+   ['verified:'+mint,through,verified.time,I.PARSER]);}
+ const headTime=await rpc.call('getBlockTime',[head]).catch(()=>null);
+ await db.query(`UPDATE reward_public_tokens SET history_fetched=$2,history_total=$3,history_complete=$4,head_slot=$5,head_time=$6,indexer_at=now(),
+  verified_slot=COALESCE(greatest($7,verified_slot),verified_slot),verified_time=CASE WHEN $7::bigint IS NOT NULL AND $7::bigint>=COALESCE(verified_slot,0) THEN $8 ELSE verified_time END
+  WHERE mint=$1 AND (history_fetched IS DISTINCT FROM $2 OR history_total IS DISTINCT FROM $3 OR history_complete IS DISTINCT FROM $4 OR ($7::bigint IS NOT NULL AND $7::bigint IS DISTINCT FROM verified_slot)
+   OR indexer_at IS NULL OR indexer_at<now()-interval '60 seconds')`,   // no realtime message for a pass that changed nothing visible
+  [mint,q.fetched,q.total,complete,head,headTime,verified?.slot??null,verified?.time??null]).catch(()=>{});
  const inc=hc?.incident||{};
  return{head,newTx,newEvents,complete,incomplete,holders:inc.holders??null,mismatched:inc.mismatched??null,fallback:!!inc.fallback,holderError:inc.error||null,fetched:q.fetched,total:q.total};
 }
@@ -314,7 +326,7 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
     await sampleSolUsd({db:idb,connection}).catch(e=>Logs.log(idb,{severity:'warn',component:'indexer',eventType:'sol_usd_sample_failed',message:e.message,errorCode:e.code}));
     for(const coin of coins){
      await DB.withLease(idb,'ingest:'+coin.mint,worker,async()=>{
-      const r=await ingest({db:idb,rpc},coin,{maxTx:Number(process.env.REWARDS_INGEST_MAX_TX||Infinity),timeBudgetMs:Number(process.env.REWARDS_INGEST_TIME_BUDGET_MS||Infinity)});if(r.newTx||r.holderError)await Logs.log(idb,{component:'indexer',eventType:'history_ingested',mint:coin.mint,message:`History: +${r.newTx} transaction(s), ${r.newEvents} event(s); ${r.fetched}/${r.total} fetched`+(r.holders!=null?`, ${r.holders} holder account(s), ${r.mismatched??0} needed their own history`:r.fallback?`, holder list unavailable (${r.holderError||'fallback'})`:'')+`; coverage ${r.complete?'complete':'in progress'} through slot ${r.head}`,metadata:{incomplete:r.incomplete.slice(0,5)}});
+      const r=await ingest({db:idb,rpc},coin,{maxTx:Number(process.env.REWARDS_INGEST_MAX_TX||Infinity),timeBudgetMs:Number(process.env.REWARDS_INGEST_TIME_BUDGET_MS||Infinity),verifySeconds:Number(process.env.REWARDS_VERIFY_SECONDS||120)});if(r.newTx||r.holderError)await Logs.log(idb,{component:'indexer',eventType:'history_ingested',mint:coin.mint,message:`History: +${r.newTx} transaction(s), ${r.newEvents} event(s); ${r.fetched}/${r.total} fetched`+(r.holders!=null?`, ${r.holders} holder account(s), ${r.mismatched??0} needed their own history`:r.fallback?`, holder list unavailable (${r.holderError||'fallback'})`:'')+`; coverage ${r.complete?'complete':'in progress'} through slot ${r.head}`,metadata:{incomplete:r.incomplete.slice(0,5)}});
       await heartbeat({db:idb,connection},coin).catch(e=>Logs.log(idb,{severity:'warn',component:'indexer',eventType:'heartbeat_failed',mint:coin.mint,message:e.message,errorCode:e.code||'HEARTBEAT_FAILED'}));
       await backfillSolUsd({db:idb},coin.mint).catch(e=>Logs.log(idb,{severity:'warn',component:'indexer',eventType:'sol_usd_backfill_failed',mint:coin.mint,message:e.message,errorCode:e.code}));
       if(coin.kind!=='primary'&&program)await R.scanIntake({db:idb,rpc,program},coin);   // creator-fee income vs setup rent/donations
@@ -332,10 +344,17 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
     },{seconds:120,busy:()=>null}).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'funding_reconcile_failed',mint:coin.mint,message:e.message,errorCode:e.code||'RECONCILE_FAILED'}));
    // Direct settlement (no program): rounds are paid by the fee wallet's imported key; no program keys needed.
    const settlement=settles?Object.fromEntries((await sdb.query('SELECT namespace,settlement FROM reward_platform')).rows.map(r=>[r.namespace,r.settlement])):{};
-   if(settles)for(const coin of coins.filter(c=>c.status==='active'&&c.kind==='primary'&&settlement[c.namespace]==='direct'))
-    await Direct.tick({db:sdb,connection,worker,inputs,now:async()=>connection.getBlockTime(await connection.getSlot('finalized')),
+   // Ready-made positions (scheduler role, under the coin lease: the only writer). Bounded per pass.
+   const deadline=started+Number(process.env.REWARDS_POSITIONS_TIME_BUDGET_MS||40000),maxEvents=Number(process.env.REWARDS_POSITIONS_MAX_EVENTS||20000);
+   const positions={project:(c,o={})=>Positions.project({db:sdb},c,{deadline,maxEvents,...o}),inputsAt:(c,cut,slot)=>Positions.inputsAt(sdb,c,cut,slot),applyCredits:Positions.applyCredits};
+   const direct=c=>c.status==='active'&&c.kind==='primary'&&settlement[c.namespace]==='direct';
+   if(settles)for(const coin of coins.filter(direct))
+    await Direct.tick({db:sdb,connection,worker,inputs,positions,deadline,now:async()=>connection.getBlockTime(await connection.getSlot('finalized')),
      cutoffSlot:async t=>(await H.findCutoffSlot(rpc,t)).slot,signer:fw=>Signer.load(sdb,fw.signer)},coin)
      .catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'tick_failed',mint:coin.mint,message:e.message,errorCode:e.code||'SCHEDULER_ERROR'}));
+   if(settles)for(const coin of coins.filter(c=>!direct(c)))   // every other token: positions for the site
+    await DB.withLease(sdb,'coin:'+coin.mint,worker,()=>positions.project(coin),{seconds:120,busy:()=>null})
+     .catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'positions_failed',mint:coin.mint,message:e.message,errorCode:e.code||'POSITIONS_FAILED'}));
    const programCoins=coins.filter(c=>settlement[c.namespace]!=='direct');
    const signing=settles&&program&&feePayer&&publisher&&verifierKey&&programCoins.length>0;
    if(signing&&Date.now()-checked.at>60000){checked={...await preflightV3({connection,program,publisher:publisher.publicKey,verifier:verifierKey.publicKey}).catch(e=>({ok:false,reason:'preflight failed: '+e.message})),at:Date.now()};
@@ -367,4 +386,4 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
  await Promise.all([idb,sdb,vdb].filter(Boolean).map(p=>p.end()));
 }
 if(require.main===module)main().catch(e=>{process.stderr.write('worker failed: '+(e.code||'')+' '+Logs.redactText(e.message)+'\n');process.exitCode=1;});
-module.exports={preflightV3,envOrFile,backfillSolUsd,chainDeposit,ingest,inputsLoader,loadCredits,sampleSolUsd,heartbeat,reconcileFunding,primaryAwaiting,applyBudgetRequests,budgetAvailable,BUDGET_FEE_RESERVE,projectToken,main};
+module.exports={Positions,preflightV3,envOrFile,backfillSolUsd,chainDeposit,ingest,inputsLoader,loadCredits,sampleSolUsd,heartbeat,reconcileFunding,primaryAwaiting,applyBudgetRequests,budgetAvailable,BUDGET_FEE_RESERVE,projectToken,main};

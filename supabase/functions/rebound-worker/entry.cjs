@@ -28,22 +28,28 @@ async function secrets(dbUrl,token){
 }
 const same=(a,b)=>{const x=Buffer.from(String(a||'')),y=Buffer.from(String(b||''));return x.length===y.length&&x.length>0&&crypto.timingSafeEqual(x,y);};
 
-/** Returns {status, body, work?}: `work` is the pass to run in the background (EdgeRuntime.waitUntil). */
-async function handle({dbUrl,token}){
+/**
+ * Returns {status, body, work?}: `work` is the pass to run in the background (EdgeRuntime.waitUntil).
+ * `role`: 'indexer' (history → verified events) or 'scheduler' (positions, rounds, payouts). Two cron jobs
+ * call them separately, so a slow history pass never delays a round, and each has its own time budget.
+ */
+async function handle({dbUrl,token,role='all'}){
+ if(!['all','indexer','scheduler'].includes(role))return{status:400,body:{error:'unknown role'}};
  if(!dbUrl)return{status:503,body:{error:'SUPABASE_DB_URL missing'}};
  const s=await secrets(dbUrl,token);
  if(!s)return{status:401,body:{error:'unauthorized'}};
  if(!s.rpc_url)return{status:200,body:{state:'waiting_for_rpc',hint:'Open the admin dashboard once: the site stores its RPC endpoint for the worker.'}};
  if(!s.master_key)return{status:200,body:{state:'waiting_for_master_key'}};
  Object.assign(process.env,{
-  DATABASE_URL:dbUrl,REWARDS_DB_SET_ROLE:'true',REWARDS_WORKER_ROLE:'all',
+  DATABASE_URL:dbUrl,REWARDS_DB_SET_ROLE:'true',REWARDS_WORKER_ROLE:role,
   SOLANA_RPC_URL:s.rpc_url,...(s.history_rpc_url?{HISTORY_RPC_URL:s.history_rpc_url}:{}),
   REWARDS_SIGNER_MASTER_KEY:s.master_key,REWARDS_INBOX_KEY:s.inbox_jwk,
   REWARDS_MAX_EXECUTION_MODE:s.max_mode||'dry_run',REWARDS_ALLOW_PRODUCTION:'false',
   REWARDS_INGEST_MAX_TX:s.ingest_max_tx||'300',REWARDS_INGEST_TIME_BUDGET_MS:'40000',REWARDS_INGEST_LEASE_SECONDS:'90',HISTORY_RPC_MIN_INTERVAL_MS:s.rpc_interval_ms||'60',
+  REWARDS_VERIFY_SECONDS:s.verify_seconds||'120',REWARDS_POSITIONS_TIME_BUDGET_MS:'40000',REWARDS_POSITIONS_MAX_EVENTS:s.positions_max_events||'20000',
  });
  const {main}=require('../../../server/rewards/worker-v3.cjs');
  const started=Date.now();
- return{status:202,body:{state:'started'},work:main({role:'all',once:true}).then(()=>({ms:Date.now()-started}))};
+ return{status:202,body:{state:'started',role},work:main({role,once:true}).then(()=>({role,ms:Date.now()-started}))};
 }
 module.exports={handle};

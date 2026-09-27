@@ -45,9 +45,9 @@ async function available(db,connection,fw){
 // Reserved-but-unpaid awards of a fee wallet (lamports still owed from its balance).
 async function unpaidOf(db,fwId){return b((await db.query("SELECT COALESCE(sum(a.amount_lamports),0) s FROM reward_awards a JOIN reward_cycles c ON c.id=a.cycle_id WHERE c.funding_wallet=$1 AND a.state IN ('reserved','deferred_rent')",[fwId])).rows[0].s);}
 async function publishCycle(db,id,extra={}){
- await db.query(`INSERT INTO reward_public_cycles(mint,cycle_number,state,cutoff_time,scheduled_end,total_lamports,recipients,mode,holders_counted,holders_underwater,total_loss_lamports,available_lamports)
-  SELECT mint,cycle_number,state,cutoff_time,scheduled_end,total_lamports,eligible_count,$2,$3,$4,$5,$6 FROM reward_cycles WHERE id=$1
-  ON CONFLICT(mint,cycle_number) DO UPDATE SET state=EXCLUDED.state,total_lamports=EXCLUDED.total_lamports,recipients=EXCLUDED.recipients,mode=EXCLUDED.mode,
+ await db.query(`INSERT INTO reward_public_cycles(mint,cycle_number,state,cutoff_time,scheduled_end,total_lamports,recipients,mode,holders_counted,holders_underwater,total_loss_lamports,available_lamports,reason)
+  SELECT mint,cycle_number,state,cutoff_time,scheduled_end,total_lamports,eligible_count,$2,$3,$4,$5,$6,left(reason,80) FROM reward_cycles WHERE id=$1
+  ON CONFLICT(mint,cycle_number) DO UPDATE SET state=EXCLUDED.state,reason=EXCLUDED.reason,total_lamports=EXCLUDED.total_lamports,recipients=EXCLUDED.recipients,mode=EXCLUDED.mode,
    holders_counted=COALESCE(EXCLUDED.holders_counted,reward_public_cycles.holders_counted),holders_underwater=COALESCE(EXCLUDED.holders_underwater,reward_public_cycles.holders_underwater),
    total_loss_lamports=COALESCE(EXCLUDED.total_loss_lamports,reward_public_cycles.total_loss_lamports),available_lamports=COALESCE(EXCLUDED.available_lamports,reward_public_cycles.available_lamports)`,
   [id,extra.mode||'live',extra.counted??null,extra.underwater??null,extra.loss??null,extra.available??null]);
@@ -63,8 +63,11 @@ async function setState(db,id,state,fields={},{mint,cycle,message,severity,mode}
 async function tick(ports,coin){
  const {db}=ports;
  return DB.withLease(db,'coin:'+coin.mint,ports.worker||'worker',async({renew})=>{
+  // Newly verified events → positions (never past a round still waiting for its snapshot).
+  const t=await ports.now();
+  if(ports.positions)await ports.positions.project(coin,{deadline:ports.deadline,now:t}).catch(e=>log(db,{severity:'error',eventType:'positions_failed',mint:coin.mint,message:e.message,errorCode:e.code||'POSITIONS_FAILED'}));
   const s=schedule(coin);if(!s.anchor)return{state:'not_started'};
-  const t=await ports.now(),fw=await liveWallet(db,coin.mint);
+  const fw=await liveWallet(db,coin.mint);
   const open=(await db.query(`SELECT * FROM reward_cycles WHERE mint=$1 AND state<>ALL($2) ORDER BY cycle_number`,[coin.mint,DONE])).rows;
   const results=[];for(const row of open)results.push(await advance(ports,coin,s,row,t,renew));
   const n=cycleAt(s,t);
@@ -87,6 +90,14 @@ async function advance(ports,coin,s,row,t,renew){
    if(t>=cutoff+s.len){await setState(db,row.id,'missed',{reason:'snapshot_window_closed'},{...ctx,message:`Round ${n} missed: no complete snapshot before the next round; nothing was reserved`});return{cycle:n,state:'missed'};}
    if(t<cutoff)return{cycle:n,state:row.state};
    const slot=await ports.cutoffSlot(cutoff);if(slot==null){if(row.state!=='waiting_for_data')await setState(db,row.id,'waiting_for_data',{reason:'cutoff_slot_unproven'},{...ctx,message:null});return{cycle:n,state:'waiting_for_data'};}
+   // Ready-made positions are brought exactly to the cutoff slot; a round never pays on history that is not
+   // verified through its cutoff — it waits (and is missed, paying nothing, if that takes a whole round).
+   if(ports.positions){
+    const pr=await ports.positions.project(coin,{target:slot});
+    if(!pr.ready){const reason=pr.verifiedSlot<slot?'history_behind_cutoff':'positions_behind_cutoff';
+     if(row.state!=='waiting_for_data'||row.reason!==reason)await setState(db,row.id,'waiting_for_data',{reason},{...ctx,message:`Round ${n} waiting for data: ${reason.replaceAll('_',' ')} (verified through slot ${pr.verifiedSlot}, positions at ${pr.appliedSlot}, cutoff slot ${slot})`});
+     return{cycle:n,state:'waiting_for_data',reason};}
+   }
    return snapshot(ports,coin,row,slot);
   }
   case'funded':case'paying':case'partially_paid':case'retrying':return t>=due?pay(ports,coin,row,renew):{cycle:n,state:row.state};
@@ -102,8 +113,8 @@ async function snapshot(ports,coin,row,slot){
  const keyReady=!!(fw&&fw.mode==='automatic'&&fw.signer);
  const why=mode.paused?'paused':mode.mode==='dry_run'?'dry_run':!keyReady?'fee_wallet_key_missing':null;
  const avail=await available(db,connection,fw);
- const inputs=await ports.inputs(coin,n,cutoff,slot);
- const snap=S.build({...inputs,mint:row.mint,cycle:n,cutoff,cutoffSlot:slot,holderReserve:avail.lamports,policy:P3.policy(coin.policy_version)});
+ const inputs=ports.positions?await ports.positions.inputsAt(coin,cutoff,slot):await ports.inputs(coin,n,cutoff,slot);
+ const snap=(ports.positions?S.fromPositions:S.build)({...inputs,mint:row.mint,cycle:n,cutoff,cutoffSlot:slot,holderReserve:avail.lamports,policy:P3.policy(coin.policy_version)});
  if(snap.state==='waiting_for_data'){if(row.state!=='waiting_for_data'||row.reason!==snap.reason)await setState(db,row.id,'waiting_for_data',{reason:snap.reason},{...ctx,message:`Round ${n} waiting for data: ${snap.reason.replaceAll('_',' ')}`});return{cycle:n,state:'waiting_for_data',reason:snap.reason};}
  const underwater=snap.positions.filter(p=>p.outcome==='eligible'),counted=snap.positions.filter(p=>P3.big(p.quantity)>0n).length;
  const totalLoss=underwater.reduce((a,p)=>a+P3.big(p.lossUsd),0n),total=sumOf(snap.awards.map(a=>a.lamports));
@@ -127,8 +138,9 @@ async function snapshot(ports,coin,row,slot){
   if(live){
    const credits=snap.awards.flatMap(a=>a.lotCredits.filter(c=>P3.big(c.creditUsd)>0n).map(c=>({leaf_index:a.index,lot_id:c.lotId,credit_usd:c.creditUsd})));
    if(credits.length)await tx.query(`INSERT INTO reward_lot_credits(cycle_id,leaf_index,lot_id,credit_usd) SELECT $1,leaf_index,lot_id,credit_usd FROM jsonb_to_recordset($2::jsonb) AS x(leaf_index int,lot_id text,credit_usd numeric)`,[row.id,JSON.stringify(credits)]);
+   if(ports.positions)await ports.positions.applyCredits(tx,coin,slot,inputs.owners,snap.awards);   // positions stand at this slot
   }
-  const hol=snap.positions.filter(p=>P3.big(p.quantity)>0n).map(p=>({owner:p.owner,quantity_raw:p.quantity,cost_lamports:p.costUsd,value_lamports:p.valueUsd,compensated_lamports:p.creditUsd,loss_lamports:p.lossUsd,outcome:p.outcome==='hold'?'hold:'+(p.reason||''):p.outcome}));
+  const hol=snap.positions.filter(p=>P3.big(p.quantity)>0n||p.outcome==='hold').map(p=>({owner:p.owner,quantity_raw:p.quantity,cost_lamports:p.costUsd,value_lamports:p.valueUsd,compensated_lamports:p.creditUsd,loss_lamports:p.lossUsd,outcome:p.outcome==='hold'?'hold:'+(p.reason||''):p.outcome}));
   await tx.query(`INSERT INTO reward_public_holders(mint,owner,quantity_raw,cost_lamports,value_lamports,compensated_lamports,loss_lamports,outcome,cycle_number,updated_at)
    SELECT $1,owner,quantity_raw,cost_lamports,value_lamports,compensated_lamports,loss_lamports,left(outcome,60),$2,now() FROM jsonb_to_recordset($3::jsonb) AS x(owner text,quantity_raw numeric,cost_lamports numeric,value_lamports numeric,compensated_lamports numeric,loss_lamports numeric,outcome text)
    ON CONFLICT(mint,owner) DO UPDATE SET quantity_raw=EXCLUDED.quantity_raw,cost_lamports=EXCLUDED.cost_lamports,value_lamports=EXCLUDED.value_lamports,compensated_lamports=EXCLUDED.compensated_lamports,loss_lamports=EXCLUDED.loss_lamports,outcome=EXCLUDED.outcome,cycle_number=EXCLUDED.cycle_number,updated_at=now()`,[row.mint,n,JSON.stringify(hol)]);

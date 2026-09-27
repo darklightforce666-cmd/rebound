@@ -7,7 +7,9 @@ const clip = (e: unknown) => String((e as Error)?.message ?? e).replace(/postgre
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
   let r: { status: number; body: unknown; work?: Promise<unknown> };
-  try { r = await handle({ dbUrl: Deno.env.get("SUPABASE_DB_URL"), token: req.headers.get("x-rebound-cron") }); }
+  let role = "all";
+  try { const b = await req.json(); if (typeof b?.role === "string") role = b.role; } catch { /* empty body */ }
+  try { r = await handle({ dbUrl: Deno.env.get("SUPABASE_DB_URL"), token: req.headers.get("x-rebound-cron"), role }); }
   catch (e) { r = { status: 500, body: { error: clip(e) } }; }
   if (r.work) {
     // deno-lint-ignore no-explicit-any

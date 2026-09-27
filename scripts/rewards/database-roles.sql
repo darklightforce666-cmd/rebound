@@ -108,3 +108,8 @@ GRANT UPDATE(settlement) ON reward_platform TO rebound_api;
 -- ---------- history queue (016) ----------
 GRANT INSERT,UPDATE ON reward_history_queue TO rebound_indexer;
 GRANT SELECT ON reward_history_queue TO rebound_api;
+
+-- ---------- ready-made holder positions (017) ----------
+GRANT SELECT,INSERT,UPDATE,DELETE ON reward_holder_positions,reward_holder_accounts,reward_projection_state TO rebound_scheduler;
+GRANT SELECT ON reward_holder_positions,reward_holder_accounts,reward_projection_state TO rebound_api;
+GRANT DELETE ON reward_public_holders TO rebound_scheduler;

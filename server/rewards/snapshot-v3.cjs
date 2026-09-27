@@ -26,6 +26,26 @@ function build(a){
  const sol=policy.lossUnit==='SOL';   // v3.1+: losses in SOL, no external price feed
  const fx=sol?(t=>({time:Number(t),price:P3.LAMPORTS,conf:0n,source:'sol-unit'})):a.fx;
  const r=L.replay(a.events,{excluded:a.excluded,fx,credits:a.credits||[],throughSlot:a.cutoffSlot,parserHolds:a.parserHolds||[]});
+ return finish(a,policy,base,wait,r);
+}
+/**
+ * Same round from ready-made positions (migration 017) instead of a replay of the whole history.
+ * @param a.owners        Map owner → {lots, holds}: positions applied exactly through a.cutoffSlot
+ * @param a.mintHolds     mint-level holds of the projection
+ * @param a.observations  market states through the cutoff (price window, the last state before it,
+ *                        graduations and invalidations)
+ */
+function fromPositions(a){
+ const policy=a.policy||P3.POLICY,base={mint:a.mint,cycle:String(a.cycle),cutoff:Number(a.cutoff),cutoffSlot:a.cutoffSlot,policy:policy.version,policyHash:P3.hashOf(policy)};
+ const wait=(reason,extra={})=>({...base,state:'waiting_for_data',reason,awards:[],positions:[],...extra});
+ if(a.cutoffSlot==null)return wait('cutoff_slot_unproven');
+ if(!a.coverage?.complete)return wait('history_incomplete',{coverage:a.coverage});
+ if(Number(a.coverage.throughSlot)<Number(a.cutoffSlot))return wait('history_behind_cutoff',{coverage:a.coverage});
+ if(Number(a.appliedSlot)!==Number(a.cutoffSlot))return wait('positions_behind_cutoff');
+ return finish(a,policy,base,wait,{owners:a.owners,observations:a.observations||[],mintHolds:a.mintHolds||[]});
+}
+function finish(a,policy,base,wait,r){
+ const sol=policy.lossUnit==='SOL';
  if(r.mintHolds.length)return wait(r.mintHolds[0].reason,{mintHolds:r.mintHolds});
  const token=[...r.observations.filter(o=>!o.graduation),...(a.heartbeats||[])].filter(o=>o.time<=a.cutoff);
  // Graduation continuity: the first canonical pool state after a verified graduation event.
@@ -45,4 +65,4 @@ function build(a){
   positions:publicPositions,awards:awards.map(x=>({index:x.index,owner:x.owner,lamports:str(x.lamports),creditUsd:str(x.creditUsd),lossUsd:str(x.lossUsd),lotCredits:x.lotCredits.map(c=>({lotId:c.lotId,creditUsd:str(c.credit)}))}))};
  return{...body,snapshotHash:P3.canonicalHash(body)};
 }
-module.exports={build};
+module.exports={build,fromPositions};
