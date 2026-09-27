@@ -214,10 +214,13 @@ const SOL_LOGO='<svg class="pair-logo" viewBox="0 0 32 32" aria-hidden="true"><d
 const PAIR_GROUPS=[['stock','Tokenized stocks'],['stable','Stablecoins'],['wrapped','Wrapped coins'],['other','Other assets']];
 // Pair picker: SOL as the main button, every other asset pump.fun admits grouped by kind, with its logo.
 // A coin paired with another asset collects its fees in that asset, so its holders are paid in it too.
+window.pairLogoFail=img=>{if(img.dataset.raw&&img.src!==img.dataset.raw){img.src=img.dataset.raw;img.dataset.raw='';return;}const s=document.createElement('span');s.className='pair-logo ph';s.textContent=img.dataset.l||'?';img.replaceWith(s);};
 function pairPicker(host,signal){
  const box=host.querySelector('#pair-groups'),input=host.querySelector('#launch-quote'),note=host.querySelector('#pair-note'),find=host.querySelector('#pair-find'),buy=host.querySelector('#launch-buy');
  let quotes=[];
- const logo=q=>q.image?'<img class="pair-logo" src="'+esc(q.image)+'" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement(\'span\'),{className:\'pair-logo ph\',textContent:this.dataset.l}))" data-l="'+esc((q.symbol||'?').slice(0,2).toUpperCase())+'">':'<span class="pair-logo ph">'+esc((q.symbol||'?').slice(0,2).toUpperCase())+'</span>';
+ // Logos load through an image cache (small, fast, no hotlink blocks); if that fails, the original URL; then initials.
+ const logo=q=>{const l=esc((q.symbol||'?').replace(/^\$/,'').slice(0,2).toUpperCase());if(!q.image)return '<span class="pair-logo ph">'+l+'</span>';
+  return '<img class="pair-logo" src="https://wsrv.nl/?url='+encodeURIComponent(q.image)+'&w=64&h=64&fit=cover&output=webp" data-raw="'+esc(q.image)+'" data-l="'+l+'" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="pairLogoFail(this)">';};
  const select=mint=>{input.value=mint||'';host.querySelectorAll('[data-quote]').forEach(b=>{const on=b.dataset.quote===input.value;b.classList.toggle('on',on);b.setAttribute('aria-pressed',on);});
   const q=quotes.find(x=>x.mint===mint);
   note.hidden=!q;if(q)note.innerHTML='Paired with <b>'+esc(q.symbol||short(q.mint))+'</b>: this coin’s creator fees arrive in '+esc(q.symbol||'that asset')+', so its holders are paid in '+esc(q.symbol||'it')+' too. The 15% is swapped to SOL and buys and burns $REBOUND. An initial buy is available for SOL pairs only.';

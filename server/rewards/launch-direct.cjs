@@ -40,15 +40,26 @@ async function quoteMints(connection){
  for(let i=0;i<unique.length;i+=100){
   const infos=await connection.getMultipleParsedAccounts(unique.slice(i,i+100).map(m=>new PublicKey(m)),{commitment:'confirmed'}).catch(()=>({value:[]}));
   unique.slice(i,i+100).forEach((m,j)=>{const md=(infos.value?.[j]?.data?.parsed?.info?.extensions||[]).find(e=>e.extension==='tokenMetadata')?.state;
-   named.push({mint:m,symbol:md?.symbol?String(md.symbol).slice(0,16):null,name:md?.name?String(md.name).slice(0,48):null});});
+   named.push({mint:m,symbol:md?.symbol?String(md.symbol).slice(0,16):null,name:md?.name?String(md.name).slice(0,48):null,uri:md?.uri?Meta.httpUrl(md.uri):null});});
  }
- // Name, ticker and logo from each asset's own metadata (display only), a few at a time.
- const until=Date.now()+6000;   // the function has ~10 s; logos that are slower come on the next refresh
- for(let i=0;i<named.length&&Date.now()<until;i+=8)await Promise.all(named.slice(i,i+8).map(async q=>{try{const m=await Meta.resolve(connection,q.mint,{timeoutMs:3000});if(m){q.symbol=q.symbol||m.symbol||null;q.name=q.name||m.name||null;q.image=m.image||null;}}catch{}}));
+ // Name, ticker and logo from each asset's own metadata (display only), all at once; then Jupiter's token list for
+ // any asset whose metadata has no usable image. Display only.
+ const until=Date.now()+7000;
+ const image=async uri=>{try{const r=await fetch(uri,{signal:AbortSignal.timeout(3500)});return r.ok?Meta.httpUrl((await r.json())?.image||''):null;}catch{return null;}};
+ await Promise.all(named.map(async q=>{try{
+  if(q.uri)q.image=await image(q.uri);   // Token-2022: the metadata URI is already known
+  else{const m=await Meta.resolve(connection,q.mint,{timeoutMs:3500});if(m){q.symbol=q.symbol||m.symbol||null;q.name=q.name||m.name||null;q.image=m.image||null;}}
+ }catch{}}));
+ for(const q of named)delete q.uri;
+ const missing=named.filter(q=>!q.image||!q.symbol);
+ for(let i=0;i<missing.length&&Date.now()<until;i+=50)try{
+  const r=await fetch((process.env.JUPITER_API_URL||'https://lite-api.jup.ag').replace(/\/+$/,'')+'/tokens/v2/search?query='+missing.slice(i,i+50).map(q=>q.mint).join(','),{signal:AbortSignal.timeout(3000)});
+  if(r.ok)for(const t of await r.json()){const q=missing.find(x=>x.mint===t.id);if(!q)continue;q.image=q.image||Meta.httpUrl(t.icon||'')||null;q.symbol=q.symbol||(t.symbol?String(t.symbol).slice(0,16):null);q.name=q.name||(t.name?String(t.name).slice(0,48):null);}
+ }catch{}
  for(const q of named)q.category=quoteCategory(q);
  const list=[{mint:SOL_KEY,symbol:'SOL',name:'Solana',sol:true,category:'sol'},...named.sort((a,b)=>String(a.symbol||'~').localeCompare(String(b.symbol||'~')))];
  // Logos still missing (slow metadata hosts): keep this list one minute only, then try again.
- quoteCache={at:Date.now()<until?Date.now():Date.now()-540000,list};return list;
+ quoteCache={at:named.some(q=>!q.image)?Date.now()-540000:Date.now(),list};return list;
 }
 
 /** 1. Draft: the shared draft plus the pair. The pair is fixed once the launch has been prepared (the prepared
