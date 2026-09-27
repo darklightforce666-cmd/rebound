@@ -28,6 +28,7 @@ require('../tests/copy.test.cjs');
 require('../tests/rewards/budget-inbox.test.cjs');
 require('../tests/rewards/direct-v3.test.cjs');
 require('../tests/rewards/positions-v3.test.cjs');
+require('../tests/rewards/bundle-parse.test.cjs');
 require('../tests/vendor-bigint.test.cjs');
 require('../tests/wallet.test.cjs');
 require('../tests/wallet-session.test.cjs');

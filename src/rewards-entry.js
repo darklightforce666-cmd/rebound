@@ -112,10 +112,10 @@ let listChannel=null,feedChannel=null,tokenChannel=null;
 const debounce=(fn,ms)=>{let t=null;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms);};};
 async function realtime(name,tables,cb){await config();if(!supabase)return null;let ch=supabase.channel(name);for(const t of tables)ch=ch.on('postgres_changes',{event:t.event||'*',schema:'rebound',table:t.table,...(t.filter?{filter:t.filter}:{})},p=>cb(t.table,p));return ch.subscribe();}
 function tile(t){
- const f=freshness(t),loading=t.history_complete===false&&t.history_total?'<span class="tile-loading">Loading history '+Math.floor(100*(t.history_fetched||0)/t.history_total)+'%</span>':f?.level==='warn'?'<span class="tile-loading">Data delayed</span>':'';
- const stats='<div class="tile-stats">'+loading+'<span><b>'+sv(t.paid_lamports)+'</b> SOL paid</span><span><b>'+esc(t.paid_recipients||0)+'</b> holders paid</span><span><b>'+esc(t.holders_underwater??'—')+'</b> underwater</span></div>';
+ // Homepage tiles show who got paid — no history progress, no round details (those live on the token page).
+ const stats='<div class="tile-stats"><span><b>'+sv(t.paid_lamports)+'</b> SOL paid</span><span><b>'+esc(t.paid_recipients||0)+'</b> holders paid</span><span><b>'+esc(t.payouts||0)+'</b> payouts</span></div>';
  return '<a class="token-tile'+(t.featured?' featured':'')+'" href="#token/'+esc(t.mint)+'">'+(t.image_uri?'<img src="'+esc(t.image_uri)+'" alt="" loading="lazy">':'<span class="token-tile-ph"></span>')+'<span class="tile-body"><span class="tile-name"><b>'+esc(t.name||short(t.mint))+'</b> <small>'+esc(t.symbol||'')+'</small>'+(t.featured?' <i class="tag">REBOUND</i>':t.pinned?' <i class="tag neutral">REBOUND</i>':'')+(t.test?' <i class="tag neutral">TEST</i>':'')+'</span>'+
-  (t.featured?'<small class="tile-sub">First REBOUND token · rounds every '+(t.test?'2':'30')+' minutes</small>':'<small class="tile-sub">Mcap '+usdPico(t.market_cap_usd_pico)+' · '+esc(t.reward_status)+'</small>')+stats+'</span></a>';
+  '<small class="tile-sub">'+(t.featured?'REBOUND token':'Launched on REBOUND')+(t.market_cap_usd_pico?' · Mcap '+usdPico(t.market_cap_usd_pico):'')+'</small>'+stats+'</span></a>';
 }
 async function mountTokenList(host,signal){
  let view=sessionStorage.getItem('rebound-view')==='test'?'test':'production';
@@ -128,10 +128,11 @@ async function mountTokenList(host,signal){
  if(!listChannel)try{listChannel=await realtime('public-tokens',[{table:'reward_public_tokens'},{table:'reward_site',event:'UPDATE'}],debounce(()=>{const h=document.querySelector('#token-list');if(h)mountTokenList(h);},800));}catch{}
 }
 // Homepage: live payout feed across all REBOUND tokens.
-function payoutRow(p,fresh,withToken){return '<tr'+(fresh?' class="fresh"':'')+'><td>'+esc(ago(p.paid_at))+'</td>'+(withToken?'<td><a href="#token/'+esc(p.mint)+'">'+esc(p.symbol||short(p.mint))+'</a></td>':'')+'<td>'+wal(p.owner)+'</td><td class="num">'+sv(p.loss_lamports)+'</td><td class="num"><b>+'+sv(p.amount_lamports)+'</b></td><td>'+esc(p.cycle_number)+'</td><td>'+tx(p.signature,'tx')+'</td></tr>';}
-function payoutTable(list,withToken){return list.length?'<div class="table-container"><table class="token-table live-table"><thead><tr><th>When</th>'+(withToken?'<th>Token</th>':'')+'<th>Holder</th><th class="num">Loss at snapshot, SOL</th><th class="num">Paid, SOL</th><th>Round</th><th>Proof</th></tr></thead><tbody>'+list.map(p=>payoutRow(p,false,withToken)).join('')+'</tbody></table></div>':'<p class="live-caption">No payouts yet. They appear here the moment they land on chain.</p>';}
+// withToken (homepage): who got paid, how much, when, proof. The token page also shows the loss and round.
+function payoutRow(p,fresh,withToken){return '<tr'+(fresh?' class="fresh"':'')+'><td>'+esc(ago(p.paid_at))+'</td>'+(withToken?'<td><a href="#token/'+esc(p.mint)+'">'+esc(p.symbol||short(p.mint))+'</a></td>':'')+'<td>'+wal(p.owner)+'</td>'+(withToken?'':'<td class="num">'+sv(p.loss_lamports)+'</td>')+'<td class="num"><b>+'+sv(p.amount_lamports)+'</b></td>'+(withToken?'':'<td>'+esc(p.cycle_number)+'</td>')+'<td>'+tx(p.signature,'tx')+'</td></tr>';}
+function payoutTable(list,withToken){return list.length?'<div class="table-container"><table class="token-table live-table"><thead><tr><th>When</th>'+(withToken?'<th>Token</th>':'')+'<th>Holder</th>'+(withToken?'':'<th class="num">Loss at snapshot, SOL</th>')+'<th class="num">Received, SOL</th>'+(withToken?'':'<th>Round</th>')+'<th>Proof</th></tr></thead><tbody>'+list.map(p=>payoutRow(p,false,withToken)).join('')+'</tbody></table></div>':'<p class="live-caption">No payouts yet. Every payment appears here the moment it lands on chain.</p>';}
 async function mountPayoutFeed(host,signal){
- const draw=async()=>{try{const r=await api('payouts',{signal});if(host.isConnected)host.innerHTML='<div class="section-heading"><h2>Live payouts <span class="live-dot"></span></h2></div>'+payoutTable(r.payouts,true);}catch(e){if(host.isConnected&&!signal?.aborted)host.innerHTML='<h2>Live payouts</h2><p>'+esc(e.message)+'</p>';}};
+ const draw=async()=>{try{const r=await api('payouts',{signal});if(host.isConnected)host.innerHTML='<div class="section-heading"><h2>Who got paid <span class="live-dot"></span></h2></div>'+payoutTable(r.payouts,true);}catch(e){if(host.isConnected&&!signal?.aborted)host.innerHTML='<h2>Who got paid</h2><p>'+esc(e.message)+'</p>';}};
  await draw();
  if(!feedChannel)try{feedChannel=await realtime('public-payouts',[{table:'reward_public_payouts',event:'INSERT'}],debounce(()=>{const h=document.querySelector('#payout-feed');if(h)mountPayoutFeed(h);},500));}catch{}
 }
@@ -163,7 +164,7 @@ async function mountToken(host,mint,signal){
    const more=box.querySelector('#holders-more');if(more)more.onclick=()=>{offset+=100;drawHolders();};}catch(e){box.innerHTML='<p>'+esc(e.message)+'</p>';}};
  const draw=async()=>{try{
   const r=await api('token',{query:{mint},signal});if(!host.isConnected)return;state=r;const t=r.token,st=r.stats,live=r.cycles[0]?.mode!=='dry_run';
-  host.innerHTML='<div class="section-heading"><h2>Loss compensation · '+esc(t.symbol||t.name||short(mint))+' <span class="live-dot" title="Updates live"></span></h2><span class="tag '+(live?'':'neutral')+'">'+(live?'LIVE':'DRY RUN')+(t.test?' · TEST':'')+'</span></div>'+
+  host.innerHTML='<div class="section-heading"><h2>'+(t.image_uri&&/^https:\/\//.test(t.image_uri)?'<img class="token-inline-img" src="'+esc(t.image_uri)+'" alt="">':'')+'Loss compensation · '+esc(t.symbol||t.name||short(mint))+' <span class="live-dot" title="Updates live"></span></h2><span class="tag '+(live?'':'neutral')+'">'+(live?'LIVE':'DRY RUN')+(t.test?' · TEST':'')+'</span></div>'+
    '<p class="live-caption" id="round-clock"></p>'+freshHtml(t)+
    (t.history_complete===false&&t.history_total?'<div class="history-progress"><div><span>Loading this token’s trade history before the first round: <b>'+esc(t.history_fetched||0)+'</b> of <b>'+esc(t.history_total)+'</b> transactions</span></div><progress max="'+esc(t.history_total)+'" value="'+esc(t.history_fetched||0)+'"></progress><small>Rounds start once every current holder’s purchases are known.</small></div>':'')+
    '<div class="live-metrics comp-metrics"><div><span>Paid to holders</span><strong>'+sv(t.paid_lamports)+' SOL</strong></div><div><span>Holders paid</span><strong>'+esc(t.paid_recipients||0)+'</strong><small>'+esc(t.payouts||0)+' payouts</small></div><div><span>Underwater now</span><strong>'+esc(st.underwater)+'</strong><small>of '+esc(st.holders)+' holders</small></div><div><span>Total loss now</span><strong>'+sv(st.loss)+' SOL</strong></div></div>'+
@@ -379,12 +380,15 @@ async function adminLogin(host,toast,message){
 function logRows(list,rowsOnly){const r=list.map(l=>'<tr class="sev-'+esc(l.severity)+'"><td>'+when(l.timestamp_utc)+'</td><td>'+esc(l.severity)+'</td><td>'+esc(l.component)+'</td><td>'+esc(l.event_type)+'</td><td>'+esc(l.mint?short(l.mint):'')+'</td><td>'+esc(l.safe_message)+(l.error_code?' <code>'+esc(l.error_code)+'</code>':'')+'</td></tr>').join('');
  return rowsOnly?r:'<div class="table-container"><table class="token-table"><thead><tr><th>Time</th><th>Severity</th><th>Component</th><th>Event</th><th>Mint</th><th>Message</th></tr></thead><tbody>'+r+'</tbody></table></div>';}
 
+// The token's own image (from its metadata, resolved by the indexer) replaces the placeholder logo.
+async function tokenImage(img,signal){try{const r=await api('token',{query:{mint:img.dataset.tokenImage},signal});const u=r.token?.image_uri;if(u&&/^https:\/\//.test(u)&&img.isConnected){img.src=u;img.alt=r.token.symbol||r.token.name||'';}}catch{}}
 // ---------------- mount by route ----------------
 async function mount({route,mint,toast,signal}){
  const q=s=>document.querySelector(s);
  if(q('#rewards-summary'))mountSummary(q('#rewards-summary'),signal);
  if(route==='explore'&&q('#token-list'))mountTokenList(q('#token-list'),signal);
  if(route==='explore'&&q('#payout-feed'))mountPayoutFeed(q('#payout-feed'),signal);
+ for(const img of document.querySelectorAll('img[data-token-image]'))tokenImage(img,signal);
  if(route==='launch'&&q('#rewards-launch'))mountLaunch(q('#rewards-launch'),toast,signal);
  if(route==='portfolio'&&q('#wallet-rewards'))mountWalletRewards(q('#wallet-rewards'),signal);
  if(route==='token'&&q('#token-rewards'))mountToken(q('#token-rewards'),mint,signal);

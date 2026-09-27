@@ -52,7 +52,9 @@ async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCh
    const parsed=I.parseTransaction(tx,{slot:tx.slot,time:tx.blockTime,transactionIndex:index,coins:[{mint,intake:coin.intake,sharing_config:coin.sharing_config,current_creator:null}]});
    await DB.transaction(db,async t=>{
     for(const e of parsed.events)await t.query('INSERT INTO reward_events(id,mint,signature,instruction_path,event_index,slot,transaction_index,execution_order,kind,owner,data,raw_digest,parser_version,finalized) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true) ON CONFLICT DO NOTHING',
-     [e.id,e.mint,e.signature,e.path,e.eventIndex,e.slot,index,e.order,e.kind,e.owner,stable({...e.data,time:tx.blockTime}),e.rawDigest,I.PARSER]);
+     // SOL/quote transfers carry no mint of their own; they are the purchase payment proof of THIS mint's
+     // trades, so they are stored under this mint (rounds and positions read one mint's events).
+     [e.mint?e.id:require('./wire.cjs').hash(e.id,mint).toString('hex'),e.mint||mint,e.signature,e.path,e.eventIndex,e.slot,index,e.order,e.kind,e.owner,stable({...e.data,time:tx.blockTime}),e.rawDigest,I.PARSER]);
     if(parsed.holds.length)await t.query("INSERT INTO reward_audit(kind,mint,actor,evidence) VALUES('parser_hold',$1,'indexer',$2)",[mint,stable({signature:row.signature,holds:parsed.holds})]);
     await t.query('UPDATE reward_history_queue SET fetched_at=now(),events=$3 WHERE mint=$1 AND signature=$2',[mint,row.signature,parsed.events.length]);
    },{serializable:false});
@@ -61,7 +63,7 @@ async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCh
  };
  const fetchPending=async()=>{
   // Transactions already ingested by an earlier version are never fetched again.
-  await db.query('UPDATE reward_history_queue q SET fetched_at=now(),events=0 WHERE q.mint=$1 AND q.fetched_at IS NULL AND EXISTS(SELECT 1 FROM reward_events e WHERE e.signature=q.signature)',[mint]);
+  await db.query('UPDATE reward_history_queue q SET fetched_at=now(),events=0 WHERE q.mint=$1 AND q.fetched_at IS NULL AND EXISTS(SELECT 1 FROM reward_events e WHERE e.signature=q.signature AND e.mint=q.mint)',[mint]);
   if(budget<=0)return;
   const rows=(await db.query('SELECT signature,slot,block_index FROM reward_history_queue WHERE mint=$1 AND fetched_at IS NULL ORDER BY slot,signature LIMIT $2',[mint,budget])).rows;budget-=rows.length;
   const chunks=[];for(let i=0;i<rows.length;i+=batch)chunks.push(rows.slice(i,i+batch));
@@ -282,8 +284,19 @@ async function budgetAvailable(db,connection,mint,chainCoin){
  const bal=b(await connection.getBalance(new PublicKey(fw.address),'finalized'))-BUDGET_FEE_RESERVE;
  const v=left<bal?left:bal;return v>0n?v:0n;
 }
+// Display metadata (name, symbol, image) resolved once per token; failures are retried at most every 10 min.
+const metaTried=new Map();
+async function displayMeta(db,connection,coin){
+ const row=(await db.query('SELECT name,symbol,image_uri FROM reward_public_tokens WHERE mint=$1',[coin.mint])).rows[0];
+ if(row?.image_uri&&row?.name)return{name:row.name,symbol:row.symbol,image:row.image_uri};
+ if(Date.now()-(metaTried.get(coin.mint)||0)<600000)return{name:row?.name||null,symbol:row?.symbol||null,image:row?.image_uri||null};
+ metaTried.set(coin.mint,Date.now());
+ const m=await require('./token-meta.cjs').resolve(connection,coin.mint).catch(()=>null);
+ return{name:row?.name||m?.name||null,symbol:row?.symbol||m?.symbol||null,image:row?.image_uri||m?.image||null};
+}
 async function projectToken({db,connection},coin){
  const info=await connection.getParsedAccountInfo(new PublicKey(coin.mint),'finalized');const m=info.value?.data?.parsed?.info;if(!m)return;
+ const dm=await displayMeta(db,connection,coin);coin={...coin,name:coin.name||dm.name,symbol:coin.symbol||dm.symbol,image_uri:coin.image_uri||dm.image};
  const obs=(await db.query('SELECT * FROM reward_price_observations WHERE mint=$1 ORDER BY observed_at DESC LIMIT 1',[coin.mint])).rows[0];
  const sol=(await db.query('SELECT * FROM reward_sol_usd ORDER BY publish_time DESC LIMIT 1')).rows[0];
  let price=null,cap=null,at=null;
@@ -292,7 +305,7 @@ async function projectToken({db,connection},coin){
  const status=coin.status==='active'?'active':coin.status;
  await db.query(`INSERT INTO reward_public_tokens(mint,namespace,kind,name,symbol,image_uri,creator_wallet,launch_time,decimals,supply_definition,supply_raw,price_usd_pico,price_updated_at,market_cap_usd_pico,market_cap_kind,price_source,reward_status,pinned,test)
   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'outstanding mint supply (burned units excluded)',$10,$11,$12,$13,'market_cap',$14,$15,$16,$17)
-  ON CONFLICT(mint) DO UPDATE SET name=EXCLUDED.name,symbol=EXCLUDED.symbol,image_uri=EXCLUDED.image_uri,decimals=EXCLUDED.decimals,supply_raw=EXCLUDED.supply_raw,price_usd_pico=COALESCE(EXCLUDED.price_usd_pico,reward_public_tokens.price_usd_pico),
+  ON CONFLICT(mint) DO UPDATE SET name=COALESCE(EXCLUDED.name,reward_public_tokens.name),symbol=COALESCE(EXCLUDED.symbol,reward_public_tokens.symbol),image_uri=COALESCE(EXCLUDED.image_uri,reward_public_tokens.image_uri),decimals=EXCLUDED.decimals,supply_raw=EXCLUDED.supply_raw,price_usd_pico=COALESCE(EXCLUDED.price_usd_pico,reward_public_tokens.price_usd_pico),
    price_updated_at=COALESCE(EXCLUDED.price_updated_at,reward_public_tokens.price_updated_at),market_cap_usd_pico=COALESCE(EXCLUDED.market_cap_usd_pico,reward_public_tokens.market_cap_usd_pico),reward_status=EXCLUDED.reward_status`,
   [coin.mint,coin.namespace,coin.kind,coin.name,coin.symbol,coin.image_uri,coin.creator_wallet,coin.launch_time,m.decimals,m.supply,price==null?null:String(price),at,cap==null?null:String(cap),obs?(obs.quote_model==='curve'?'pump bonding curve (finalized)':'canonical PumpSwap pool (finalized)'):null,status,coin.kind==='primary',coin.namespace==='mainnet_test']);
 }
