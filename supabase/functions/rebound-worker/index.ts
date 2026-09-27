@@ -1,7 +1,7 @@
 // REBOUND hosted worker — Supabase Edge Function stub. The worker code is the repository's own bundle
 // (scripts/rewards/build-hosted-worker.cjs), pinned to an exact commit so it cannot change underneath.
 // Auth: the pg_cron job sends a random token kept in Supabase Vault (x-rebound-cron).
-import { handle } from "https://cdn.jsdelivr.net/gh/darklightforce666-cmd/rebound@3b9f908295e46d46e5c1ef619045f1bb99db95b9/supabase/functions/rebound-worker/worker-bundle.mjs";
+import { handle } from "https://cdn.jsdelivr.net/gh/darklightforce666-cmd/rebound@efb0575e283663f5f6e2580181423b7497c0175c/supabase/functions/rebound-worker/worker-bundle.mjs";
 
 const clip = (e: unknown) => String((e as Error)?.message ?? e).replace(/postgres(ql)?:\/\/\S+/g, "postgres://[redacted]").slice(0, 300);
 Deno.serve(async (req: Request) => {

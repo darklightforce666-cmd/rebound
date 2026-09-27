@@ -26,7 +26,8 @@ const b=x=>BigInt(x);
 //    is fetched at most once, in JSON-RPC batches. maxTx bounds one pass; the queue carries the rest.
 //  * Coverage is complete only after a reconciliation at or after head found nothing left to fetch.
 // If the RPC cannot list holders, it falls back to following every token account seen in history.
-async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCheckSeconds=30}={}){
+async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCheckSeconds=30,timeBudgetMs=Infinity}={}){
+ const deadline=Date.now()+timeBudgetMs;
  const mint=coin.mint,m=H.marketAddresses(mint),head=await rpc.call('getSlot',[{commitment:'finalized'}]);
  const incomplete=[];let newEvents=0,newTx=0,budget=Number.isFinite(maxTx)?Math.max(1,Math.floor(maxTx)):100000;
  for(const [address,role] of [[m.mint,'mint'],[m.curve,'curve'],[m.pool,'pool']])
@@ -64,7 +65,7 @@ async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCh
   if(budget<=0)return;
   const rows=(await db.query('SELECT signature,slot,block_index FROM reward_history_queue WHERE mint=$1 AND fetched_at IS NULL ORDER BY slot,signature LIMIT $2',[mint,budget])).rows;budget-=rows.length;
   const chunks=[];for(let i=0;i<rows.length;i+=batch)chunks.push(rows.slice(i,i+batch));
-  for(let i=0;i<chunks.length;i+=parallel)await Promise.all(chunks.slice(i,i+parallel).map(fetchChunk));
+  for(let i=0;i<chunks.length;i+=parallel){if(Date.now()>deadline)break;await Promise.all(chunks.slice(i,i+parallel).map(fetchChunk));}
  };
  const pendingCount=async()=>(await db.query('SELECT count(*)::int n FROM reward_history_queue WHERE mint=$1 AND fetched_at IS NULL',[mint])).rows[0].n;
  // 1. Trades: the three market addresses, every pass.
@@ -88,8 +89,9 @@ async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCh
    const diff=holders.accounts.filter(h=>known.get(h.account)!==h.amount);mismatched=diff.length;ok=true;
    for(const h of diff)await db.query("INSERT INTO reward_history_cursors(mint,address,role,discovered_slot) VALUES($1,$2,'token_account',$3) ON CONFLICT DO NOTHING",[mint,h.account,slot]);
    const curs=diff.length?(await db.query('SELECT * FROM reward_history_cursors WHERE mint=$1 AND address=ANY($2::text[])',[mint,diff.map(h=>h.account)])).rows:[];
-   const lists=await H.signaturesForMany(rpc,curs.map(c=>({address:c.address,until:c.newest_signature||null})));
-   for(const cur of curs)if(!await listInto(cur,lists.get(cur.address)))ok=false;
+   const byAddr=new Map(curs.map(c=>[c.address,c]));
+   const lists=await H.signaturesForMany(rpc,curs.map(c=>({address:c.address,until:c.newest_signature||null})),{deadline,onResult:async(it,r)=>{if(!await listInto(byAddr.get(it.address),r))ok=false;}});
+   if(lists.partial)ok=false;
    await fetchPending();if(await pendingCount()>0)ok=false;
   }else{
    // Fallback: follow every token account ever seen in the history (more requests, same result),
@@ -98,12 +100,14 @@ async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCh
     const added=(await db.query(`INSERT INTO reward_history_cursors(mint,address,role,discovered_slot)
      SELECT DISTINCT $1,a->>'account','token_account',e.slot FROM reward_events e, jsonb_array_elements(e.data->'accounts') a WHERE e.mint=$1 AND e.kind='token_balances' ON CONFLICT DO NOTHING RETURNING address`,[mint])).rows.length;
     if(round>0&&!added)break;
-    const curs=(await db.query("SELECT * FROM reward_history_cursors WHERE mint=$1 AND role='token_account'",[mint])).rows;
-    const lists=await H.signaturesForMany(rpc,curs.map(c=>({address:c.address,until:c.newest_signature||null})));
-    for(const cur of curs)await listInto(cur,lists.get(cur.address));
+    // Least recently listed first, so a pass cut short by its time budget continues where it stopped.
+    const curs=(await db.query("SELECT * FROM reward_history_cursors WHERE mint=$1 AND role='token_account' ORDER BY updated_at",[mint])).rows;
+    const byAddr=new Map(curs.map(c=>[c.address,c]));
+    const lists=await H.signaturesForMany(rpc,curs.map(c=>({address:c.address,until:c.newest_signature||null})),{deadline,onResult:async(it,r)=>{await listInto(byAddr.get(it.address),r);await db.query('UPDATE reward_history_cursors SET updated_at=now() WHERE mint=$1 AND address=$2',[mint,it.address]);}});
+    if(lists.partial){incomplete.push({reason:'holder_scan_continues'});break;}
     await fetchPending();if(budget<=0)break;
    }
-   ok=(await pendingCount())===0&&!incomplete.length;
+   ok=(await pendingCount())===0&&!incomplete.length;   // a scan cut short stays incomplete and resumes next pass
   }
   await db.query(`INSERT INTO reward_checkpoints(name,through_slot,through_time,start_slot,complete,parser_version,digest,incident) VALUES($1,$2,$3,$2,$4,$5,'',$6)
    ON CONFLICT(name) DO UPDATE SET through_slot=EXCLUDED.through_slot,through_time=EXCLUDED.through_time,complete=EXCLUDED.complete,incident=EXCLUDED.incident,updated_at=now()`,
@@ -310,12 +314,12 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
     await sampleSolUsd({db:idb,connection}).catch(e=>Logs.log(idb,{severity:'warn',component:'indexer',eventType:'sol_usd_sample_failed',message:e.message,errorCode:e.code}));
     for(const coin of coins){
      await DB.withLease(idb,'ingest:'+coin.mint,worker,async()=>{
-      const r=await ingest({db:idb,rpc},coin,{maxTx:Number(process.env.REWARDS_INGEST_MAX_TX||Infinity)});if(r.newTx||r.holderError)await Logs.log(idb,{component:'indexer',eventType:'history_ingested',mint:coin.mint,message:`History: +${r.newTx} transaction(s), ${r.newEvents} event(s); ${r.fetched}/${r.total} fetched`+(r.holders!=null?`, ${r.holders} holder account(s), ${r.mismatched??0} needed their own history`:r.fallback?`, holder list unavailable (${r.holderError||'fallback'})`:'')+`; coverage ${r.complete?'complete':'in progress'} through slot ${r.head}`,metadata:{incomplete:r.incomplete.slice(0,5)}});
+      const r=await ingest({db:idb,rpc},coin,{maxTx:Number(process.env.REWARDS_INGEST_MAX_TX||Infinity),timeBudgetMs:Number(process.env.REWARDS_INGEST_TIME_BUDGET_MS||Infinity)});if(r.newTx||r.holderError)await Logs.log(idb,{component:'indexer',eventType:'history_ingested',mint:coin.mint,message:`History: +${r.newTx} transaction(s), ${r.newEvents} event(s); ${r.fetched}/${r.total} fetched`+(r.holders!=null?`, ${r.holders} holder account(s), ${r.mismatched??0} needed their own history`:r.fallback?`, holder list unavailable (${r.holderError||'fallback'})`:'')+`; coverage ${r.complete?'complete':'in progress'} through slot ${r.head}`,metadata:{incomplete:r.incomplete.slice(0,5)}});
       await heartbeat({db:idb,connection},coin).catch(e=>Logs.log(idb,{severity:'warn',component:'indexer',eventType:'heartbeat_failed',mint:coin.mint,message:e.message,errorCode:e.code||'HEARTBEAT_FAILED'}));
       await backfillSolUsd({db:idb},coin.mint).catch(e=>Logs.log(idb,{severity:'warn',component:'indexer',eventType:'sol_usd_backfill_failed',mint:coin.mint,message:e.message,errorCode:e.code}));
       if(coin.kind!=='primary'&&program)await R.scanIntake({db:idb,rpc,program},coin);   // creator-fee income vs setup rent/donations
       await projectToken({db:idb,connection},coin);
-     },{seconds:300,busy:()=>null}).catch(e=>Logs.log(idb,{severity:'error',component:'indexer',eventType:'ingest_failed',mint:coin.mint,message:e.message,errorCode:e.code||'INDEXER_ERROR'}));
+     },{seconds:Number(process.env.REWARDS_INGEST_LEASE_SECONDS||300),busy:()=>null}).catch(e=>Logs.log(idb,{severity:'error',component:'indexer',eventType:'ingest_failed',mint:coin.mint,message:e.message,errorCode:e.code||'INDEXER_ERROR'}));
     }
     await Logs.heartbeat(idb,'indexer','ok',{coins:coins.length,ms:Date.now()-started});
    }

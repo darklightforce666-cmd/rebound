@@ -57,17 +57,18 @@ async function signaturesFor(rpc,address,{until=null,maxPages=200,pageSize=1000}
 
 // Signatures for many addresses: first pages in one JSON-RPC batch; only addresses whose first page is
 // full (more than `pageSize` new signatures) continue page by page.
-async function signaturesForMany(rpc,items,{pageSize=1000,chunk=50}={}){
+async function signaturesForMany(rpc,items,{pageSize=1000,chunk=20,onResult=null,deadline=Infinity}={}){
  const out=new Map();
- if(typeof rpc.batch!=='function'){for(const it of items)out.set(it.address,await signaturesFor(rpc,it.address,{until:it.until}));return out;}
+ if(typeof rpc.batch!=='function'){for(const it of items){const r=await signaturesFor(rpc,it.address,{until:it.until});out.set(it.address,r);if(onResult)await onResult(it,r);if(Date.now()>deadline){out.partial=true;break;}}return out;}
  for(let i=0;i<items.length;i+=chunk){
   const part=items.slice(i,i+chunk);
   const res=await rpc.batch(part.map(it=>['getSignaturesForAddress',[it.address,{limit:pageSize,commitment:'finalized',...(it.until?{until:it.until}:{})}]]));
   for(const [j,it] of part.entries()){
    const first=res[j]||[];
-   if(first.length<pageSize){out.set(it.address,{signatures:first,complete:true});continue;}
-   const rest=await signaturesFor(rpc,it.address,{until:it.until});out.set(it.address,rest);
+   const r=first.length<pageSize?{signatures:first,complete:true}:await signaturesFor(rpc,it.address,{until:it.until});
+   out.set(it.address,r);if(onResult)await onResult(it,r);
   }
+  if(Date.now()>deadline){out.partial=true;break;}   // stop between chunks; progress already saved via onResult
  }
  return out;
 }
@@ -147,13 +148,30 @@ async function holdersByDas(rpc,mint){
  }
  throw Error('too many holder pages');
 }
+// Token account layout (both token programs): mint 0..32, owner 32..64, amount u64 LE 64..72. Asking only
+// for bytes 32..72 (dataSlice) keeps the response small; providers differ in which variants they accept,
+// so a few are tried in order.
 async function holdersByProgram(rpc,mint){
  const info=await rpc.call('getAccountInfo',[mint,{encoding:'base64',commitment:'finalized'}]);
  const program=info?.value?.owner;if(!program)throw Object.assign(Error('mint not found'),{code:'MINT_NOT_FOUND'});
- const filters=[{memcmp:{offset:0,bytes:mint}}];if(program==='TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')filters.unshift({dataSize:165});
- const r=await rpc.call('getProgramAccounts',[program,{encoding:'jsonParsed',commitment:'finalized',withContext:true,filters}]);
- const list=Array.isArray(r)?r:(r?.value||[]),slot=Array.isArray(r)?null:(r?.context?.slot??null);
- return{slot,accounts:list.map(a=>({account:a.pubkey,owner:a.account?.data?.parsed?.info?.owner,amount:a.account?.data?.parsed?.info?.tokenAmount?.amount})).filter(a=>a.account&&a.amount&&a.amount!=='0')};
+ const legacy=program==='TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',memcmp={memcmp:{offset:0,bytes:mint}};
+ const variants=[
+  {encoding:'base64',commitment:'finalized',withContext:true,dataSlice:{offset:32,length:40},filters:legacy?[{dataSize:165},memcmp]:[memcmp]},
+  {encoding:'base64',commitment:'finalized',dataSlice:{offset:32,length:40},filters:legacy?[{dataSize:165},memcmp]:[memcmp]},
+  {encoding:'jsonParsed',commitment:'finalized',filters:legacy?[{dataSize:165},memcmp]:[memcmp]},
+ ];
+ const errors=[];
+ for(const v of variants){
+  let r;try{r=await rpc.call('getProgramAccounts',[program,v]);}catch(e){errors.push(e.rpcCode??e.message);continue;}
+  const list=Array.isArray(r)?r:(r?.value||[]),slot=Array.isArray(r)?null:(r?.context?.slot??null);
+  const accounts=list.map(a=>{
+   if(a.account?.data?.parsed){const i=a.account.data.parsed.info;return{account:a.pubkey,owner:i?.owner,amount:i?.tokenAmount?.amount};}
+   const raw=Buffer.from(a.account?.data?.[0]||'','base64');if(raw.length<40)return{account:a.pubkey};
+   return{account:a.pubkey,owner:W.pk(raw.subarray(0,32)).toBase58(),amount:raw.readBigUInt64LE(32).toString()};
+  }).filter(a=>a.account&&a.amount&&a.amount!=='0');
+  return{slot,accounts};
+ }
+ throw Error('getProgramAccounts rejected ('+errors.join(', ')+')');
 }
 module.exports={Rpc,marketAddresses,signaturesFor,signaturesForMany,collect,parseAll,TX_VERSION,reportedIndex,currentHolderAccounts};
 
