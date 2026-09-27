@@ -25,7 +25,12 @@ const OPEN=['scheduled','snapshotting','waiting_for_data'],WINDOW_SLOTS=20000;
 const lotOut=l=>{const o={...l};for(const k of BIG)if(o[k]!=null)o[k]=String(o[k]);return o;};
 const lotIn=l=>{const o={...l};for(const k of BIG)if(o[k]!=null)o[k]=BigInt(o[k]);return o;};
 const eventOf=e=>({id:e.id,mint:e.mint,signature:e.signature,path:e.instruction_path,eventIndex:e.event_index,slot:Number(e.slot),transactionIndex:e.transaction_index,order:e.execution_order,kind:e.kind,owner:e.owner,data:e.data,time:Number(e.data?.time)});
-function excludedOf(coin){const m=H.marketAddresses(coin.mint);return new Set([m.curve,m.pool,m.poolAuthority,...[coin.intake,coin.treasury].filter(Boolean)]);}
+function excludedOf(coin,extra=[]){const m=H.marketAddresses(coin.mint);return new Set([m.curve,m.pool,m.poolAuthority,...[coin.intake,coin.treasury,...extra].filter(Boolean)]);}
+// Never holders: the markets, program accounts and every fee (dev) wallet the token was ever funded from — the
+// dev's own buys are not compensated out of the holders' share.
+async function excludedFor(db,coin){return excludedOf(coin,(await db.query('SELECT address FROM reward_funding_wallets WHERE mint=$1',[coin.mint])).rows.map(r=>r.address));}
+// What the stored positions were built under; any change rebuilds them (e.g. a v3.2 exit rule, a new fee wallet).
+const configOf=(coin,excluded)=>P3.canonicalHash({policy:String(coin.policy_version),excluded:[...excluded].sort()});
 function totals(lots,holds){
  let Q=0n,C=0n,K=0n,U=0n,pending=false;
  for(const l of lots){const q=b(l.remainingQuantity);if(q===0n)continue;
@@ -71,7 +76,7 @@ async function reset(db,coin,reason){
   await tx.query('DELETE FROM reward_holder_positions WHERE mint=$1',[coin.mint]);
   await tx.query('DELETE FROM reward_holder_accounts WHERE mint=$1',[coin.mint]);
   await tx.query(`UPDATE reward_projection_state SET applied_slot=-1,applied_time=NULL,events_applied=0,credits_applied=0,lot_seq=0,mint_holds='[]'::jsonb,parser_version=$2,
-   rebuilds=rebuilds+1,last_rebuild_reason=$3,last_rebuild_at=now(),updated_at=now() WHERE mint=$1`,[coin.mint,I.PARSER,reason]);
+   config=NULL,rebuilds=rebuilds+1,last_rebuild_reason=$3,last_rebuild_at=now(),updated_at=now() WHERE mint=$1`,[coin.mint,I.PARSER,reason]);
  },{serializable:false});
  await Logs.log(db,{severity:reason==='late_event'||reason==='award_credits_changed'?'warn':'info',component:'scheduler',eventType:'positions_rebuild',mint:coin.mint,message:`Holder positions are rebuilt from the stored history (${reason.replaceAll('_',' ')}); rounds wait until they reach the cutoff again`}).catch(()=>{});
 }
@@ -83,8 +88,9 @@ async function reset(db,coin,reason){
  * @param opts.deadline   ms timestamp: stop between batches
  * @returns {appliedSlot, verifiedSlot, ready (appliedSlot===target), applied (events this call), rebuilt}
  */
-async function project({db},coin,{target=null,maxEvents=20000,deadline=Infinity,excluded=excludedOf(coin),now=null}={}){
- const mint=coin.mint,policy=P3.policy(coin.policy_version);
+async function project({db},coin,{target=null,maxEvents=20000,deadline=Infinity,excluded=null,now=null}={}){
+ const mint=coin.mint,policy=P3.policy(coin.policy_version);if(!excluded)excluded=await excludedFor(db,coin);
+ const config=configOf(coin,excluded);
  let st=await state(db,mint),rebuilt=null;
  const vc=(await db.query('SELECT through_slot,through_time FROM reward_checkpoints WHERE name=$1',['verified:'+mint])).rows[0];
  const verified=vc?Number(vc.through_slot):-1,verifiedTime=vc?Number(vc.through_time):null;
@@ -93,7 +99,7 @@ async function project({db},coin,{target=null,maxEvents=20000,deadline=Infinity,
  if(applied>=0){
   const ev=Number((await db.query('SELECT count(*)::bigint n FROM reward_events WHERE mint=$1 AND slot<=$2',[mint,applied])).rows[0].n);
   rebuilt=ev!==Number(st.events_applied)?'late_event':await creditCount(db,mint,applied)!==Number(st.credits_applied)?'award_credits_changed'
-   :st.parser_version!==I.PARSER?'parser_changed':target!=null&&applied>Number(target)?'past_cutoff':null;
+   :st.parser_version!==I.PARSER?'parser_changed':st.config!=null&&st.config!==config?'policy_or_exclusions_changed':target!=null&&applied>Number(target)?'past_cutoff':null;
   if(rebuilt){await reset(db,coin,rebuilt);st=await state(db,mint);applied=-1;}
  }
  let limit=verified;if(target!=null)limit=Math.min(limit,Number(target));
@@ -112,7 +118,7 @@ async function project({db},coin,{target=null,maxEvents=20000,deadline=Infinity,
   if(cap!=null){const i=events.findIndex(e=>e.time>cap);if(i>=0){through=i>0?events[i-1].slot:applied;events=events.slice(0,i);throughTime=null;stop=true;}}
   if(through<=applied){break;}
   if(events.length&&throughTime==null)throughTime=events.at(-1).time;
-  await applyBatch(db,coin,st,{events,from:applied,through,throughTime,policy,excluded});
+  await applyBatch(db,coin,st,{events,from:applied,through,throughTime,policy,excluded,config});
   count+=events.length;applied=through;st=await state(db,mint);
   if(stop)break;
  }
@@ -120,7 +126,7 @@ async function project({db},coin,{target=null,maxEvents=20000,deadline=Infinity,
  return{appliedSlot:Number(st.applied_slot),verifiedSlot:verified,ready:target!=null&&Number(st.applied_slot)===Number(target),applied:count,rebuilt};
 }
 
-async function applyBatch(db,coin,st,{events,from,through,throughTime,policy,excluded}){
+async function applyBatch(db,coin,st,{events,from,through,throughTime,policy,excluded,config}){
  const mint=coin.mint;
  const credits=await creditsBetween(db,mint,from,through);
  const sigs=[...new Set(events.map(e=>e.signature))];
@@ -157,8 +163,8 @@ async function applyBatch(db,coin,st,{events,from,through,throughTime,policy,exc
   return{owner,lots:lots.map(lotOut),holds:bk.holds,exited:bk.exited||null,recognized_raw:String(t.recognized),unrecognized_raw:String(t.unrecognized),cost_lamports:String(t.cost),credit_lamports:String(t.credit),basis_pending:t.pending};});
  const acc=[...r.accounts.entries()].map(([account,a])=>({account,owner:a.owner||null,amount:String(a.amount)}));
  await DB.transaction(db,async tx=>{
-  const u=await tx.query(`UPDATE reward_projection_state SET applied_slot=$3,applied_time=COALESCE($4,applied_time),events_applied=events_applied+$5,credits_applied=credits_applied+$6,lot_seq=$7,mint_holds=$8,parser_version=$9,updated_at=now()
-   WHERE mint=$1 AND applied_slot=$2`,[mint,from,through,throughTime,events.length,credits.length,r.seq,JSON.stringify(mintHolds),I.PARSER]);
+  const u=await tx.query(`UPDATE reward_projection_state SET applied_slot=$3,applied_time=COALESCE($4,applied_time),events_applied=events_applied+$5,credits_applied=credits_applied+$6,lot_seq=$7,mint_holds=$8,parser_version=$9,config=$10,updated_at=now()
+   WHERE mint=$1 AND applied_slot=$2`,[mint,from,through,throughTime,events.length,credits.length,r.seq,JSON.stringify(mintHolds),I.PARSER,config]);
   if(!(u.rowCount??u.affectedRows))throw Object.assign(Error('Positions changed underneath this batch'),{code:'POSITIONS_RACE'});
   if(pos.length)await tx.query(`INSERT INTO reward_holder_positions(mint,owner,lots,holds,exited,recognized_raw,unrecognized_raw,cost_lamports,credit_lamports,basis_pending,updated_slot,updated_at)
    SELECT $1,owner,lots,holds,exited,recognized_raw,unrecognized_raw,cost_lamports,credit_lamports,basis_pending,$2,now() FROM jsonb_to_recordset($3::jsonb) AS x(owner text,lots jsonb,holds jsonb,exited jsonb,recognized_raw numeric,unrecognized_raw numeric,cost_lamports numeric,credit_lamports numeric,basis_pending boolean)
@@ -175,12 +181,12 @@ async function applyBatch(db,coin,st,{events,from,through,throughTime,policy,exc
 async function inputsAt(db,coin,cutoff,cutoffSlot){
  const mint=coin.mint,policy=P3.policy(coin.policy_version),st=await state(db,mint);
  const vc=(await db.query('SELECT through_slot FROM reward_checkpoints WHERE name=$1',['verified:'+mint])).rows[0];
- const rows=(await db.query("SELECT owner,lots,holds,exited FROM reward_holder_positions WHERE mint=$1 AND (jsonb_array_length(lots)>0 OR jsonb_array_length(holds)>0)",[mint])).rows;
+ const rows=(await db.query("SELECT owner,lots,holds,exited FROM reward_holder_positions WHERE mint=$1 AND (jsonb_array_length(lots)>0 OR jsonb_array_length(holds)>0 OR exited IS NOT NULL)",[mint])).rows;
  const owners=new Map(rows.sort((x,y)=>x.owner<y.owner?-1:x.owner>y.owner?1:0).map(r=>[r.owner,{lots:(r.lots||[]).map(lotIn),holds:r.holds||[],...(r.exited?{exited:r.exited}:{})}]));
  // Market states: every sample inside the price window, the last one before it, and all graduations and
  // invalidations — exactly what the reference price reads from a full replay.
  const start=Number(cutoff)-Number(policy.priceWindowSeconds);
- // The window is ~60 s (~150 slots); WINDOW_SLOTS bounds the index range generously.
+ // The window is the policy's TWAP window (≤ 15 min ≈ 2 300 slots); WINDOW_SLOTS bounds the index range generously.
  const win=[...(await db.query(`SELECT * FROM reward_events WHERE mint=$1 AND slot<=$2 AND slot>$2-$5 AND kind=ANY($3::text[]) AND (data->>'time')::bigint>$4`,[mint,cutoffSlot,L.MARKET_KINDS,start,WINDOW_SLOTS])).rows,
   ...(await db.query(`SELECT * FROM reward_events WHERE mint=$1 AND slot<=$2 AND kind IN ('graduation','market_invalidation')`,[mint,cutoffSlot])).rows].map(eventOf);
  const seen=new Set();for(let i=win.length-1;i>=0;i--){if(seen.has(win[i].id))win.splice(i,1);else seen.add(win[i].id);}
@@ -222,8 +228,11 @@ async function latestPrice(db,mint){
 }
 // Touched owners → public holders table (value and loss at the latest known price).
 async function publishHolders(db,coin,pos){
- if(!pos.length)return;const p=await latestPrice(db,coin.mint);
- const rows=pos.map(x=>{const t={recognized:b(x.recognized_raw),unrecognized:b(x.unrecognized_raw),cost:b(x.cost_lamports),credit:b(x.credit_lamports)},o=outcomeAt(t,x.holds,p?.s18,x.exited);
+ if(!pos.length)return;const p=await latestPrice(db,coin.mint),mat=Number(P3.policy(coin.policy_version).maturitySeconds||0),nowS=Math.floor(Date.now()/1000);
+ // Live table: a wallet whose every purchase is younger than the maturity shows as maturing (rounds count
+ // only mature purchases; the round's own snapshot row is exact).
+ const young=x=>mat>0&&x.lots.some(l=>l.kind==='purchase')&&x.lots.filter(l=>l.kind==='purchase').every(l=>Number(l.acquiredAt)+mat>nowS);
+ const rows=pos.map(x=>{const t={recognized:b(x.recognized_raw),unrecognized:b(x.unrecognized_raw),cost:b(x.cost_lamports),credit:b(x.credit_lamports)},o0=outcomeAt(t,x.holds,p?.s18,x.exited),o=['eligible','no_remaining_loss'].includes(o0.outcome)&&young(x)?{...o0,outcome:'maturing',loss:0n}:o0;
   return{owner:x.owner,keep:t.recognized>0n||x.holds.length>0||!!x.exited,quantity_raw:String(t.recognized),cost_lamports:String(t.cost),value_lamports:String(o.value),compensated_lamports:String(t.credit),loss_lamports:String(o.loss),outcome:o.outcome};});
  const keep=rows.filter(r=>r.keep),gone=rows.filter(r=>!r.keep).map(r=>r.owner);
  if(keep.length)await db.query(`INSERT INTO reward_public_holders(mint,owner,quantity_raw,cost_lamports,value_lamports,compensated_lamports,loss_lamports,outcome,cycle_number,updated_at)
@@ -253,4 +262,4 @@ async function publish(db,coin,st){
   [coin.mint,Number(st.applied_slot)>=0?Number(st.applied_slot):null,st.applied_time??null,p?.price_s18??null,t.u,t.l]);
 }
 
-module.exports={project,inputsAt,applyCredits,capTime,creditCount,excludedOf,outcomeAt,totals,lotIn,lotOut,revalue,latestPrice,REVALUE_SECONDS};
+module.exports={excludedFor,configOf,project,inputsAt,applyCredits,capTime,creditCount,excludedOf,outcomeAt,totals,lotIn,lotOut,revalue,latestPrice,REVALUE_SECONDS};

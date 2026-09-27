@@ -50,7 +50,8 @@ async function applyWalletTransactions(db,{mint,wallet,classified}){
   await applyCredits(tx,mint,r.credits.map(c=>({...c,source:'primary_wallet'})));
   for(const m of r.movements)await tx.query('INSERT INTO reward_wallet_movements(id,mint,address,direction,lamports,classification,signature,slot,block_time,evidence) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING',[m.id,mint,wallet,m.direction,String(m.lamports),m.classification,m.signature,m.slot,m.time,'{}']);
   const deposits=r.movements.filter(m=>m.classification==='holder_transfer').reduce((s,m)=>s+m.lamports,0n);
-  if(deposits>0n)await tx.query('UPDATE reward_funding_accounts SET holder_awaiting_transfer=holder_awaiting_transfer-$2,holder_available=holder_available+$2,version=version+1 WHERE mint=$1',[mint,String(deposits)]);
+  // Clamped like the in-memory reconciliation: a deposit never moves more than the holders' outstanding share.
+  if(deposits>0n)await tx.query('UPDATE reward_funding_accounts SET holder_available=holder_available+LEAST($2::numeric,holder_awaiting_transfer),holder_awaiting_transfer=holder_awaiting_transfer-LEAST($2::numeric,holder_awaiting_transfer),version=version+1 WHERE mint=$1',[mint,String(deposits)]);
   if(r.state.throughSlot!=null)await tx.query('UPDATE reward_funding_accounts SET chain_slot=$2,updated_at=now() WHERE mint=$1',[mint,r.state.throughSlot]);
   if(r.state.throughSlot!=null)await tx.query('UPDATE reward_funding_wallets SET reconciled_through_slot=$2 WHERE id=$1',[fw.id,r.state.throughSlot]);
   for(const i of r.incidents){

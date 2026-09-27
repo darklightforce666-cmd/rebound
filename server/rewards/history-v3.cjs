@@ -45,11 +45,13 @@ function marketAddresses(mint){
 
 // All finalized signatures of `address` newer than `until` (exclusive). Complete iff the last
 // page was short (reached the address's first activity or `until`).
-async function signaturesFor(rpc,address,{until=null,maxPages=200,pageSize=1000}={}){
+// `minSlot`: stop at (and drop) signatures at or below that slot — e.g. a wallet's history before it was enrolled.
+async function signaturesFor(rpc,address,{until=null,maxPages=200,pageSize=1000,minSlot=null}={}){
  const out=[];let before;
  for(let page=0;page<maxPages;page++){
   const opts={limit:pageSize,commitment:'finalized'};if(before)opts.before=before;if(until)opts.until=until;
   const batch=await rpc.call('getSignaturesForAddress',[address,opts]);
+  if(minSlot!=null){const keep=batch.filter(x=>Number(x.slot)>Number(minSlot));out.push(...keep);if(keep.length<batch.length||batch.length<pageSize)return{signatures:out,complete:true};before=batch.at(-1).signature;continue;}
   out.push(...batch);if(batch.length<pageSize)return{signatures:out,complete:true};before=batch.at(-1).signature;
  }
  return{signatures:out,complete:false,reason:'signature_page_limit'};

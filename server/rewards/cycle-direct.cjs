@@ -53,11 +53,15 @@ async function available(db,connection,fw){
  */
 async function incomeAvailable(db,connection,fw){
  if(fw.opening_slot==null)return{lamports:0n,reason:'income_ledger_not_opened_yet'};
- const share=b((await db.query('SELECT COALESCE(sum(holder_lamports),0) s FROM reward_funding_credits WHERE mint=$1 AND slot>=$2',[fw.mint,fw.opening_slot])).rows[0].s);
- const q=(await db.query(`SELECT COALESCE(sum(a.amount_lamports),0) used, COALESCE(sum(a.amount_lamports) FILTER (WHERE a.state IN ('reserved','deferred_rent')),0) unpaid
+ // The ledger's holder share not yet moved out of the wallet (reconciled payouts and program deposits are
+ // already subtracted), minus awards that still have to leave it: reserved/deferred ones, and paid ones whose
+ // transaction the reconciliation has not reached yet.
+ const awaiting=b((await db.query('SELECT holder_awaiting_transfer s FROM reward_funding_accounts WHERE mint=$1',[fw.mint])).rows[0]?.s);
+ const q=(await db.query(`SELECT COALESCE(sum(a.amount_lamports) FILTER (WHERE a.state IN ('reserved','deferred_rent')),0) unpaid,
+   COALESCE(sum(a.amount_lamports) FILTER (WHERE a.state='paid' AND NOT EXISTS(SELECT 1 FROM reward_wallet_movements m WHERE m.id=a.settlement_signature||':holder')),0) pending
   FROM reward_awards a JOIN reward_cycles c ON c.id=a.cycle_id WHERE c.funding_wallet=$1 AND a.state IN ('reserved','paid','deferred_rent')`,[fw.id])).rows[0];
- const left=share-b(q.used),bal=b(await connection.getBalance(new PublicKey(fw.address),'confirmed'))-FEE_RESERVE-b(q.unpaid);
- const v=left<bal?left:bal;return{lamports:v>0n?v:0n,budget:share,used:b(q.used),unpaid:b(q.unpaid),reason:v>0n?null:left<=0n?'no_new_fees':'wallet_balance_low'};
+ const left=awaiting-b(q.unpaid)-b(q.pending),bal=b(await connection.getBalance(new PublicKey(fw.address),'confirmed'))-FEE_RESERVE-b(q.unpaid);
+ const v=left<bal?left:bal;return{lamports:v>0n?v:0n,budget:awaiting,used:b(q.pending),unpaid:b(q.unpaid),reason:v>0n?null:left<=0n?'no_new_fees':'wallet_balance_low'};
 }
 // Reserved-but-unpaid awards of a fee wallet (lamports still owed from its balance).
 async function unpaidOf(db,fwId){return b((await db.query("SELECT COALESCE(sum(a.amount_lamports),0) s FROM reward_awards a JOIN reward_cycles c ON c.id=a.cycle_id WHERE c.funding_wallet=$1 AND a.state IN ('reserved','deferred_rent')",[fwId])).rows[0].s);}
@@ -84,6 +88,10 @@ async function tick(ports,coin){
   const t=await ports.now();
   if(ports.positions)await ports.positions.project(coin,{deadline:Date.now()+(ports.displayBudgetMs||20000),now:t}).catch(e=>log(db,{severity:'error',eventType:'positions_failed',mint:coin.mint,message:e.message,errorCode:e.code||'POSITIONS_FAILED'}));
   const s=schedule(coin);if(!s.anchor)return{state:'not_started'};
+  // A token that is not active (e.g. paused by a funding incident) still pays awards it already funded, but
+  // takes no new snapshot and opens no round.
+  if(coin.status!=='active'){const pay=(await db.query("SELECT * FROM reward_cycles WHERE mint=$1 AND state IN ('funded','paying','partially_paid','retrying') ORDER BY cycle_number",[coin.mint])).rows;
+   const results=[];for(const row of pay)results.push(await advance(ports,coin,s,row,t,renew));return{state:'inactive',now:t,results};}
   const fw=await liveWallet(db,coin.mint);
   const open=(await db.query(`SELECT * FROM reward_cycles WHERE mint=$1 AND state<>ALL($2) ORDER BY cycle_number`,[coin.mint,DONE])).rows;
   const results=[];for(const row of open)results.push(await advance(ports,coin,s,row,t,renew));

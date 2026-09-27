@@ -155,7 +155,7 @@ function inputsLoader(db){
   const purchaseTimes=events.filter(e=>e.kind==='purchase_candidate').map(e=>e.time);
   const minT=purchaseTimes.length?Math.min(...purchaseTimes)-60:cutoff-120;
   const series=await FX.load(db,minT,cutoff);
-  const excluded=new Set([m.curve,m.pool,m.poolAuthority,...[coinRow.intake,coinRow.treasury].filter(Boolean)]);
+  const excluded=await Positions.excludedFor(db,coinRow);
   const credits=await loadCredits(db,mint,cutoffSlot);
   const win=Number(P3.policy(coinRow.policy_version).priceWindowSeconds)+60;   // the policy's TWAP window
   const heartbeats=(await db.query('SELECT observed_at,quote_model,base_reserve,real_quote,virtual_quote,market FROM reward_price_observations WHERE mint=$1 AND heartbeat AND observed_at BETWEEN $2 AND $3',[mint,cutoff-win,cutoff])).rows
@@ -209,9 +209,13 @@ function chainDeposit(tx,{program,wallet,coin}){
 // Dev-wallet reconciliation (scheduler: the only role that writes funding ledgers). Transactions are
 // applied oldest first; reconciliation never advances past a transaction it could not read, and a
 // partial signature listing is not applied at all.
+const FUNDING_TX_PER_PASS=50;
 async function reconcileFunding({db,rpc,program},coin){
  const fw=(await db.query("SELECT * FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired'",[coin.mint])).rows[0];if(!fw||fw.opening_slot==null||fw.funding_model==='balance_budget')return null;   // budget wallets are not an income ledger
- const r=await H.signaturesFor(rpc,fw.address,{until:fw.reconciled_signature||null});
+ // Never older than the enrollment (the wallet's earlier history is not funding), and at most
+ // FUNDING_TX_PER_PASS transactions per pass, oldest first; the rest continues next pass.
+ const r=await H.signaturesFor(rpc,fw.address,{until:fw.reconciled_signature||null,minSlot:fw.reconciled_signature?null:Number(fw.opening_slot)});
+ if(r.complete&&r.signatures.length>FUNDING_TX_PER_PASS)r.signatures=r.signatures.slice(-FUNDING_TX_PER_PASS);
  if(!r.complete)return{credits:0,incidents:0,gap:r.reason||'incomplete'};
  const ctx=program?{program:program.toBase58(),wallet:fw.address,coin:W3.addresses(program,new PublicKey(coin.mint)).coin.toBase58()}:null;
  // Direct settlement: our own payout transactions move holder money out of the wallet (never new funding,
@@ -357,7 +361,7 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
    // Each projection gets its own time budget (never what is left of the indexer's pass).
    const budget=Number(process.env.REWARDS_POSITIONS_TIME_BUDGET_MS||40000),maxEvents=Number(process.env.REWARDS_POSITIONS_MAX_EVENTS||20000);
    const positions={project:(c,o={})=>Positions.project({db:sdb},c,{maxEvents,...o,deadline:o.deadline??Date.now()+budget}),inputsAt:(c,cut,slot)=>Positions.inputsAt(sdb,c,cut,slot),applyCredits:Positions.applyCredits};
-   const direct=c=>c.status==='active'&&c.kind==='primary'&&settlement[c.namespace]==='direct';
+   const direct=c=>['active','paused'].includes(c.status)&&c.kind==='primary'&&settlement[c.namespace]==='direct'&&c.schedule_anchor!=null;   // paused: pays funded awards only
    if(settles)for(const coin of coins.filter(direct))
     await Direct.tick({db:sdb,connection,worker,inputs,positions,displayBudgetMs:Math.min(20000,budget),now:async()=>connection.getBlockTime(await connection.getSlot('finalized')),
      cutoffSlot:async t=>(await H.findCutoffSlot(rpc,t)).slot,signer:fw=>Signer.load(sdb,fw.signer)},coin)

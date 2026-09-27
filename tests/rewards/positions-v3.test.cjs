@@ -23,7 +23,7 @@ async function setup(){
   ON CONFLICT(name) DO UPDATE SET through_slot=EXCLUDED.through_slot,through_time=EXCLUDED.through_time`,['verified:'+mint,slot,time,I.PARSER]);
  const project=async(o={})=>{let r,rebuilt=null;for(let i=0;i<200;i++){r=await Pos.project({db},await coin(),{maxEvents:3,excluded,...o});rebuilt=rebuilt||r.rebuilt;if(r.applied===0&&!r.rebuilt)break;}return{...r,rebuilt};};
  const stored=async()=>new Map((await db.query('SELECT * FROM reward_holder_positions WHERE mint=$1',[mint])).rows.map(r=>[r.owner,r]));
- return{db,mint,coin,store,verify,project,stored};
+ return{db,mint,fee,coin,store,verify,project,stored};
 }
 // A busy history: buys at falling prices, partial sales, wallet-to-wallet transfers, a burn, one wallet
 // with two token accounts, and a transfer-only recipient.
@@ -142,5 +142,20 @@ test('a parser hold on a transaction that produced no event still holds the wall
   await s.db.query("INSERT INTO reward_audit(kind,mint,actor,evidence) VALUES('parser_hold',$1,'indexer',$2)",[s.mint,JSON.stringify({signature:'broken-sig',holds:[{wallet:W[0],reason:'cpi_trace_incomplete',signature:'broken-sig'}]})]);
   const inp=await Pos.inputsAt(s.db,await s.coin(),T0+last-100,last);
   assert.ok(inp.owners.get(W[0]).holds.some(h=>h.reason==='cpi_trace_incomplete'));
+ }finally{await s.db.close();}
+});
+
+test('the fee (dev) wallet is never a holder; a policy change rebuilds the positions under the new rules',async()=>{
+ const s=await setup();try{
+  const c=chain({startSlot:100,timeOf:x=>T0+(x-100)});const A=Keypair.generate().publicKey.toBase58();
+  c.tx(x=>x.buy(s.fee,'dev',5_000_000n,{lamports:SOL}));c.tx(x=>x.buy(A,'a',1_000_000n,{lamports:SOL}));c.tx(x=>x.sell(A,'a',1000n));
+  await s.store(c.events);await s.verify(c.events.at(-1).slot,T0+10);
+  const run=async()=>{let r,rebuilt=null;for(let i=0;i<50;i++){r=await Pos.project({db:s.db},await s.coin(),{maxEvents:3});rebuilt=rebuilt||r.rebuilt;if(r.applied===0&&!r.rebuilt)break;}return{...r,rebuilt};};
+  await run();let st=await s.stored();
+  assert.equal(st.has(s.fee),false,'the dev wallet’s own buy is not compensated from the holders’ share');
+  assert.ok(st.get(A).exited,'v3.2: the sale excludes A');
+  await s.db.query("UPDATE reward_coins SET policy_version='rebound-v3.1-test' WHERE mint=$1",[s.mint]);
+  const r=await run();assert.equal(r.rebuilt,'policy_or_exclusions_changed');
+  st=await s.stored();assert.equal(st.get(A).exited,null,'v3.1 has no exit rule');
  }finally{await s.db.close();}
 });

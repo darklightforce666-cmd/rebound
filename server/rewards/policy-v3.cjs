@@ -45,7 +45,9 @@ const TEST_POLICY_V31=Object.freeze({...SOL_BASE,version:'rebound-v3.1-test',kin
 //  * 30-minute rounds; 85 % of fees to holders, 15 % stays on the dev wallet (primary) or buys and burns the
 //    primary token (third-party tokens).
 // The test policy has the same rules with 2-minute rounds.
-const SOL_V32=Object.freeze({...SOL_BASE,permanentExitOnSale:true,maturitySeconds:900,priceWindowSeconds:900});
+// No spot/TWAP circuit breaker: the higher of the two is always used, so a pump lowers losses and a crash is
+// valued at the 15-minute average — a crash is exactly when holders must still be paid.
+const SOL_V32=Object.freeze({...SOL_BASE,permanentExitOnSale:true,maturitySeconds:900,priceWindowSeconds:900,maxSpotTwapRatioBps:0});
 const POLICY=Object.freeze({...SOL_V32,version:'rebound-v3.2',kind:'production',cycleSeconds:1800,cutoffLeadSeconds:60});
 const TEST_POLICY=Object.freeze({...SOL_V32,version:'rebound-v3.2-test',kind:'test',cycleSeconds:120,cutoffLeadSeconds:30});
 const hashOf=p=>W.hash(stable(p)).toString('hex');
@@ -215,7 +217,7 @@ function referencePrice({token,sol,cutoff,coverage,policy=POLICY}){
  const spot=ceilDiv(big(lastT.s18)*big(lastS.price),LAMPORTS);
  if(twap===0n||spot===0n)return HOLD('invalid_price');
  const hi=spot>twap?spot:twap,lo=spot>twap?twap:spot;
- if(hi*10000n>lo*BigInt(policy.maxSpotTwapRatioBps))return HOLD('price_circuit_breaker');
+ if(Number(policy.maxSpotTwapRatioBps)>0&&hi*10000n>lo*BigInt(policy.maxSpotTwapRatioBps))return HOLD('price_circuit_breaker');
  return{outcome:'pass',q18:hi,spot,twap,solUsd:big(lastS.price),solUsdTime:lastS.time,tokenTime:lastT.time,cutoff:T};
 }
 // Pump bonding curve and PumpSwap token/SOL price as S18 (lamports per raw token × 10^18).

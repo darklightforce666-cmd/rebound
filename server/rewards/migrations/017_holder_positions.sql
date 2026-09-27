@@ -43,6 +43,7 @@ CREATE TABLE reward_projection_state (
  lot_seq bigint NOT NULL DEFAULT 0,
  mint_holds jsonb NOT NULL DEFAULT '[]'::jsonb,
  parser_version text,
+ config text,                          -- hash of (policy version, excluded owners) the positions were built under
  rebuilds integer NOT NULL DEFAULT 0,
  last_rebuild_reason text,
  last_rebuild_at timestamptz,
