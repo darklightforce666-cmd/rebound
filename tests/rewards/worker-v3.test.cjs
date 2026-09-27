@@ -193,3 +193,20 @@ test('with current holders known, only their token accounts are crawled and each
   assert.equal(chain.calls.getSignaturesForAddress-crawled,3,'steady state: only the three market addresses');
  }finally{await db.close();}
 });
+
+test('without a holder list, one holder scan spans several short passes and completes through its start slot',async()=>{
+ const {db,mint,coin}=await setup();try{
+  const chain=fakeChain(),A=key(),ta=key(),holders=[...Array(12)].map(()=>({o:key(),a:key()}));let bal=1000;
+  holders.forEach((h,i)=>{chain.add(transfer({mint,from:A,fromAcc:ta,to:h.o,toAcc:h.a,amount:10,pre:[bal,0],slot:10+i}),[mint,ta,h.a]);bal-=10;});
+  // Listing a token account is slow on this RPC; each pass may spend only a few milliseconds.
+  const slow=new Set(holders.map(h=>h.a)),listed=new Map(),call=chain.call.bind(chain);
+  chain.call=async(m,p)=>{if(m==='getSignaturesForAddress'&&slow.has(p[0])){listed.set(p[0],(listed.get(p[0])||0)+1);await new Promise(r=>setTimeout(r,15));}return call(m,p);};
+  let r=await Wk.ingest({db,rpc:chain},coin,{holderCheckSeconds:0,timeBudgetMs:40});
+  assert.equal(r.complete,false,'the first short pass cannot list every holder');
+  const startSlot=Number((await db.query('SELECT incident FROM reward_checkpoints WHERE name=$1',['holders:'+mint])).rows[0].incident.scan.slot);
+  for(let i=0;i<20&&!r.complete;i++)r=await Wk.ingest({db,rpc:chain},coin,{holderCheckSeconds:0,timeBudgetMs:40});
+  assert.equal(r.complete,true,'the scan resumes where it stopped and completes');
+  assert.ok([...slow].every(a=>listed.get(a)===1),'each holder is listed once per scan');
+  const cp=(await db.query('SELECT * FROM reward_checkpoints WHERE name=$1',['verified:'+mint])).rows[0];assert.equal(Number(cp.through_slot),startSlot);
+ }finally{await db.close();}
+});
