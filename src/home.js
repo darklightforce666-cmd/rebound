@@ -11,7 +11,7 @@ export function solText(lamports,d=3){const v=big(lamports);if(v===0n)return '0'
  const unit=10n**BigInt(9-d);if(a<unit)return (neg?'−':'')+'<'+(1/10**d).toFixed(d);
  const whole=a/LAMPORTS,frac=String((a%LAMPORTS)/unit).padStart(d,'0').replace(/0+$/,'');
  return (neg?'−':'')+whole.toLocaleString('en-US')+(frac?'.'+frac:'');}
-const compact=n=>{const x=Number(n);if(!Number.isFinite(x))return '—';if(x<1000)return x.toLocaleString('en-US',{maximumFractionDigits:2});
+const compact=n=>{const x=Number(n);if(!Number.isFinite(x))return '0';if(x<1000)return x.toLocaleString('en-US',{maximumFractionDigits:2});
  const u=[['T',1e12],['B',1e9],['M',1e6],['K',1e3]].find(([,v])=>x>=v);return (x/u[1]).toLocaleString('en-US',{maximumFractionDigits:2})+u[0];};
 const mmss=s=>{s=Math.max(0,Math.floor(s));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0');};
 const hhmm=t=>new Date(Number(t)*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
@@ -63,7 +63,7 @@ export async function mountHome(host,{api,realtime,esc,signal,isAddress}){
    '<g class="ck-headg"><path class="ck-head" d="'+HEAD+'"/></g></svg>'+
    '<span class="ck-dot idle" id="ck-dot" aria-hidden="true"></span>'+
    '<span class="ck-start" id="ck-start"></span><span class="ck-snaplabel" id="ck-snaplabel">snapshot</span><span class="ck-tip" id="ck-tip"></span>'+
-   '<div class="ck-center"><span class="ck-time" id="ck-time">—</span><span class="ck-label" id="ck-label">Reading the current round…</span><span class="ck-proc" id="ck-proc" hidden></span></div>'+
+   '<div class="ck-center"><span class="ck-time" id="ck-time">0:00</span><span class="ck-label" id="ck-label">Reading the current round…</span><span class="ck-proc" id="ck-proc" hidden></span></div>'+
    '<div class="ck-burst" id="ck-burst" aria-hidden="true"></div><span class="ck-pill" id="ck-pill" role="status"></span>'+
    '<button type="button" class="ghost-link ck-preview" id="ck-preview">Preview a payout</button>';
   q('#ck-preview').addEventListener('click',()=>{const last=lastPaidRound();
@@ -100,7 +100,7 @@ export async function mountHome(host,{api,realtime,esc,signal,isAddress}){
   if(!alive()){clearInterval(st.timer);return;}
   const tm=timing(),h=head(),time=q('#ck-time'),label=q('#ck-label'),proc=q('#ck-proc'),dot=q('#ck-dot'),trail=q('#ck-trail'),clock=q('#clock');if(!time)return;
   const set=f=>{if(st.phase!=='idle')return;dot.style.offsetDistance=(f*100).toFixed(2)+'%';trail.style.strokeDashoffset=(1-f).toFixed(4);};
-  if(!tm){dot.classList.add('idle');set(0);time.textContent='—';proc.hidden=true;
+  if(!tm){dot.classList.add('idle');set(0);time.textContent='0:00';proc.hidden=true;
    label.textContent=st.error?'Round data is unavailable right now':!st.data?'Reading the current round…':(st.data.coins||[]).length?'No round is running yet':'Rounds start with the first coin';return;}
   const n=now(),left=tm.end-n,holding=n>=tm.cut&&PRE.includes(tm.c.state),paused=nsPaused();
   dot.classList.toggle('idle',paused);clock.classList.toggle('holding',holding);
@@ -135,17 +135,17 @@ export async function mountHome(host,{api,realtime,esc,signal,isAddress}){
   const t0=performance.now(),D=1400;const step=t=>{const p=Math.min(1,(t-t0)/D),e=1-Math.pow(1-p,3);el.textContent=fmt(from+(to-from)*e);if(p<1&&el.isConnected)requestAnimationFrame(step);};requestAnimationFrame(step);}
  function renderStats(first){
   const box=q('#stats');if(!box)return;const d=st.data,coins=d?.coins||[];
-  if(!box.firstChild)box.innerHTML='<div><span class="st-num"><span id="st-pool">—</span> <small>SOL</small></span><span class="st-label" id="st-pool-l">in this round’s pool, across all coins</span></div>'+
-   '<div><span class="st-num" id="st-under">—</span><span class="st-label">holders underwater now, across all coins</span></div>'+
-   '<div><span class="st-num"><span id="st-paid">—</span> <small>SOL</small></span><span class="st-label">paid back to holders, all coins</span></div>'+
-   '<div><span class="st-num" id="st-burn">—</span><span class="st-label" id="st-burn-l">$REBOUND bought and burned</span></div>';
+  if(!box.firstChild)box.innerHTML='<div><span class="st-num"><span id="st-pool">0</span> <small>SOL</small></span><span class="st-label" id="st-pool-l">in this round’s pool, across all coins</span></div>'+
+   '<div><span class="st-num" id="st-under">0</span><span class="st-label">holders underwater now, across all coins</span></div>'+
+   '<div><span class="st-num"><span id="st-paid">0</span> <small>SOL</small></span><span class="st-label">paid back to holders, all coins</span></div>'+
+   '<div><span class="st-num" id="st-burn">0</span><span class="st-label" id="st-burn-l">$REBOUND bought and burned</span></div>';
   if(!d)return;
   let pool=0n,known=false,under=0,paid=0n,burned=0n;
   for(const c of coins){under+=Number(c.underwater||0);paid+=big(c.paid_lamports);burned+=big(c.burned_raw);
    const r=c.round;if(r&&r.available_lamports!=null&&(PRE.includes(r.state)||['funded','paying'].includes(r.state))){pool+=big(r.available_lamports);known=true;}}
   const dec=Number(coins.find(c=>c.featured)?.decimals??6),sym=(st.cfg?.siteSettings?.symbol||'REBOUND').replace(/^\$/,'');
   const sol=v=>solText(BigInt(Math.round(v)),3);
-  if(known||!coins.length)tween(q('#st-pool'),Number(pool),sol,first);else{q('#st-pool').textContent='—';q('#st-pool').dataset.v=0;}
+  tween(q('#st-pool'),Number(pool),sol,first);
   q('#st-pool-l').textContent=known||!coins.length?'in this round’s pool, across all coins':'in this round’s pool across all coins, set at each snapshot';
   tween(q('#st-under'),under,v=>Math.round(v).toLocaleString('en-US'),first);
   tween(q('#st-paid'),Number(paid),sol,first);
@@ -175,8 +175,8 @@ export async function mountHome(host,{api,realtime,esc,signal,isAddress}){
    const name=(c.name||c.symbol||c.mint.slice(0,4)).trim(),sym=(c.symbol||'').replace(/^\$/,'').trim(),note=coinNote(c),[cls,txt]=thisRound(c);
    const fresh=!first&&prev&&!prev.has(c.mint);
    return '<tr class="row'+(fresh?' fresh':'')+'" data-href="#token/'+esc(c.mint)+'"><td class="c-coin"><a href="#token/'+esc(c.mint)+'"><b title="'+esc(name)+'">'+esc(name)+'</b></a> <span class="muted">'+esc(sym)+(note?' · '+esc(note):'')+'</span><span class="c-mob muted">'+(c.holders?esc(c.underwater)+' under':'')+'</span></td>'+
-    '<td class="c-under'+(c.holders?'':' muted')+'">'+(c.holders?esc(c.underwater)+' of '+esc(c.holders):'—')+'</td>'+
-    '<td class="c-paid'+(big(c.paid_lamports)>0n?'':' muted')+'">'+(big(c.paid_lamports)>0n?solText(c.paid_lamports,1)+' SOL':'—')+'</td>'+
+    '<td class="c-under'+(c.holders?'':' muted')+'">'+(c.holders?esc(c.underwater)+' of '+esc(c.holders):'none yet')+'</td>'+
+    '<td class="c-paid'+(big(c.paid_lamports)>0n?'':' muted')+'">'+(big(c.paid_lamports)>0n?solText(c.paid_lamports,1)+' SOL':'0 SOL')+'</td>'+
     '<td class="c-round '+cls+'">'+esc(txt)+'</td></tr>';}).join('')+'</tbody></table>';
   const all=q('#coins-all');all.hidden=coins.length<=LIMIT;all.textContent=showAll?'Show fewer':'All '+coins.length+' coins';all.onclick=()=>{showAll=!showAll;renderCoins(false);};
   box.querySelectorAll('tr[data-href]').forEach(tr=>tr.addEventListener('click',e=>{if(!e.target.closest('a'))location.hash=tr.dataset.href;}));
