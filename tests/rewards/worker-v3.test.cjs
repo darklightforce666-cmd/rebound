@@ -55,7 +55,7 @@ test('ingest discovers token accounts, records exact in-block order, and resumes
   t2.transaction.message.instructions[0].parsed={type:'transfer',info:{source:tb,destination:tc,amount:'10',authority:B}};chain.add(t2,[tb,tc]);
   const before=chain.calls.getTransaction;r=await Wk.ingest({db,rpc:chain},coin,{holderCheckSeconds:0});
   assert.equal(r.newTx,1);assert.equal(chain.calls.getTransaction-before,1,'already-ingested history is never refetched');
-  assert.ok((await db.query("SELECT 1 FROM reward_history_cursors WHERE mint=$1 AND address=$2 AND role='token_account'",[mint,tc])).rows.length,'recipient account discovered');
+  assert.ok((await db.query("SELECT 1 FROM reward_events WHERE mint=$1 AND signature=$2",[mint,t2.transaction.signatures[0]])).rows.length,'the outgoing transfer of a holder is found through that holder\'s account');
   const cp=(await db.query('SELECT * FROM reward_checkpoints WHERE name=$1',['history:'+mint])).rows[0];assert.equal(cp.complete,true);assert.equal(Number(cp.through_slot),12);
   r=await Wk.ingest({db,rpc:chain},coin,{holderCheckSeconds:0});assert.equal(r.newTx,0);
  }finally{await db.close();}

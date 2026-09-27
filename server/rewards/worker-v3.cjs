@@ -94,19 +94,19 @@ async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCh
    if(lists.partial)ok=false;
    await fetchPending();if(await pendingCount()>0)ok=false;
   }else{
-   // Fallback: follow every token account ever seen in the history (more requests, same result),
-   // repeating while new accounts appear.
-   for(let round=0;round<5;round++){
-    const added=(await db.query(`INSERT INTO reward_history_cursors(mint,address,role,discovered_slot)
-     SELECT DISTINCT $1,a->>'account','token_account',e.slot FROM reward_events e, jsonb_array_elements(e.data->'accounts') a WHERE e.mint=$1 AND e.kind='token_balances' ON CONFLICT DO NOTHING RETURNING address`,[mint])).rows.length;
-    if(round>0&&!added)break;
-    // Least recently listed first, so a pass cut short by its time budget continues where it stopped.
-    const curs=(await db.query("SELECT * FROM reward_history_cursors WHERE mint=$1 AND role='token_account' ORDER BY updated_at",[mint])).rows;
-    const byAddr=new Map(curs.map(c=>[c.address,c]));
-    const lists=await H.signaturesForMany(rpc,curs.map(c=>({address:c.address,until:c.newest_signature||null})),{deadline,onResult:async(it,r)=>{await listInto(byAddr.get(it.address),r);await db.query('UPDATE reward_history_cursors SET updated_at=now() WHERE mint=$1 AND address=$2',[mint,it.address]);}});
-    if(lists.partial){incomplete.push({reason:'holder_scan_continues'});break;}
-    await fetchPending();if(budget<=0)break;
-   }
+   // No holder list from this RPC: scan the accounts that, per the history, still hold tokens they may
+   // have BOUGHT. Only buyers can be owed compensation; a wallet that only received tokens by transfer has
+   // no purchase cost and can never be eligible, and wallets that sold out are skipped. Scanning catches
+   // every outgoing transfer of a buyer; new buyers appear through the market listing above.
+   const holding=(await db.query(`SELECT account FROM (SELECT DISTINCT ON (a->>'account') a->>'account' AS account, a->>'amount' AS amount FROM reward_events e, jsonb_array_elements(e.data->'accounts') a
+    WHERE e.mint=$1 AND e.kind='token_balances' ORDER BY a->>'account', e.slot DESC, e.transaction_index DESC, e.execution_order DESC) k WHERE amount<>'0'`,[mint])).rows.map(r=>r.account);
+   for(const a of holding)await db.query("INSERT INTO reward_history_cursors(mint,address,role,discovered_slot) VALUES($1,$2,'token_account',$3) ON CONFLICT DO NOTHING",[mint,a,head]);
+   // Least recently listed first, so a pass cut short by its time budget continues where it stopped.
+   const curs=holding.length?(await db.query("SELECT * FROM reward_history_cursors WHERE mint=$1 AND address=ANY($2::text[]) ORDER BY updated_at",[mint,holding])).rows:[];
+   const byAddr=new Map(curs.map(c=>[c.address,c]));
+   const lists=await H.signaturesForMany(rpc,curs.map(c=>({address:c.address,until:c.newest_signature||null})),{deadline,onResult:async(it,r)=>{await listInto(byAddr.get(it.address),r);await db.query('UPDATE reward_history_cursors SET updated_at=now() WHERE mint=$1 AND address=$2',[mint,it.address]);}});
+   if(lists.partial)incomplete.push({reason:'holder_scan_continues'});
+   await fetchPending();
    ok=(await pendingCount())===0&&!incomplete.length;   // a scan cut short stays incomplete and resumes next pass
   }
   await db.query(`INSERT INTO reward_checkpoints(name,through_slot,through_time,start_slot,complete,parser_version,digest,incident) VALUES($1,$2,$3,$2,$4,$5,'',$6)
