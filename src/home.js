@@ -11,6 +11,11 @@ export function solText(lamports,d=3){const v=big(lamports);if(v===0n)return '0'
  const unit=10n**BigInt(9-d);if(a<unit)return (neg?'−':'')+'<'+(1/10**d).toFixed(d);
  const whole=a/LAMPORTS,frac=String((a%LAMPORTS)/unit).padStart(d,'0').replace(/0+$/,'');
  return (neg?'−':'')+whole.toLocaleString('en-US')+(frac?'.'+frac:'');}
+// Amounts of a coin paired with another asset are in that asset's base units (its decimals and ticker).
+const unitsFmt=(x,dec,d=4)=>{const v=big(x);if(v===0n)return '0';const f=Math.min(d,dec),D=10n**BigInt(dec),unit=10n**BigInt(dec-f);if(v<unit)return '<'+(1/10**f).toFixed(f);
+ const frac=String((v%D)/unit).padStart(f,'0').replace(/0+$/,'');return (v/D).toLocaleString('en-US')+(frac?'.'+frac:'');};
+const pairSym=c=>String(c.quote_symbol||'units').replace(/^\$/,'');
+export const amountText=(x,c,d=3)=>c&&c.quote_mint?unitsFmt(x,Number(c.quote_decimals??6),d)+' '+pairSym(c):solText(x,d)+' SOL';
 const compact=n=>{const x=Number(n);if(!Number.isFinite(x))return '0';if(x<1000)return x.toLocaleString('en-US',{maximumFractionDigits:2});
  const u=[['T',1e12],['B',1e9],['M',1e6],['K',1e3]].find(([,v])=>x>=v);return (x/u[1]).toLocaleString('en-US',{maximumFractionDigits:2})+u[0];};
 const mmss=s=>{s=Math.max(0,Math.floor(s));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0');};
@@ -21,7 +26,7 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const shortAddr=a=>a.length>12?a.slice(0,4)+'…'+a.slice(-4):a;
 const CHECK='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>';
 export const ROUND_STATE={scheduled:'Scheduled',snapshotting:'Taking snapshot',waiting_for_data:'Taking snapshot',funded:'Reserved, paying at round end',paying:'Paying',partially_paid:'Partly paid',complete:'Settled',dry_run:'Dry run, nothing sent',skipped_no_funds:'No funds this round',skipped_no_eligible_holders:'Nobody underwater',missed:'Skipped'};
-const REASON={paused:'paused',snapshot_window_closed:'snapshot window closed',price_window_incomplete:'waiting for a 15-minute price',history_incomplete:'loading history',history_behind_cutoff:'verifying trades',positions_behind_cutoff:'applying trades',cutoff_slot_unproven:'confirming the snapshot slot',fee_wallet_key_missing:'fee wallet key missing',dry_run:'dry run',no_funds:'no funds',budget_used_up:'budget used up',no_new_fees:'no new fees'};
+const REASON={paused:'paused',snapshot_window_closed:'snapshot window closed',price_window_incomplete:'waiting for a 15-minute price',history_incomplete:'loading history',history_behind_cutoff:'verifying trades',positions_behind_cutoff:'applying trades',cutoff_slot_unproven:'confirming the snapshot slot',fee_wallet_key_missing:'fee wallet key missing',dry_run:'dry run',no_funds:'no funds',budget_used_up:'budget used up',no_new_fees:'no new fees',awards_below_minimum:'awards too small to send'};
 const PRE=['scheduled','snapshotting','waiting_for_data'],CATCHING=['history_behind_cutoff','positions_behind_cutoff','history_incomplete','cutoff_slot_unproven'];
 const SETTLED=['funded','paying','partially_paid','complete'];
 
@@ -67,9 +72,10 @@ export async function mountHome(host,{api,realtime,esc,signal,isAddress}){
    '<div class="ck-burst" id="ck-burst" aria-hidden="true"></div><span class="ck-pill" id="ck-pill" role="status"></span>'+
    '<button type="button" class="ghost-link ck-preview" id="ck-preview">Preview a payout</button>';
   q('#ck-preview').addEventListener('click',()=>{const last=lastPaidRound();
-   burst(last?'Last payout: +'+solText(last.paid_lamports)+' SOL to '+last.paid_recipients+' holder'+(last.paid_recipients==1?'':'s'):'Preview: no payout yet',true);});
+   burst(last?'Last payout: +'+amountText(last.paid_lamports,headCoin())+' to '+last.paid_recipients+' holder'+(last.paid_recipients==1?'':'s'):'Preview: no payout yet',true);});
  }
  function head(){return st.data?.headline||null;}
+ const headCoin=()=>{const h=head();return h?(st.data.coins||[]).find(c=>c.mint===h.mint)||null:null;};
  function timing(){const h=head(),cs=h?.cycles||[],c=cs[0];if(!c)return null;
   let len=Number(st.cfg?.policy?.cycleSeconds||1800);
   // Round length: the shortest spacing between recent rounds (a round that waited at its snapshot only lengthens one).
@@ -116,7 +122,7 @@ export async function mountHome(host,{api,realtime,esc,signal,isAddress}){
  // A real payout on the headline coin plays the payout animation once; the first load only remembers it.
  function detectPayout(first){const last=lastPaidRound();const key=last?head().mint+':'+last.cycle_number:null;
   if(first||st.lastPaid==null){st.lastPaid=key||'';return;}
-  if(key&&key!==st.lastPaid){st.lastPaid=key;burst('+'+solText(last.paid_lamports)+' SOL to '+last.paid_recipients+' holder'+(last.paid_recipients==1?'':'s'),false);}}
+  if(key&&key!==st.lastPaid){st.lastPaid=key;burst('+'+amountText(last.paid_lamports,headCoin())+' to '+last.paid_recipients+' holder'+(last.paid_recipients==1?'':'s'),false);}}
  function burst(text,preview){
   const c=q('#clock'),dot=q('#ck-dot'),trail=q('#ck-trail'),pill=q('#ck-pill'),btn=q('#ck-preview'),b=q('#ck-burst');if(!c)return;
   st.tl.forEach(clearTimeout);pill.textContent=text;
@@ -141,7 +147,8 @@ export async function mountHome(host,{api,realtime,esc,signal,isAddress}){
    '<div><span class="st-num" id="st-burn">0</span><span class="st-label" id="st-burn-l">$REBOUND bought and burned</span></div>';
   if(!d)return;
   let pool=0n,known=false,under=0,paid=0n,burned=0n;
-  for(const c of coins){under+=Number(c.underwater||0);paid+=big(c.paid_lamports);burned+=big(c.burned_raw);
+  // SOL totals add SOL coins only (a pair coin's amounts are in its own asset); holders and burns add every coin.
+  for(const c of coins){under+=Number(c.underwater||0);burned+=big(c.burned_raw);if(c.quote_mint)continue;paid+=big(c.paid_lamports);
    const r=c.round;if(r&&r.available_lamports!=null&&(PRE.includes(r.state)||['funded','paying'].includes(r.state))){pool+=big(r.available_lamports);known=true;}}
   const dec=Number(coins.find(c=>c.featured)?.decimals??6),sym=(st.cfg?.siteSettings?.symbol||'REBOUND').replace(/^\$/,'');
   const sol=v=>solText(BigInt(Math.round(v)),3);
@@ -160,7 +167,7 @@ export async function mountHome(host,{api,realtime,esc,signal,isAddress}){
  function thisRound(c){const r=c.round;
   if(c.reward_status==='pair_pending')return ['muted','Not paying yet: '+(c.quote_symbol||'pair')+' rounds start later'];
   if(!r)return ['muted',c.history_complete===false?'Not paying yet: loading its trade history':'Not paying yet: waiting for its first round'];
-  if(r.available_lamports!=null&&big(r.available_lamports)>0n&&!['complete','skipped_no_eligible_holders','missed','skipped_no_funds'].includes(r.state))return ['pos',solText(r.available_lamports)+' SOL'];
+  if(r.available_lamports!=null&&big(r.available_lamports)>0n&&!['complete','skipped_no_eligible_holders','missed','skipped_no_funds'].includes(r.state))return ['pos',amountText(r.available_lamports,c)];
   if(c.holders>0&&c.underwater===0)return ['muted','Nobody’s under, fees roll over'];
   if(r.mode==='dry_run'||r.state==='dry_run')return ['muted','Dry run, nothing is sent'];
   if(PRE.includes(r.state))return ['muted',r.reason&&CATCHING.includes(r.reason)?'Verifying trades for the snapshot':'Fixed at the snapshot'];
@@ -176,7 +183,7 @@ export async function mountHome(host,{api,realtime,esc,signal,isAddress}){
    const fresh=!first&&prev&&!prev.has(c.mint);
    return '<tr class="row'+(fresh?' fresh':'')+'" data-href="#token/'+esc(c.mint)+'"><td class="c-coin"><a href="#token/'+esc(c.mint)+'"><b title="'+esc(name)+'">'+esc(name)+'</b></a> <span class="muted">'+esc(sym)+(note?' · '+esc(note):'')+'</span><span class="c-mob muted">'+(c.holders?esc(c.underwater)+' under':'')+'</span></td>'+
     '<td class="c-under'+(c.holders?'':' muted')+'">'+(c.holders?esc(c.underwater)+' of '+esc(c.holders):'none yet')+'</td>'+
-    '<td class="c-paid'+(big(c.paid_lamports)>0n?'':' muted')+'">'+(big(c.paid_lamports)>0n?solText(c.paid_lamports,1)+' SOL':'0 SOL')+'</td>'+
+    '<td class="c-paid'+(big(c.paid_lamports)>0n?'':' muted')+'">'+(big(c.paid_lamports)>0n?amountText(c.paid_lamports,c,1):'0 '+(c.quote_mint?pairSym(c):'SOL'))+'</td>'+
     '<td class="c-round '+cls+'">'+esc(txt)+'</td></tr>';}).join('')+'</tbody></table>';
   const all=q('#coins-all');all.hidden=coins.length<=LIMIT;all.textContent=showAll?'Show fewer':'All '+coins.length+' coins';all.onclick=()=>{showAll=!showAll;renderCoins(false);};
   box.querySelectorAll('tr[data-href]').forEach(tr=>tr.addEventListener('click',e=>{if(!e.target.closest('a'))location.hash=tr.dataset.href;}));
@@ -189,8 +196,8 @@ export async function mountHome(host,{api,realtime,esc,signal,isAddress}){
   if(!rounds.length){box.innerHTML='<p class="muted b-empty-line">No round has paid out yet. The first payout shows here with its transactions.</p>';return;}
   box.innerHTML=rounds.map((r,i)=>{const coin=coins.find(c=>c.mint===r.mint),sym=(coin?.symbol||'').replace(/^\$/,'').trim(),num=Number(r.cycle_number).toLocaleString('en-US');
    const txs=Number(r.txs||0),link=txs===1&&r.signature?'<a href="https://solscan.io/tx/'+esc(r.signature)+'" target="_blank" rel="noopener noreferrer">1 transaction</a>':txs>1?'<a href="#token/'+esc(r.mint)+'">'+txs+' transactions</a>':'<a href="#token/'+esc(r.mint)+'">round details</a>';
-   const body=big(r.paid_lamports)>0n?'<span><b class="pos">'+solText(r.paid_lamports)+' SOL</b> to '+esc(r.paid_recipients)+' holder'+(r.paid_recipients==1?'':'s')+(many&&sym?' · $'+esc(sym):'')+'</span>'
-    :'<span class="muted">Nobody was underwater. '+(r.available_lamports!=null&&big(r.available_lamports)>0n?solText(r.available_lamports)+' SOL rolled into '+(Number(r.cycle_number)+1).toLocaleString('en-US')+'.':'Fees rolled into the next round.')+(many&&sym?' · $'+esc(sym):'')+'</span>';
+   const body=big(r.paid_lamports)>0n?'<span><b class="pos">'+amountText(r.paid_lamports,coin)+'</b> to '+esc(r.paid_recipients)+' holder'+(r.paid_recipients==1?'':'s')+(many&&sym?' · $'+esc(sym):'')+'</span>'
+    :'<span class="muted">Nobody was underwater. '+(r.available_lamports!=null&&big(r.available_lamports)>0n?amountText(r.available_lamports,coin)+' rolled into '+(Number(r.cycle_number)+1).toLocaleString('en-US')+'.':'Fees rolled into the next round.')+(many&&sym?' · $'+esc(sym):'')+'</span>';
    return '<div class="pay-row'+(i===0?' first':'')+'"><b>'+num+'</b>'+body+link+'</div>';}).join('');
  }
 
@@ -213,13 +220,14 @@ export async function mountHome(host,{api,realtime,esc,signal,isAddress}){
  function result(addr,r){
   const s='<b>'+esc(shortAddr(addr))+'</b>',pos=r.positions||[],under=pos.filter(p=>big(p.loss_lamports)>0n),paid=r.paid||{lamports:'0',payouts:0};
   const more='<a class="hc-more" href="#check/'+esc(addr)+'">Full breakdown</a>';
-  const paidLine=big(paid.lamports)>0n?solText(paid.lamports)+' SOL already paid back over '+paid.payouts+' payout'+(paid.payouts==1?'':'s'):'nothing paid back yet';
+  const parts=[...(big(paid.lamports)>0n?[solText(paid.lamports)+' SOL']:[]),...(paid.assets||[]).filter(a=>big(a.amount)>0n).map(a=>amountText(a.amount,a))];
+  const paidLine=parts.length?parts.join(' + ')+' already paid back over '+paid.payouts+' payout'+(paid.payouts==1?'':'s'):'nothing paid back yet';
   if(!pos.length)return '<span class="hc-line">'+s+' holds no rebound coins with a recorded purchase.</span><span class="hc-detail">Only purchases count; tokens received by transfer carry no cost. '+more+'</span>';
   if(!under.length)return '<span class="hc-line">'+s+' isn’t underwater on any rebound coin. Nothing to pay back right now.</span><span class="hc-detail">'+esc(paidLine[0].toUpperCase()+paidLine.slice(1))+'. '+more+'</span>';
   const p=under[0],sym=(p.symbol||p.name||'').replace(/^\$/,'').trim()||p.mint.slice(0,4);
-  const gets=p.estimate_lamports!=null?' This round it gets about <b class="pos">'+solText(p.estimate_lamports)+' SOL</b>.':p.share_bps?' Its share of the next payout is <b class="pos">'+(p.share_bps/100).toLocaleString('en-US',{maximumFractionDigits:2})+'%</b>, fixed at the snapshot.':'';
-  return '<span class="hc-line">'+s+' is <b class="neg">'+solText(p.loss_lamports)+' SOL under</b> on '+esc(sym)+'.'+gets+'</span>'+
-   '<span class="hc-detail">Paid '+solText(p.cost_lamports)+' SOL for what it still holds, worth '+solText(p.value_lamports)+' SOL now, '+esc(paidLine)+(under.length>1?' · underwater on '+under.length+' coins':'')+'. '+more+'</span>';
+  const gets=p.estimate_lamports!=null?' This round it gets about <b class="pos">'+amountText(p.estimate_lamports,p)+'</b>.':p.share_bps?' Its share of the next payout is <b class="pos">'+(p.share_bps/100).toLocaleString('en-US',{maximumFractionDigits:2})+'%</b>, fixed at the snapshot.':'';
+  return '<span class="hc-line">'+s+' is <b class="neg">'+amountText(p.loss_lamports,p)+' under</b> on '+esc(sym)+'.'+gets+'</span>'+
+   '<span class="hc-detail">Paid '+amountText(p.cost_lamports,p)+' for what it still holds, worth '+amountText(p.value_lamports,p)+' now, '+esc(paidLine)+(under.length>1?' · underwater on '+under.length+' coins':'')+'. '+more+'</span>';
  }
  // Example wallet: the holder with the biggest remaining loss on the headline coin (a real, public position).
  async function findExample(){const h=head();if(!h||st.example)return;
@@ -287,7 +295,11 @@ export async function mountCheck(host,{api,esc,signal,isAddress,chain,connected}
  }
 
  function result(addr,short,w,found,pos,paid){
-  const rows=(pos.out||[]).filter(x=>x.row);
+  const all=(pos.out||[]).filter(x=>x.row);
+  // Amounts only add up within one asset: SOL coins together (the main view), each pair coin in its own asset.
+  const solRows=all.filter(x=>!x.t.quote_mint),main=solRows.length?solRows:all.filter(x=>x.t.quote_mint===all[0]?.t.quote_mint);
+  const U=main[0]?.t.quote_mint?main[0].t:null,fmtU=(v,d=4)=>amountText(v,U,d),others=all.filter(x=>!main.includes(x));
+  const rows=main;
   const sum=k=>rows.reduce((a,x)=>a+big(x.row[k]),0n);
   const cost=sum('cost_lamports'),value=sum('value_lamports'),comp=sum('compensated_lamports'),loss=sum('loss_lamports');
   const under=rows.filter(x=>big(x.row.loss_lamports)>0n);
@@ -298,16 +310,17 @@ export async function mountCheck(host,{api,esc,signal,isAddress,chain,connected}
    const share=total>0n?Number(mine*10000n/total)/100:null;const budget=cy&&cy.available_lamports!=null?big(cy.available_lamports):null;
    let est=null;if(share!=null&&budget!=null){est=budget*mine/(total||1n);if(est>mine)est=mine;}
    const left=cy?Number(cy.cutoff_time)-(x.info?.now||Math.floor(Date.now()/1000)):null;
-   return '<div class="estimate"><div><span>Share of the next '+esc((x.t.symbol||x.t.name||'').trim())+' round</span><small>'+(left!=null&&left>0?'Fixed at the snapshot in '+mmss(left)+'. ':'Fixed at each snapshot. ')+'Depends on fees collected and other holders’ losses.</small></div><b class="mono">'+(share!=null?share.toLocaleString('en-US',{maximumFractionDigits:2})+'%':'—')+(est!=null?'<small>≈ '+solText(est)+' SOL at the current budget</small>':'')+'</b></div>';}).join('');
+   return '<div class="estimate"><div><span>Share of the next '+esc((x.t.symbol||x.t.name||'').trim())+' round</span><small>'+(left!=null&&left>0?'Fixed at the snapshot in '+mmss(left)+'. ':'Fixed at each snapshot. ')+'Depends on fees collected and other holders’ losses.</small></div><b class="mono">'+(share!=null?share.toLocaleString('en-US',{maximumFractionDigits:2})+'%':'—')+(est!=null?'<small>≈ '+amountText(est,x.t.quote_mint?x.t:null)+' at the current budget</small>':'')+'</b></div>';}).join('');
   const excluded=rows.filter(x=>x.row.outcome==='exited');
-  const payRows=(paid.p||[]).slice(0,5).map(a=>{const t=(found.mine||[]).find(m=>m.mint===a.mint);return '<div class="paid-row mono"><span class="muted">#'+esc(a.cycle_number)+' · $'+esc((t?.symbol||'').trim()||a.mint.slice(0,4))+'</span><span><b class="mint">+'+solText(a.amount_lamports)+' SOL</b>'+(a.settlement_signature?'<a class="proof" href="https://solscan.io/tx/'+esc(a.settlement_signature)+'" target="_blank" rel="noopener noreferrer" data-proof="Opens Solscan · tx '+esc(a.settlement_signature.slice(0,4)+'…'+a.settlement_signature.slice(-4))+'">tx ↗</a>':'')+'</span></div>';}).join('');
+  const payRows=(paid.p||[]).slice(0,5).map(a=>{const t=(found.mine||[]).find(m=>m.mint===a.mint);return '<div class="paid-row mono"><span class="muted">#'+esc(a.cycle_number)+' · $'+esc((t?.symbol||'').trim()||a.mint.slice(0,4))+'</span><span><b class="mint">+'+amountText(a.amount_lamports,t?.quote_mint?t:null)+'</b>'+(a.settlement_signature?'<a class="proof" href="https://solscan.io/tx/'+esc(a.settlement_signature)+'" target="_blank" rel="noopener noreferrer" data-proof="Opens Solscan · tx '+esc(a.settlement_signature.slice(0,4)+'…'+a.settlement_signature.slice(-4))+'">tx ↗</a>':'')+'</span></div>';}).join('');
   panel.innerHTML='<div class="check-result">'+
    '<div class="res-head rise"><span class="mono muted">'+esc(short)+'</span>'+(under.length?'<span class="pill amber">Underwater on '+under.length+' token'+(under.length===1?'':'s')+'</span>':'<span class="pill mint">Above the waterline</span>')+'</div>'+
-   '<div class="res-loss rise d1"><span>Remaining loss</span><b class="mono '+(loss>0n?'amber':'')+'">'+solText(loss,4)+' <small>SOL</small></b></div>'+
+   '<div class="res-loss rise d1"><span>Remaining loss</span><b class="mono '+(loss>0n?'amber':'')+'">'+fmtU(loss,4).replace(/ (\S+)$/,' <small>$1</small>')+'</b></div>'+
    '<div class="res-bar rise d2"><div class="bar3" aria-hidden="true"><i style="width:'+pct(value)+'%"></i><i class="mint" style="width:'+pct(comp)+'%"></i><i class="amber" style="width:'+pct(loss)+'%"></i></div>'+
-   '<div class="bar3-legend"><div><span><i></i>Value now</span><b class="mono">'+solText(value,4)+' SOL</b></div><div><span><i class="mint"></i>Already received</span><b class="mono">'+solText(comp,4)+' SOL</b></div><div><span><i class="amber"></i>Still to recover</span><b class="mono">'+solText(loss,4)+' SOL</b></div></div>'+
-   '<small class="muted">Of '+solText(cost,4)+' SOL paid for the tokens this wallet still holds (first in, first out). Losses are measured in SOL.</small></div>'+
+   '<div class="bar3-legend"><div><span><i></i>Value now</span><b class="mono">'+fmtU(value,4)+'</b></div><div><span><i class="mint"></i>Already received</span><b class="mono">'+fmtU(comp,4)+'</b></div><div><span><i class="amber"></i>Still to recover</span><b class="mono">'+fmtU(loss,4)+'</b></div></div>'+
+   '<small class="muted">Of '+fmtU(cost,4)+' paid for the tokens this wallet still holds (first in, first out). Losses are measured in '+(U?esc(String(U.quote_symbol||'the pair asset')):'SOL')+'.</small></div>'+
    (shareRows?'<div class="rise d3">'+shareRows+'</div>':'')+
+   (others.length?'<p class="note rise d3">Also holds '+others.map(x=>'$'+esc((x.t.symbol||'').trim())+': '+amountText(x.row.loss_lamports,x.t)+' under').join(', ')+'</p>':'')+
    (excluded.length?'<p class="note amber rise d3">'+excluded.map(x=>'$'+esc((x.t.symbol||'').trim())).join(', ')+': sold or transferred — excluded from later rounds for good.</p>':'')+
    '<div class="paid-list rise d4"><span class="muted">Paid to this wallet</span>'+(payRows||'<p class="muted small">No payouts yet.</p>')+'</div>'+
    '<div class="res-actions rise d5">'+(connected?'<a class="btn-primary" href="#portfolio">Follow your payouts</a>':'<button type="button" class="btn-primary" data-action="wallet">Connect to follow payouts</button>')+'<button type="button" class="btn-ghost" data-check-reset>Check another</button></div></div>';

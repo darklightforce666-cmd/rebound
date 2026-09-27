@@ -38,9 +38,10 @@ class Rpc{
  }
 }
 
-function marketAddresses(mint){
- const m=W.pk(mint);
- return{mint:m.toBase58(),curve:Pump.SDK.bondingCurvePda(m).toBase58(),pool:Pump.SDK.canonicalPumpPoolPda(m).toBase58(),poolAuthority:Pump.SDK.pumpPoolAuthorityPda(m).toBase58()};
+// The coin's markets. `quoteMint`: a coin paired with another asset trades in the pool derived with that asset.
+function marketAddresses(mint,quoteMint=null){
+ const m=W.pk(mint),pool=I.poolOf({mint:m.toBase58(),quote_mint:quoteMint});
+ return{mint:m.toBase58(),curve:Pump.SDK.bondingCurvePda(m).toBase58(),pool,poolAuthority:Pump.SDK.pumpPoolAuthorityPda(m).toBase58()};
 }
 
 // All finalized signatures of `address` newer than `until` (exclusive). Complete iff the last
@@ -82,10 +83,10 @@ const TX_VERSION=1;
 const reportedIndex=(tx,s)=>Number.isInteger(tx?.transactionIndex)?tx.transactionIndex:Number.isInteger(s?.transactionIndex)?s.transactionIndex:null;
 
 // Collect, fetch and order the mint's full finalized history.
-async function collect(rpc,mint,{maxAccounts=5000,maxTransactions=50000,onProgress=()=>{}}={}){
+async function collect(rpc,mint,{maxAccounts=5000,maxTransactions=50000,onProgress=()=>{},quoteMint=null}={}){
  // Everything finalized at or before `head` is guaranteed to be in the signature lists below.
  const head=await rpc.call('getSlot',[{commitment:'finalized'}]);
- const addr=marketAddresses(mint),queue=[addr.mint,addr.curve,addr.pool],seenAddr=new Set(queue),sigs=new Map(),txs=new Map(),incomplete=[];
+ const addr=marketAddresses(mint,quoteMint),queue=[addr.mint,addr.curve,addr.pool],seenAddr=new Set(queue),sigs=new Map(),txs=new Map(),incomplete=[];
  while(queue.length){
   const a=queue.shift();const r=await signaturesFor(rpc,a);if(!r.complete)incomplete.push({address:a,reason:r.reason});
   for(const s of r.signatures)if(!sigs.has(s.signature))sigs.set(s.signature,s);

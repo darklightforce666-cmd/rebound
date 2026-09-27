@@ -23,15 +23,20 @@ function nonzero(e,a,b){const x=e[a];return x!==undefined&&x!==null&&BigInt(x)!=
 const at=x=>x.data?.tree??x.path;
 const under=(path,root)=>path===root||path.startsWith(root+'/');
 
+// Cost of a purchase in its quote asset's base units (lamports for SOL coins, the pair asset's units for a coin
+// paired with another asset), proven by the buyer's own payments inside the trade. `lamports` is the name
+// the lot keeps for the amount; for a pair coin it is that asset's base units.
 function tradeCost(trade,txEvents){
- const e=trade.data.event,buyer=trade.owner,route=trade.data.route;
+ const e=trade.data.event,buyer=trade.owner,route=trade.data.route,asset=trade.data.quoteAsset||'native-SOL',sol=asset==='native-SOL';
+ // SOL coins pay the curve in lamports and a pool in wrapped SOL; a pair coin pays both in its quote asset.
+ const pays=(kind,a)=>txEvents.filter(x=>x.kind===kind&&x.data.from===buyer&&under(at(x),route)&&(a==null||x.data.asset===a)).reduce((s,x)=>s+n(x.data.amount),0n);
  if(trade.data.venue==='pump-curve'){
   const quote=nonzero(e,'quoteAmount','solAmount'),total=quote+n(e.fee)+n(e.creatorFee);
-  const paid=txEvents.filter(x=>x.kind==='funding_transfer'&&x.data.from===buyer&&under(at(x),route)).reduce((s,x)=>s+n(x.data.amount),0n);
+  const paid=sol?pays('funding_transfer'):pays('quote_transfer',asset);
   return paid>=total&&quote>0n?{lamports:total,quote,fees:total-quote}:null;
  }
  const total=e.userQuoteAmountIn!=null?n(e.userQuoteAmountIn):n(e.quoteAmountIn)+n(e.lpFee)+n(e.protocolFee)+n(e.coinCreatorFee);
- const paid=txEvents.filter(x=>x.kind==='quote_transfer'&&x.data.from===buyer&&under(at(x),route)).reduce((s,x)=>s+n(x.data.amount),0n);
+ const paid=pays('quote_transfer',sol?'wrapped-SOL':asset);
  return paid>=total&&total>0n?{lamports:total,quote:n(e.quoteAmountIn),fees:total-n(e.quoteAmountIn)}:null;
 }
 function tradeQuantity(trade){const e=trade.data.event;return trade.data.venue==='pump-curve'?n(e.tokenAmount):n(e.baseAmountOut);}
@@ -56,7 +61,7 @@ function observationFrom(ev){
  * @param opts.throughSlot  replay events with slot ≤ throughSlot only
  * @param opts.parserHolds  holds reported by the parser ({wallet?, reason, signature})
  */
-function replay(events,{excluded=new Set(),fx=()=>null,credits=[],throughSlot=Infinity,parserHolds=[],state=null,exitOnOutflow=false}={}){
+function replay(events,{excluded=new Set(),fx=()=>null,credits=[],throughSlot=Infinity,parserHolds=[],state=null,exitOnOutflow=false,quoteAsset='native-SOL'}={}){
  const ordered=events.filter(e=>Number(e.slot)<=Number(throughSlot)).sort(chainOrder);
  // `state` resumes a replay (ready-made positions): the owners and token accounts it touches, and the lot
  // counter. Applying events in batches on top of the stored state gives exactly the result of one replay.
@@ -88,7 +93,7 @@ function replay(events,{excluded=new Set(),fx=()=>null,credits=[],throughSlot=In
  for(const g of groups){
   applyCreditsThrough(Number(g.slot)-1);
   const txe=g.events,deliveries=txe.filter(x=>x.kind==='market_delivery'),matched=new Map();
-  for(const t of txe.filter(x=>x.kind==='purchase_candidate'&&SUPPORTED.has(x.data.venue)&&x.data.quoteAsset==='native-SOL')){
+  for(const t of txe.filter(x=>x.kind==='purchase_candidate'&&SUPPORTED.has(x.data.venue)&&x.data.quoteAsset===quoteAsset)){
    const q=tradeQuantity(t),d=deliveries.find(d=>!matched.has(d.id)&&n(d.data.amount)===q&&under(at(d),t.data.route));
    if(d)matched.set(d.id,t);else if(!excluded.has(t.owner))hold(t.owner,'purchase_delivery_unproven',t);
   }

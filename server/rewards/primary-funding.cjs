@@ -29,6 +29,31 @@ function classify(tx,wallet,intents=new Map()){
  return{signature,slot,time,delta,fee,inflow,outflow,residual,intent:intent||null,postBalance:n(tx.meta.postBalances[i])};
 }
 
+// A pair coin's wallet, in its quote asset: the same shape as classify(), measured on the wallet's token
+// accounts of `mint` (every account the wallet owns for it). Inflow/outflow come from the SPL transfers into and
+// out of those accounts (CPI included); what a program moved without a transfer instruction is the residual.
+// Network fees are SOL and are not part of this ledger.
+const TOKEN_PROGRAMS=new Set(['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA','TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb']);
+function tokenTransfers(tx){
+ const all=[...(tx.transaction.message.instructions||[]),...(tx.meta?.innerInstructions||[]).flatMap(x=>x.instructions||[])];
+ return all.filter(i=>TOKEN_PROGRAMS.has(String(i.programId))&&i.parsed&&['transfer','transferChecked','transferCheckedWithFee'].includes(i.parsed.type))
+  .map(i=>({source:i.parsed.info.source,destination:i.parsed.info.destination,amount:n(i.parsed.info.amount??i.parsed.info.tokenAmount?.amount??0)}));
+}
+function classifyToken(tx,wallet,mint,intents=new Map()){
+ const signature=tx.transaction.signatures[0],slot=Number(tx.slot),time=Number(tx.blockTime);
+ if(tx.meta?.err)return{signature,slot,time,failed:true,fee:0n,inflow:0n,outflow:0n};
+ const keys=keyList(tx),mine=new Set(),pre=new Map(),post=new Map();
+ for(const b of tx.meta.preTokenBalances||[])if(b.mint===mint&&b.owner===wallet){const k=keys[b.accountIndex];mine.add(k);pre.set(k,n(b.uiTokenAmount.amount));}
+ for(const b of tx.meta.postTokenBalances||[])if(b.mint===mint&&b.owner===wallet){const k=keys[b.accountIndex];mine.add(k);post.set(k,n(b.uiTokenAmount.amount));}
+ if(!mine.size)return{signature,slot,time,inflow:0n,outflow:0n,fee:0n,unrelated:true};
+ let before=0n,after=0n;for(const k of mine){before+=pre.get(k)||0n;after+=post.get(k)||0n;}
+ const t=tokenTransfers(tx),tin=t.filter(x=>mine.has(x.destination)&&!mine.has(x.source)).reduce((a,x)=>a+x.amount,0n),tout=t.filter(x=>mine.has(x.source)&&!mine.has(x.destination)).reduce((a,x)=>a+x.amount,0n);
+ const delta=after-before,residual=delta-(tin-tout);
+ const inflow=tin+(residual>0n?residual:0n),outflow=tout+(residual<0n?-residual:0n);
+ const intent=intents.get(signature);
+ return{signature,slot,time,delta,fee:0n,inflow,outflow,residual,intent:intent||null,postBalance:after,asset:mint};
+}
+
 // Apply classified transactions (ascending slot order) to the primary funding state.
 // state: {credited, holderAwaiting, holderAvailable, holderReserved, holderPaid, retained, carry,
 //         operationalReserve, throughSlot}
@@ -75,4 +100,4 @@ function opening({balance,requestedCredit,operationalReserve}){
  if(want+r>b)throw Object.assign(Error('Opening credit plus reserve exceeds the wallet balance'),{code:'INSUFFICIENT_BACKING'});
  return want;
 }
-module.exports={classify,reconcile,fundingThrough,opening,systemTransfers};
+module.exports={classify,classifyToken,reconcile,fundingThrough,opening,systemTransfers,tokenTransfers};

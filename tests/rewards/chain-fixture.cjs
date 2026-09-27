@@ -12,8 +12,12 @@ function chain({startSlot=100,timeOf=slot=>1000+slot}={}){
    if(accounts.length)ev('token_balances',null,{accounts},'post/balances');events.push(...cur.events);return cur.sig;},
   account(account,owner){if(!balances.has(account))balances.set(account,{owner,amount:0n});return account;},
   move(account,delta){const b=balances.get(account);b.amount+=BigInt(delta);cur.touched.add(account);},
-  buy(owner,account,qty,{lamports=SOL,fee=10000000n,creatorFee=5000000n,pay=lamports+fee+creatorFee,recipientOwner=owner,recipientAccount=account,venue='pump-curve',vSol=30n*SOL,vTok=1000000n*1000000n}={}){
+  // `quote`: a coin paired with another asset (mint Q): the buyer pays the curve in Q (an SPL quote_transfer),
+  // and the TradeEvent carries quoteAmount / virtualQuoteReserves in Q base units.
+  buy(owner,account,qty,{lamports=SOL,fee=10000000n,creatorFee=5000000n,pay=lamports+fee+creatorFee,recipientOwner=owner,recipientAccount=account,venue='pump-curve',vSol=30n*SOL,vTok=1000000n*1000000n,quote=null}={}){
    api.account(recipientAccount,recipientOwner);
+   if(quote){ev('quote_transfer',owner,{from:owner,to:CURVE,amount:String(pay),asset:quote},'0/1');ev('market_delivery',recipientOwner,{source:'curveATA',destination:recipientAccount,amount:String(qty)},'0/2');api.move(recipientAccount,qty);
+    ev('purchase_candidate',owner,{venue,quoteAsset:quote,route:'0',event:{tokenAmount:String(qty),quoteAmount:String(lamports),solAmount:'0',quoteMint:quote,fee:String(fee),creatorFee:String(creatorFee),virtualQuoteReserves:String(vSol),virtualSolReserves:'0',virtualTokenReserves:String(vTok)}},'0/3');return;}
    ev('funding_transfer',owner,{from:owner,to:CURVE,amount:String(pay)},'0/1');
    ev('market_delivery',recipientOwner,{source:'curveATA',destination:recipientAccount,amount:String(qty)},'0/2');
    api.move(recipientAccount,qty);

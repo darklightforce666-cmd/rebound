@@ -118,3 +118,7 @@ GRANT DELETE ON reward_public_holders TO rebound_scheduler;
 GRANT SELECT,INSERT,UPDATE ON reward_creator_wallets,reward_burns TO rebound_scheduler;
 GRANT SELECT ON reward_creator_wallets,reward_burns TO rebound_api;
 GRANT EXECUTE ON FUNCTION reward_reserve_creator_wallet(uuid),reward_assign_creator_wallet(uuid,text) TO rebound_api;
+
+-- ---------- coins paired with another quote asset (021) ----------
+GRANT SELECT,INSERT,UPDATE ON reward_swaps TO rebound_scheduler;
+GRANT SELECT ON reward_swaps TO rebound_indexer,rebound_verifier,rebound_api;

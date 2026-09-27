@@ -28,7 +28,7 @@ const b=x=>BigInt(x);
 // If the RPC cannot list holders, it falls back to following every token account seen in history.
 async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCheckSeconds=30,verifySeconds=120,timeBudgetMs=Infinity}={}){
  const deadline=Date.now()+timeBudgetMs;
- const mint=coin.mint,m=H.marketAddresses(mint),head=await rpc.call('getSlot',[{commitment:'finalized'}]);
+ const mint=coin.mint,m=H.marketAddresses(mint,coin.quote_mint),head=await rpc.call('getSlot',[{commitment:'finalized'}]);
  const incomplete=[];let newEvents=0,newTx=0,budget=Number.isFinite(maxTx)?Math.max(1,Math.floor(maxTx)):100000;
  for(const [address,role] of [[m.mint,'mint'],[m.curve,'curve'],[m.pool,'pool']])
   await db.query('INSERT INTO reward_history_cursors(mint,address,role,discovered_slot) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING',[mint,address,role,head]);
@@ -49,7 +49,7 @@ async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCh
    const tx=txs[i];if(!tx){incomplete.push({signature:row.signature,reason:'transaction_unavailable'});continue;}
    let index=H.reportedIndex(tx,{transactionIndex:row.block_index??undefined});if(index==null)index=await blockIndex(tx.slot,row.signature);
    if(index<0){incomplete.push({slot:tx.slot,reason:'in_block_order_unavailable'});continue;}
-   const parsed=I.parseTransaction(tx,{slot:tx.slot,time:tx.blockTime,transactionIndex:index,coins:[{mint,intake:coin.intake,sharing_config:coin.sharing_config,current_creator:null}]});
+   const parsed=I.parseTransaction(tx,{slot:tx.slot,time:tx.blockTime,transactionIndex:index,coins:[{mint,intake:coin.intake,sharing_config:coin.sharing_config,current_creator:null,quote_mint:coin.quote_mint||null}]});
    await DB.transaction(db,async t=>{
     for(const e of parsed.events)await t.query('INSERT INTO reward_events(id,mint,signature,instruction_path,event_index,slot,transaction_index,execution_order,kind,owner,data,raw_digest,parser_version,finalized) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true) ON CONFLICT DO NOTHING',
      // SOL/quote transfers carry no mint of their own; they are the purchase payment proof of THIS mint's
@@ -157,7 +157,7 @@ async function loadCredits(db,mint,cutoffSlot){
 }
 function inputsLoader(db){
  return async(coinRow,cycle,cutoff,cutoffSlot)=>{
-  const mint=coinRow.mint,m=H.marketAddresses(mint);
+  const mint=coinRow.mint,m=H.marketAddresses(mint,coinRow.quote_mint);
   const rows=(await db.query('SELECT * FROM reward_events WHERE mint=$1 AND slot<=$2 ORDER BY slot,transaction_index,execution_order,event_index',[mint,cutoffSlot])).rows;
   const events=rows.map(e=>({id:e.id,mint:e.mint,signature:e.signature,path:e.instruction_path,eventIndex:e.event_index,slot:Number(e.slot),transactionIndex:e.transaction_index,order:e.execution_order,kind:e.kind,owner:e.owner,data:e.data,time:Number(e.data.time)}));
   const cp=(await db.query('SELECT * FROM reward_checkpoints WHERE name=$1',['history:'+mint])).rows[0];
@@ -197,7 +197,7 @@ async function heartbeat({db,connection},coin){
  const bc=Pump.sdk.decodeBondingCurve(r.value);const time=await connection.getBlockTime(r.context.slot);
  if(!bc.complete){await db.query("INSERT INTO reward_price_observations(mint,slot,observed_at,market,base_reserve,real_quote,virtual_quote,evidence,quote_model,block_time,heartbeat) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'curve',$3,true) ON CONFLICT DO NOTHING",
   [coin.mint,r.context.slot,time,curve.toBase58(),bc.virtualTokenReserves.toString(),(bc.realQuoteReserves??bc.realSolReserves).toString(),(bc.virtualQuoteReserves??bc.virtualSolReserves).toString(),stable({source:'bonding_curve_account',slot:r.context.slot})]);return{market:'curve',slot:r.context.slot};}
- const pool=Pump.SDK.canonicalPumpPoolPda(mint);const p=await connection.getAccountInfo(pool,'finalized');if(!p)return null;
+ const pool=new PublicKey(I.poolOf(coin));const p=await connection.getAccountInfo(pool,'finalized');if(!p)return null;   // a pair coin's pool is derived with its quote
  const state=Pump.SDK.getPumpAmmProgram(connection).coder.accounts.decode('pool',p.data);
  const [base,quote]=await Promise.all([connection.getTokenAccountBalance(state.poolBaseTokenAccount,'finalized'),connection.getTokenAccountBalance(state.poolQuoteTokenAccount,'finalized')]);
  await db.query("INSERT INTO reward_price_observations(mint,slot,observed_at,market,base_reserve,real_quote,virtual_quote,evidence,quote_model,block_time,heartbeat) VALUES($1,$2,$3,$4,$5,$6,0,$7,'amm',$3,true) ON CONFLICT DO NOTHING",
@@ -241,7 +241,9 @@ async function reconcileFunding({db,rpc,program},coin){
   const tx=await rpc.call('getTransaction',[s.signature,{encoding:'jsonParsed',commitment:'finalized',maxSupportedTransactionVersion:H.TX_VERSION}]);
   if(!tx){gap=s.signature;break;}
   const intent=paid.get(s.signature)||(ctx?chainDeposit(tx,ctx):null);
-  classified.push(F.classify(tx,fw.address,new Map(intent?[[s.signature,intent]]:[])));last=s.signature;
+  // A pair coin's ledger is kept in its quote asset (the fees arrive and the holders are paid in it).
+  const q=I.quoteOf(coin);
+  classified.push(q?F.classifyToken(tx,fw.address,q,new Map(intent?[[s.signature,intent]]:[])):F.classify(tx,fw.address,new Map(intent?[[s.signature,intent]]:[])));last=s.signature;
  }
  const out=await FS.applyWalletTransactions(db,{mint:coin.mint,wallet:fw.address,classified});
  if(last)await db.query('UPDATE reward_funding_wallets SET reconciled_signature=$2 WHERE id=$1',[fw.id,last]);
@@ -304,13 +306,18 @@ async function projectToken({db,connection},coin){
  const sol=(await db.query('SELECT * FROM reward_sol_usd ORDER BY publish_time DESC LIMIT 1')).rows[0];
  let price=null,cap=null,at=null;
  if(obs&&sol){const s18=obs.quote_model==='curve'?P3.curveS18({virtualSolReserves:obs.virtual_quote,virtualTokenReserves:obs.base_reserve}):P3.ammS18({quoteReserve:obs.real_quote,baseReserve:obs.base_reserve});
-  if(s18){const q18=s18*b(sol.price_usd_pico)/P3.LAMPORTS;price=q18/P3.E18;cap=b(m.supply)*q18/P3.E18;at=new Date(Number(obs.observed_at)*1000).toISOString();}}
+  // USD value of one quote base unit: SOL from the feed; a stablecoin pair at 1 USD per whole unit; other pairs unknown.
+  const q=I.quoteOf(coin),stable=q&&coin.quote_decimals!=null&&require('@pump-fun/pump-sdk').isStableQuoteMint(new PublicKey(q));
+  const q18=!s18?null:!q?s18*b(sol.price_usd_pico)/P3.LAMPORTS:stable?s18*10n**12n/10n**BigInt(coin.quote_decimals):null;
+  if(q18){price=q18/P3.E18;cap=b(m.supply)*q18/P3.E18;at=new Date(Number(obs.observed_at)*1000).toISOString();}}
  const status=coin.status==='active'?'active':coin.status;
  await db.query(`INSERT INTO reward_public_tokens(mint,namespace,kind,name,symbol,image_uri,creator_wallet,launch_time,decimals,supply_definition,supply_raw,price_usd_pico,price_updated_at,market_cap_usd_pico,market_cap_kind,price_source,reward_status,pinned,test)
   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'outstanding mint supply (burned units excluded)',$10,$11,$12,$13,'market_cap',$14,$15,$16,$17)
   ON CONFLICT(mint) DO UPDATE SET name=COALESCE(EXCLUDED.name,reward_public_tokens.name),symbol=COALESCE(EXCLUDED.symbol,reward_public_tokens.symbol),image_uri=COALESCE(EXCLUDED.image_uri,reward_public_tokens.image_uri),decimals=EXCLUDED.decimals,supply_raw=EXCLUDED.supply_raw,price_usd_pico=COALESCE(EXCLUDED.price_usd_pico,reward_public_tokens.price_usd_pico),
    price_updated_at=COALESCE(EXCLUDED.price_updated_at,reward_public_tokens.price_updated_at),market_cap_usd_pico=COALESCE(EXCLUDED.market_cap_usd_pico,reward_public_tokens.market_cap_usd_pico),reward_status=EXCLUDED.reward_status`,
   [coin.mint,coin.namespace,coin.kind,coin.name,coin.symbol,coin.image_uri,coin.creator_wallet,coin.launch_time,m.decimals,m.supply,price==null?null:String(price),at,cap==null?null:String(cap),obs?(obs.quote_model==='curve'?'pump bonding curve (finalized)':'canonical PumpSwap pool (finalized)'):null,status,coin.kind==='primary',coin.namespace==='mainnet_test']);
+ // A pair coin's amounts are in its quote asset: the site needs its ticker and decimals to show them.
+ if(I.quoteOf(coin))await db.query('UPDATE reward_public_tokens SET quote_mint=$2,quote_symbol=COALESCE($3,quote_symbol),quote_decimals=COALESCE($4,quote_decimals) WHERE mint=$1',[coin.mint,coin.quote_mint,coin.quote_symbol||null,coin.quote_decimals??null]);
 }
 
 // ---------------- process ----------------

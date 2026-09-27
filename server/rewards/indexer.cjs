@@ -2,7 +2,7 @@
 const {PublicKey,Connection}=require('@solana/web3.js');
 const bs58=require('bs58');
 const P=require('./pump.cjs'),W=require('./wire.cjs'),Policy=require('./policy.cjs'),DB=require('./db.cjs');
-const PARSER='rebound-execution-v3.2';   // v3.1: bn.js decoded by shape; v3.2: CPI tree positions (trades through routers)
+const PARSER='rebound-execution-v3.3';   // v3.1: bn.js decoded by shape; v3.2: CPI tree positions (trades through routers); v3.3: coins paired with another quote asset
 const TOKEN=new Set(['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA','TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb']);
 const PUMP=P.SDK.PUMP_PROGRAM_ID.toBase58(),AMM=P.SDK.PUMP_AMM_PROGRAM_ID.toBase58();
 const EVENT_CPI=Buffer.from('e445a52e51cb9a1d','hex');
@@ -31,6 +31,19 @@ function trace(tx){
  }return out.map((x,order)=>({...x,order}));
 }
 const address=x=>typeof x==='string'?x:x?.pubkey;
+const WSOL='So11111111111111111111111111111111111111112';
+// A coin's quote asset: SOL (null / WSOL / the zero key) or the SPL mint it was created against (coin.quote_mint).
+const quoteOf=c=>c&&c.quote_mint&&![WSOL,PublicKey.default.toBase58()].includes(c.quote_mint)?c.quote_mint:null;
+// The coin's canonical PumpSwap pool: derived with its own quote mint (WSOL for SOL coins).
+const poolOf=c=>{const q=quoteOf(c);return(q?P.SDK.canonicalPumpPoolPdaWithQuote(W.pk(c.mint),W.pk(q)):P.SDK.canonicalPumpPoolPda(W.pk(c.mint))).toBase58();};
+// What a purchase was paid in: 'native-SOL', the coin's own quote mint, or 'unsupported' (anything else).
+// A curve TradeEvent names its quote mint; a pool BuyEvent does not, and the coin's canonical pool trades in
+// the coin's quote (a side pool is never canonical and is held elsewhere).
+function tradeAsset(coin,program,e){
+ const q=quoteOf(coin);
+ if(program===PUMP){const m=e.quoteMint&&e.quoteMint!==PublicKey.default.toBase58()?e.quoteMint:WSOL;return m===WSOL?(q?'unsupported':'native-SOL'):m===q?q:'unsupported';}
+ return q||'native-SOL';
+}
 function parseTransaction(tx,{slot,time,transactionIndex,coins,ownership=new Map()}){
  const events=[],holds=[];if(!tx.meta||tx.meta.err)return{events,holds,ownership};
  const keys=tx.transaction.message.accountKeys.map(address),signature=tx.transaction.signatures[0],coinMap=new Map(coins.map(c=>[c.mint,c]));
@@ -42,19 +55,19 @@ function parseTransaction(tx,{slot,time,transactionIndex,coins,ownership=new Map
  for(const ins of instructions){
   const program=address(ins.programId),parsed=ins.parsed,info=parsed?.info;
   if(program===PUMP||program===AMM){
-   if(program===AMM&&ins.data){const disc=Buffer.from(bs58.decode(ins.data)).subarray(0,8);const knownNames=['buy','buy_exact_quote_in','sell','sell_exact_quote_out','extend_account','deposit','withdraw','create_pool','transfer_creator_fees_to_pump_v2'];if(!disc.equals(EVENT_CPI)&&!knownNames.some(n=>disc.equals(W.hash('global:'+n).subarray(0,8))))for(const c of coins)if(ins.accounts?.map(address).includes(P.SDK.canonicalPumpPoolPda(W.pk(c.mint)).toBase58()))emit(ins,'market_invalidation',c.mint,null,{reason:'unmodeled_pool_configuration_change'});}
+   if(program===AMM&&ins.data){const disc=Buffer.from(bs58.decode(ins.data)).subarray(0,8);const knownNames=['buy','buy_exact_quote_in','sell','sell_exact_quote_out','extend_account','deposit','withdraw','create_pool','transfer_creator_fees_to_pump_v2'];if(!disc.equals(EVENT_CPI)&&!knownNames.some(n=>disc.equals(W.hash('global:'+n).subarray(0,8))))for(const c of coins)if(ins.accounts?.map(address).includes(poolOf(c)))emit(ins,'market_invalidation',c.mint,null,{reason:'unmodeled_pool_configuration_change'});}
    try{
     const event=ins.data?eventDecoder(program,Buffer.from(bs58.decode(ins.data))):null;
     if(event){
      // Anchor event CPI must be a self-call under the actual market program.
      if(!ins.parent||address(ins.parent.programId)!==program)throw Error('Event not emitted by verified self CPI');
      const e=event.data;
-     const mint=e.mint||e.baseMint||coins.find(c=>P.SDK.canonicalPumpPoolPda(W.pk(c.mint)).toBase58()===e.pool||event.name==='CollectCreatorFeeEvent'&&c.intake===e.creator)?.mint;
+     const mint=e.mint||e.baseMint||coins.find(c=>poolOf(c)===e.pool||event.name==='CollectCreatorFeeEvent'&&c.intake===e.creator)?.mint;
      if(!mint||!coinMap.has(mint))continue;const coin=coinMap.get(mint);
      if(event.name==='TradeEvent'||event.name==='BuyEvent'||event.name==='SellEvent'){
       const buy=event.name==='BuyEvent'||event.name==='TradeEvent'&&e.isBuy;
       const root=ins.parent;const direct=root.depth===1;
-      const creator=e.creator||e.coinCreator,canonical=program===PUMP||e.pool===P.SDK.canonicalPumpPoolPda(W.pk(mint)).toBase58();
+      const creator=e.creator||e.coinCreator,canonical=program===PUMP||e.pool===poolOf(coin);
       const user=e.user;
       if(!buy){emit(ins,'sale',mint,user,{event:e,marketProgram:program,route:root.tree??root.path});continue;}
       // BN.toJSON is hexadecimal; normalize SDK BN fields before stringify
@@ -62,7 +75,7 @@ function parseTransaction(tx,{slot,time,transactionIndex,coins,ownership=new Map
       const creatorFee=String(e.creatorFee??e.coinCreatorFee??0),quantity=String(e.tokenAmount??e.baseAmountOut??0);
       const quote=String(e.quoteAmount??e.solAmount??e.quoteAmountIn??0);
       const fees=program===PUMP?Policy.sum([e.fee||0,creatorFee,e.buybackFee||0,e.cashback||0,e.holderRewards||0]):Policy.sum([e.lpFee||0,e.protocolFee||0,creatorFee,e.buybackFee||0,e.cashbackFee||0,e.holderRewards||0]);
-      emit(ins,'purchase_candidate',mint,user,{event:e,success:true,finalized:true,complete:true,provenanceComplete:direct,canonical,creator,expectedCreator:coin.current_creator,quoteAsset:e.quoteMint&&![PublicKey.default.toBase58(),'So11111111111111111111111111111111111111112'].includes(e.quoteMint)?'unsupported':'native-SOL',venue:program===PUMP?'pump-curve':canonical?'pump-canonical-amm':'side-pool',quantity,actualQuote:quote,creatorFee,unavoidableFees:String(fees),route:root.tree??root.path});
+      emit(ins,'purchase_candidate',mint,user,{event:e,success:true,finalized:true,complete:true,provenanceComplete:direct,canonical,creator,expectedCreator:coin.current_creator,quoteAsset:tradeAsset(coin,program,e),venue:program===PUMP?'pump-curve':canonical?'pump-canonical-amm':'side-pool',quantity,actualQuote:quote,creatorFee,unavoidableFees:String(fees),route:root.tree??root.path});
      }else if(event.name==='DistributeCreatorFeesEvent')emit(ins,'creator_distribution',mint,null,{event:e,destination:coin.intake,sharing:coin.sharing_config});
      else if(event.name==='CollectCreatorFeeEvent')emit(ins,'initial_creator_collection',mint,null,{event:e,route:ins.parent.path});
      else if(event.name==='CreatePoolEvent')emit(ins,'graduation',mint,null,{event:e});
@@ -76,11 +89,12 @@ function parseTransaction(tx,{slot,time,transactionIndex,coins,ownership=new Map
    if(['transfer','transferChecked','transferCheckedWithFee'].includes(type)){
     const source=known.get(info.source),destination=known.get(info.destination),mint=info.mint||source?.mint||post.get(info.source)?.mint||post.get(info.destination)?.mint;
     const amount=String(info.amount??info.tokenAmount?.amount??'0');if(Policy.int(amount)===0n)continue;
-    if(mint==='So11111111111111111111111111111111111111112')emit(ins,'quote_transfer',null,source?.owner,{source:info.source,destination:info.destination,from:source?.owner,to:destination?.owner,amount,asset:'wrapped-SOL'});
+    if(mint===WSOL)emit(ins,'quote_transfer',null,source?.owner,{source:info.source,destination:info.destination,from:source?.owner,to:destination?.owner,amount,asset:'wrapped-SOL'});
+    else if(coins.some(c=>quoteOf(c)===mint))emit(ins,'quote_transfer',null,source?.owner,{source:info.source,destination:info.destination,from:source?.owner,to:destination?.owner,amount,asset:mint});
     if(source)known.set(info.source,{...source,amount:String(BigInt(source.amount||0)-BigInt(amount))});if(destination)known.set(info.destination,{...destination,amount:String(BigInt(destination.amount||0)+BigInt(amount))});
     if(!coinMap.has(mint))continue;
     if(!source?.owner){holds.push({mint,signature,path:ins.path,reason:'source_owner_unresolved'});continue;}
-    const coin=coinMap.get(mint),marketOwners=new Set([P.SDK.bondingCurvePda(W.pk(mint)).toBase58(),P.SDK.canonicalPumpPoolPda(W.pk(mint)).toBase58()]);
+    const coin=coinMap.get(mint),marketOwners=new Set([P.SDK.bondingCurvePda(W.pk(mint)).toBase58(),poolOf(coin)]);
     if(source.owner===destination?.owner){emit(ins,'same_owner_transfer',mint,source.owner,{source:info.source,destination:info.destination,amount});continue;}
     // Pool inventory delivery is not an exit by an investor. Unknown routing
     // owners are never blanket-exempt; unsupported transient paths are held.
@@ -117,7 +131,7 @@ function parseTransaction(tx,{slot,time,transactionIndex,coins,ownership=new Map
  }
  // Reconcile historical authority, even where a token account has no net delta.
  for(const[account,b]of post){const k=known.get(account);if(coinMap.has(b.mint)&&(!k||k.owner!==b.owner))holds.push({mint:b.mint,signature,account,reason:'unreconciled_token_authority'});}
- for(const c of coins){const pool=P.SDK.canonicalPumpPoolPda(W.pk(c.mint)).toBase58(),b=[...post.values()].find(b=>b.owner===pool&&b.mint===c.mint),q=[...post.values()].find(b=>b.owner===pool&&b.mint==='So11111111111111111111111111111111111111112');if(b&&q)emit({path:'post/pool',order:instructions.length},'pool_balances',c.mint,null,{base:b.uiTokenAmount.amount,quote:q.uiTokenAmount.amount,market:pool});}
+ for(const c of coins){const pool=poolOf(c),qm=quoteOf(c)||WSOL,b=[...post.values()].find(b=>b.owner===pool&&b.mint===c.mint),q=[...post.values()].find(b=>b.owner===pool&&b.mint===qm);if(b&&q)emit({path:'post/pool',order:instructions.length},'pool_balances',c.mint,null,{base:b.uiTokenAmount.amount,quote:q.uiTokenAmount.amount,market:pool});}
  return{events,holds,ownership:known};
 }
 class Rpc{
@@ -157,4 +171,4 @@ async function indexBatch(db,rpc,{name='finalized-blocks',from,limit=32,genesis,
  await db.query('INSERT INTO reward_checkpoints(name,through_slot,through_time,start_slot,complete,parser_version,digest,incident) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(name) DO UPDATE SET through_slot=EXCLUDED.through_slot,through_time=EXCLUDED.through_time,complete=EXCLUDED.complete,digest=EXCLUDED.digest,incident=COALESCE(reward_checkpoints.incident,EXCLUDED.incident),updated_at=now()',[name,end,latestTime,checkpoint?.start_slot||start,!incident&&!checkpoint?.incident,PARSER,digest,incident?stringify(incident):null]);
  return{through:end,head,complete:!incident&&!checkpoint?.incident,incident};
 }
-module.exports={PARSER,plain,eventDecoder,trace,parseTransaction,Rpc,indexBatch};
+module.exports={PARSER,plain,eventDecoder,trace,parseTransaction,Rpc,indexBatch,poolOf,quoteOf,tradeAsset};

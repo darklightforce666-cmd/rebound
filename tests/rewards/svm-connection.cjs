@@ -48,10 +48,14 @@ class SvmConnection{
  async getBalance(pk){return Number(this.svm.getBalance(A(pk))||0n);}
  async getBalanceAndContext(pk){return{context:{slot:await this.getSlot()},value:await this.getBalance(pk)};}
  async simulateTransaction(tx,signers){
-  if(tx instanceof VersionedTransaction){   // web3.js v1 form: (versionedTx, {sigVerify:false, replaceRecentBlockhash:true})
-   const {blockhash}=await this.getLatestBlockhash();tx.message.recentBlockhash=blockhash;
+  if(tx instanceof VersionedTransaction){   // web3.js v1 form: (versionedTx, {sigVerify:false, accounts:{addresses,encoding:'base64'}})
+   const opts=signers&&!Array.isArray(signers)?signers:{};
+   if(opts.replaceRecentBlockhash!==false&&!opts.accounts){const {blockhash}=await this.getLatestBlockhash();tx.message.recentBlockhash=blockhash;}
    this.svm.withSigverify(false);try{const r=this.svm.simulateTransaction(kit.getTransactionDecoder().decode(tx.serialize()));const failed=typeof r.err==='function';
-    return{value:{err:failed?String(r.err()):null,logs:failed?r.meta().logs():r.meta?.().logs?.()||[]}};}finally{this.svm.withSigverify(true);}}
+    // Requested accounts after the simulated transaction (unchanged ones as they are now).
+    let accounts;if(!failed&&opts.accounts){const post=new Map((r.postAccounts?.()||[]).map(a=>[String(a.address),a]));
+     accounts=opts.accounts.addresses.map(k=>{const a=post.get(String(k));if(a)return{lamports:Number(a.lamports),data:[Buffer.from(a.data).toString('base64'),'base64']};const i=this._info(k);return i?{lamports:i.lamports,data:[Buffer.from(i.data).toString('base64'),'base64']}:null;});}
+    return{value:{err:failed?String(r.err()):null,logs:failed?r.meta().logs():r.meta?.().logs?.()||[],...(accounts?{accounts}:{})}};}finally{this.svm.withSigverify(true);}}
   if(signers)tx.sign(...signers);const r=this.svm.simulateTransaction(kit.getTransactionDecoder().decode(tx.serialize({requireAllSignatures:false,verifySignatures:false})));
   const failed=typeof r.err==='function';return{value:{err:failed?String(r.err()):null,logs:failed?r.meta().logs():r.meta?.().logs?.()||[]}};}
  async sendRawTransaction(bytes){

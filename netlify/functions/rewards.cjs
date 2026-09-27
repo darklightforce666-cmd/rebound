@@ -88,7 +88,7 @@ const PAID_STATES=['complete','partially_paid','skipped_no_eligible_holders'];
 async function homeData(db){
  const featured=(await db.query('SELECT primary_mint FROM reward_site WHERE id=1')).rows[0]?.primary_mint||null;
  const coins=(await db.query(`SELECT t.mint,t.name,t.symbol,t.image_uri,t.kind,t.launch_time,t.reward_status,t.paid_lamports::text,t.paid_recipients,t.payouts,t.burned_raw::text,t.burns,t.decimals,
-  t.history_complete,t.history_fetched,t.history_total,t.positions_time,t.quote_symbol,(t.mint IS NOT DISTINCT FROM $1) AS featured
+  t.history_complete,t.history_fetched,t.history_total,t.positions_time,t.quote_mint,t.quote_symbol,t.quote_decimals,(t.mint IS NOT DISTINCT FROM $1) AS featured
   FROM reward_public_tokens t WHERE t.namespace='production' OR t.mint=$1 ORDER BY (t.mint IS NOT DISTINCT FROM $1) DESC, t.pinned DESC, COALESCE(t.launch_time,0) DESC, t.mint DESC LIMIT 200`,[featured])).rows;
  const mints=coins.map(c=>c.mint);
  if(!mints.length)return{coins:[],headline:null,rounds:[],featured,now:Math.floor(Date.now()/1000)};
@@ -112,11 +112,13 @@ async function homeData(db){
 // round's budget (when the budget is fixed) and everything already paid to it. Read-only, public data.
 async function walletCheck(db,q){
  const wallet=(()=>{try{W.pk(q.wallet);return q.wallet;}catch{fail(400,'WALLET_INVALID','That isn’t a Solana address.');}})();
- const rows=(await db.query(`SELECT h.mint,t.name,t.symbol,h.cost_lamports::text,h.value_lamports::text,h.compensated_lamports::text,h.loss_lamports::text,h.paid_lamports::text,h.payouts,h.outcome,
+ const rows=(await db.query(`SELECT h.mint,t.name,t.symbol,t.quote_mint,t.quote_symbol,t.quote_decimals,h.cost_lamports::text,h.value_lamports::text,h.compensated_lamports::text,h.loss_lamports::text,h.paid_lamports::text,h.payouts,h.outcome,
   (SELECT COALESCE(sum(x.loss_lamports),0)::text FROM reward_public_holders x WHERE x.mint=h.mint AND x.outcome<>'sold') AS total_loss,
   (SELECT row_to_json(c) FROM (SELECT cycle_number,state,cutoff_time,scheduled_end,available_lamports::text FROM reward_public_cycles WHERE mint=h.mint ORDER BY cycle_number DESC LIMIT 1) c) AS round
   FROM reward_public_holders h JOIN reward_public_tokens t USING(mint) WHERE h.owner=$1 ORDER BY h.loss_lamports DESC LIMIT 50`,[wallet])).rows;
- const paid=(await db.query('SELECT COALESCE(sum(amount_lamports),0)::text lamports,count(*)::int payouts FROM reward_public_payouts WHERE owner=$1',[wallet])).rows[0];
+ // Paid so far: SOL coins in lamports; pair coins per asset (their amounts are in that asset's base units).
+ const paid=(await db.query("SELECT COALESCE(sum(p.amount_lamports) FILTER (WHERE t.quote_mint IS NULL),0)::text lamports,count(*)::int payouts FROM reward_public_payouts p LEFT JOIN reward_public_tokens t USING(mint) WHERE p.owner=$1",[wallet])).rows[0];
+ paid.assets=(await db.query('SELECT t.quote_mint,t.quote_symbol,t.quote_decimals,sum(p.amount_lamports)::text amount,count(*)::int payouts FROM reward_public_payouts p JOIN reward_public_tokens t USING(mint) WHERE p.owner=$1 AND t.quote_mint IS NOT NULL GROUP BY 1,2,3',[wallet])).rows;
  for(const r of rows){const total=BigInt(r.total_loss||0),mine=BigInt(r.loss_lamports||0),budget=r.round?.available_lamports!=null?BigInt(r.round.available_lamports):null;
   r.share_bps=total>0n&&mine>0n?Number(mine*10000n/total):0;
   r.estimate_lamports=budget!=null&&total>0n&&mine>0n?String((b=>b>mine?mine:b)(budget*mine/total)):null;}
@@ -163,7 +165,7 @@ const handlers={
   // Latest payouts across all REBOUND tokens (or one mint), newest first.
   async payouts({db,q}){
    const mint=q.mint?(()=>{try{W.pk(q.mint);return q.mint;}catch{fail(400,'MINT_INVALID','Invalid mint address');}})():null;
-   const rows=(await db.query(`SELECT p.*,t.name,t.symbol FROM reward_public_payouts p LEFT JOIN reward_public_tokens t USING(mint) ${mint?'WHERE p.mint=$1':''} ORDER BY p.id DESC LIMIT 50`,mint?[mint]:[])).rows;
+   const rows=(await db.query(`SELECT p.*,t.name,t.symbol,t.quote_mint,t.quote_symbol,t.quote_decimals FROM reward_public_payouts p LEFT JOIN reward_public_tokens t USING(mint) ${mint?'WHERE p.mint=$1':''} ORDER BY p.id DESC LIMIT 50`,mint?[mint]:[])).rows;
    return{payouts:rows};
   },
   // The exact holder-only deposit the connected dev wallet is asked to sign (manual primary funding).
@@ -184,7 +186,7 @@ const handlers={
   // Public, chain-derived: a wallet's fixed awards and their payment evidence.
   async 'admin-auth-state'({db}){return AdminAuth.state(db);},
   async 'wallet-rewards'({db,q}){try{W.pk(q.wallet);}catch{fail(400,'INVALID_BODY','Invalid wallet');}
-   const rows=(await db.query("SELECT a.cycle_id,a.leaf_index,a.mint,a.amount_lamports,a.state,a.settlement_signature,a.settled_slot,a.receipt_address,c.cycle_number,c.scheduled_end,c.cutoff_time FROM reward_awards a JOIN reward_cycles c ON c.id=a.cycle_id WHERE a.recipient=$1 ORDER BY c.cutoff_time DESC LIMIT 100",[q.wallet])).rows;
+   const rows=(await db.query("SELECT a.cycle_id,a.leaf_index,a.mint,a.amount_lamports,a.state,a.settlement_signature,a.settled_slot,a.receipt_address,c.cycle_number,c.scheduled_end,c.cutoff_time,t.symbol,t.quote_mint,t.quote_symbol,t.quote_decimals FROM reward_awards a JOIN reward_cycles c ON c.id=a.cycle_id LEFT JOIN reward_public_tokens t ON t.mint=a.mint WHERE a.recipient=$1 ORDER BY c.cutoff_time DESC LIMIT 100",[q.wallet])).rows;
    return{wallet:q.wallet,awards:rows};},
   async 'admin-logs'({db,event,q}){
    await adminAccess(db,event);

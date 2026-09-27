@@ -29,6 +29,7 @@ require('../tests/rewards/budget-inbox.test.cjs');
 require('../tests/rewards/direct-v3.test.cjs');
 require('../tests/rewards/positions-v3.test.cjs');
 require('../tests/rewards/home-api.test.cjs');
+require('../tests/rewards/pair-asset.test.cjs');
 require('../tests/rewards/bundle-parse.test.cjs');
 require('../tests/rewards/launch-direct.test.cjs');
 require('../tests/vendor-bigint.test.cjs');

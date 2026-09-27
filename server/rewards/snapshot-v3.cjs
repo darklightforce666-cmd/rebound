@@ -25,7 +25,7 @@ function build(a){
  if(Number(a.coverage.throughSlot)<Number(a.cutoffSlot))return wait('history_behind_cutoff',{coverage:a.coverage});
  const sol=policy.lossUnit==='SOL';   // v3.1+: losses in SOL, no external price feed
  const fx=sol?(t=>({time:Number(t),price:P3.LAMPORTS,conf:0n,source:'sol-unit'})):a.fx;
- const r=L.replay(a.events,{excluded:a.excluded,fx,credits:a.credits||[],throughSlot:a.cutoffSlot,parserHolds:a.parserHolds||[],exitOnOutflow:!!policy.permanentExitOnSale});
+ const r=L.replay(a.events,{excluded:a.excluded,fx,credits:a.credits||[],throughSlot:a.cutoffSlot,parserHolds:a.parserHolds||[],exitOnOutflow:!!policy.permanentExitOnSale,quoteAsset:a.quoteAsset||'native-SOL'});
  return finish(a,policy,base,wait,r);
 }
 /**

@@ -21,13 +21,25 @@
 //    for the same loss; a round never reserves more than the budget left or the wallet can cover.
 const {SystemProgram,PublicKey}=require('@solana/web3.js');
 const DB=require('./db.cjs'),P3=require('./policy-v3.cjs'),S=require('./snapshot-v3.cjs'),T=require('./transport-v3.cjs');
-const X=require('./execution.cjs'),Logs=require('./logs.cjs'),{stable}=require('./policy.cjs');
+const X=require('./execution.cjs'),Logs=require('./logs.cjs'),{stable}=require('./policy.cjs'),Q=require('./quote-asset.cjs');
 const b=x=>BigInt(String(x??0).split('.')[0]);
 const BATCH=16,FEE_RESERVE=10_000_000n;
+// Pair coins: SPL transfers are larger (and may create the holder's account), so fewer per transaction; the
+// wallet keeps a SOL float for its own network fees before paying any account rent.
+const PAIR_BATCH=5,PAIR_SOL_FLOAT=5_000_000n,SPL_TOKEN='TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 // Owner rule (2026-09-28): the holders' 85 % is a vault. A round pays out at most 20 % of what is in the
 // vault at its snapshot, so the vault keeps refilling and every later round has money to pay. The other
 // 15 % is never touched by payouts: whatever of it is still on the wallet stays out of every round.
 const VAULT_ROUND_BPS=2000n;
+// Awards too small to be worth their transfer are not paid (owner decision 2026-09-28, after the test paid a few
+// lamports): 0.0001 SOL for SOL coins, 0.001 of a unit of a pair asset. Their holders keep their loss and the money
+// stays in the vault for later rounds; a round whose awards are all below it pays nothing.
+const MIN_AWARD_LAMPORTS=100_000n;
+async function minAward(connection,coin){const qa=await Q.info(connection,coin);return qa?10n**BigInt(Math.max(0,qa.decimals-3)):MIN_AWARD_LAMPORTS;}
+function dropDust(snap,min){
+ if(snap.state!=='ready'||!min)return snap;const keep=snap.awards.filter(a=>b(a.lamports)>=min);if(keep.length===snap.awards.length)return snap;
+ return{...snap,awards:keep,total:String(sumOf(keep.map(a=>a.lamports))),state:keep.length?'ready':'skipped_no_funds',dust:snap.awards.length-keep.length};
+}
 const DONE=['complete','skipped_no_funds','skipped_no_eligible_holders','missed','expired','failed_action_required','dry_run'];
 const cycleId=(mint,n)=>`${mint}:${n}`;
 const PRE=['scheduled','snapshotting','waiting_for_data'];
@@ -84,7 +96,11 @@ async function incomeAvailable(db,connection,fw){
  const out=b((await db.query("SELECT COALESCE(sum(lamports),0)::text s FROM reward_wallet_movements WHERE mint=$1 AND address=$2 AND classification='owner_withdrawal'",[fw.mint,fw.address])).rows[0].s);
  const kept=other>out?other-out:0n;
  let vault=awaiting-b(q.unpaid)-b(q.pending);if(vault<0n)vault=0n;
- const round=vault*VAULT_ROUND_BPS/10000n,bal=b(await connection.getBalance(new PublicKey(fw.address),'confirmed'))-FEE_RESERVE-b(q.unpaid)-kept;
+ // A pair coin's vault is in its quote asset: its balance is that asset's account (network fees are SOL, so no
+ // fee reserve comes out of it).
+ const coin=(await db.query('SELECT mint,quote_mint,quote_token_program,quote_decimals,quote_symbol FROM reward_coins WHERE mint=$1',[fw.mint])).rows[0],qa=coin?await Q.info(connection,coin):null;
+ const onWallet=qa?await Q.balance(connection,fw.address,qa):b(await connection.getBalance(new PublicKey(fw.address),'confirmed'))-FEE_RESERVE;
+ const round=vault*VAULT_ROUND_BPS/10000n,bal=onWallet-b(q.unpaid)-kept;
  const v=round<bal?round:bal;return{lamports:v>0n?v:0n,budget:awaiting,vault,used:b(q.pending),unpaid:b(q.unpaid),kept,reason:v>0n?null:vault<=0n?'no_new_fees':'wallet_balance_low'};
 }
 // Reserved-but-unpaid awards of a fee wallet (lamports still owed from its balance).
@@ -182,13 +198,13 @@ async function snapshot(ports,coin,row,slot,t=null,s=null){
  const avail=await available(db,connection,fw);
  const fromPos=usePositions(ports,coin);
  const inputs=fromPos?await ports.positions.inputsAt(coin,cutoff,slot):await ports.inputs(coin,n,cutoff,slot);
- const snap=(fromPos?S.fromPositions:S.build)({...inputs,mint:row.mint,cycle:n,cutoff,cutoffSlot:slot,holderReserve:avail.lamports,policy:P3.policy(coin.policy_version)});
+ const snap=dropDust((fromPos?S.fromPositions:S.build)({...inputs,mint:row.mint,cycle:n,cutoff,cutoffSlot:slot,holderReserve:avail.lamports,policy:P3.policy(coin.policy_version),quoteAsset:require('./indexer.cjs').quoteOf(coin)||'native-SOL'}),await minAward(connection,coin));
  if(snap.state==='waiting_for_data'){if(row.state!=='waiting_for_data'||row.reason!==snap.reason)await setState(db,row.id,'waiting_for_data',{reason:snap.reason},{...ctx,message:`Round ${n} waiting for data: ${snap.reason.replaceAll('_',' ')}`});return{cycle:n,state:'waiting_for_data',reason:snap.reason};}
  const underwater=snap.positions.filter(p=>p.outcome==='eligible'),counted=snap.positions.filter(p=>P3.big(p.quantity)>0n).length;
  const totalLoss=underwater.reduce((a,p)=>a+P3.big(p.lossUsd),0n),total=sumOf(snap.awards.map(a=>a.lamports));
  const live=snap.state==='ready'&&!why;
  const state=snap.state!=='ready'?snap.state:live?'funded':'dry_run';
- const reason=snap.state==='skipped_no_funds'?(avail.reason||'no_funds'):snap.state==='ready'&&!live?why:null;
+ const reason=snap.state==='skipped_no_funds'?(snap.dust?'awards_below_minimum':avail.reason||'no_funds'):snap.state==='ready'&&!live?why:null;
  // One transaction: snapshot, awards, public projections and (live) the reservation itself. A crash
  // leaves either nothing or the complete, reserved round — never awards without their credits.
  let applied=false;
@@ -258,30 +274,42 @@ async function pay(ports,coin,row,renew=async()=>{}){
  const age=Number(coin.cycle_seconds||P3.policy(coin.policy_version).cycleSeconds)*DEFER_ROUNDS;
  if(Number(await ports.now())>actualEnd(row)+age){
   const rel=(await db.query("UPDATE reward_awards SET state='released' WHERE cycle_id=$1 AND state='deferred_rent' RETURNING leaf_index",[row.id])).rows;
-  if(rel.length)await log(db,{severity:'warn',eventType:'awards_released',mint:row.mint,cycleId:row.id,message:`Round ${n}: ${rel.length} award(s) released — the recipient account could not receive SOL for ${DEFER_ROUNDS} rounds`});
+  if(rel.length)await log(db,{severity:'warn',eventType:'awards_released',mint:row.mint,cycleId:row.id,message:`Round ${n}: ${rel.length} award(s) released: the recipient account could not receive the payment for ${DEFER_ROUNDS} rounds`});
  }
  // 3. New transactions for everything still reserved and not locked.
  const awards=(await db.query("SELECT * FROM reward_awards WHERE cycle_id=$1 AND state IN ('reserved','deferred_rent') ORDER BY leaf_index",[row.id])).rows.filter(a=>!locked.has(a.leaf_index));
  const rent=b(await connection.getMinimumBalanceForRentExemption(0));
- const send=async list=>{
+ // A pair coin pays in its quote asset: SPL transfers from the wallet's account to each holder's associated account.
+ const qa=await Q.info(connection,coin);
+ const send=async(list,create=new Set())=>{
   const job=`direct-pay:${row.id}:${list.map(a=>a.leaf_index).join('-')}`,lamports=sumOf(list.map(a=>a.amount_lamports));
-  const r=await T.submit({db,connection,job,kind:'payout',signerRole:'primary_dev',feePayer:signer,
-   instructions:list.map(a=>SystemProgram.transfer({fromPubkey:signer.publicKey,toPubkey:new PublicKey(a.recipient),lamports:BigInt(a.amount_lamports)})),
-   readSettlement:settlement,spend:{namespace:coin.namespace,mint:row.mint,recipients:list.map(a=>a.recipient),lamports:String(lamports),fees:'5000',cycleId:row.id,kind:'payout'},
-   context:{cycle:n,indexes:list.map(a=>a.leaf_index)}}).catch(e=>({state:'failed',error:e.message}));
+  const instructions=qa?list.flatMap(a=>Q.transfer({from:signer.publicKey,to:a.recipient,amount:a.amount_lamports,q:qa,create:create.has(a.recipient)}))
+   :list.map(a=>SystemProgram.transfer({fromPubkey:signer.publicKey,toPubkey:new PublicKey(a.recipient),lamports:BigInt(a.amount_lamports)}));
+  // Test spend caps are in lamports: a pair asset's units are not SOL (its network fees are).
+  const r=await T.submit({db,connection,job,kind:'payout',signerRole:'primary_dev',feePayer:signer,instructions,
+   readSettlement:settlement,spend:{namespace:coin.namespace,mint:row.mint,recipients:list.map(a=>a.recipient),lamports:qa?'0':String(lamports),fees:String(5000+(qa?create.size*2_100_000:0)),cycleId:row.id,kind:'payout'},
+   context:{cycle:n,indexes:list.map(a=>a.leaf_index),...(qa?{asset:qa.mint,amount:String(lamports)}:{})}}).catch(e=>({state:'failed',error:e.message}));
   if(r.state==='finalized'){await markPaid(db,row,list.map(a=>a.leaf_index),r.signature||r.settlement?.signature);return r;}
   if(['blocked','dry_run'].includes(r.state))await log(db,{severity:'warn',eventType:'payout_blocked',mint:row.mint,cycleId:row.id,message:`Round ${n}: payment of ${list.length} holder(s) blocked — ${r.reason||r.code}`,errorCode:r.code});
   else if(r.state==='held'||r.state==='failed')await log(db,{severity:'warn',eventType:'payout_held',mint:row.mint,cycleId:row.id,message:`Round ${n}: payment of ${list.length} holder(s) not sent — ${(r.reason||r.error||r.state).replaceAll('_',' ')}`,metadata:{err:r.err||null}});
   return r;
  };
- for(let k=0;k<awards.length;k+=BATCH){
-  const list=awards.slice(k,k+BATCH);await renew();
-  const infos=await connection.getMultipleAccountsInfo(list.map(a=>new PublicKey(a.recipient)),'confirmed');
-  const include=[];for(const [i,a] of list.entries()){if(infos[i]||b(a.amount_lamports)>=rent)include.push(a);else if(a.state!=='deferred_rent')await db.query("UPDATE reward_awards SET state='deferred_rent' WHERE cycle_id=$1 AND leaf_index=$2 AND state='reserved'",[row.id,a.leaf_index]);}
+ const size=qa?PAIR_BATCH:BATCH;
+ // SOL the wallet may spend on creating holders' token accounts (pair coins): what is above a float for fees.
+ let solRoom=qa?b(await connection.getBalance(signer.publicKey,'confirmed'))-PAIR_SOL_FLOAT:0n;
+ const ataRent=qa?b(await connection.getMinimumBalanceForRentExemption(qa.program===SPL_TOKEN?165:182)):0n;
+ for(let k=0;k<awards.length;k+=size){
+  const list=awards.slice(k,k+size);await renew();
+  const infos=await connection.getMultipleAccountsInfo(list.map(a=>qa?Q.ata(a.recipient,qa):new PublicKey(a.recipient)),'confirmed');
+  const include=[],create=new Set();
+  for(const [i,a] of list.entries()){
+   if(qa){if(infos[i])include.push(a);else if(solRoom>=ataRent){solRoom-=ataRent;create.add(a.recipient);include.push(a);}
+    else if(a.state!=='deferred_rent')await db.query("UPDATE reward_awards SET state='deferred_rent' WHERE cycle_id=$1 AND leaf_index=$2 AND state='reserved'",[row.id,a.leaf_index]);continue;}
+   if(infos[i]||b(a.amount_lamports)>=rent)include.push(a);else if(a.state!=='deferred_rent')await db.query("UPDATE reward_awards SET state='deferred_rent' WHERE cycle_id=$1 AND leaf_index=$2 AND state='reserved'",[row.id,a.leaf_index]);}
   if(!include.length)continue;
-  const r=await send(include);
+  const r=await send(include,create);
   // One bad recipient must not hold the others: a batch the simulation rejects is retried one by one.
-  if(r.state==='held'&&r.reason==='simulation_failed'&&include.length>1)for(const a of include){await renew();await send([a]);}
+  if(r.state==='held'&&r.reason==='simulation_failed'&&include.length>1)for(const a of include){await renew();await send([a],create.has(a.recipient)?new Set([a.recipient]):new Set());}
  }
  const left=(await db.query("SELECT count(*)::int n, count(*) FILTER (WHERE state='deferred_rent')::int d FROM reward_awards WHERE cycle_id=$1 AND state IN ('reserved','deferred_rent')",[row.id])).rows[0];
  if(left.n===0){await setState(db,row.id,'complete',{finalized_at:new Date().toISOString()},{...ctx,message:`Round ${n} complete: every award paid`});return{cycle:n,state:'complete'};}
@@ -308,4 +336,4 @@ async function markPaid(db,row,indexes,signature){
  if(paidNow)await log(db,{severity:'warn',eventType:'payout_sent',mint:row.mint,cycleId:row.id,message:`Round ${row.cycle_number}: paid ${paidNow} holder(s) in one transaction`,metadata:{signature}});
 }
 
-module.exports={tick,available,schedule,cycleAt,times,unpaidOf,BATCH,FEE_RESERVE,VAULT_ROUND_BPS};
+module.exports={tick,available,schedule,cycleAt,times,unpaidOf,BATCH,FEE_RESERVE,VAULT_ROUND_BPS,MIN_AWARD_LAMPORTS,dropDust};

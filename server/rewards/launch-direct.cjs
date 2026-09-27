@@ -115,7 +115,7 @@ async function prepare(ports,{session,attemptId,mint}){
    primaryBurnTarget:a.primary_target_mint,
    policy:{version:a.policy_version,hash:P3.hashOf(pol),cycleSeconds:pol.cycleSeconds,cutoffLeadSeconds:pol.cutoffLeadSeconds,lossUnit:quote?(pair.symbol||'pair asset'):'SOL',maturitySeconds:pol.maturitySeconds,permanentExitOnSale:pol.permanentExitOnSale},
    costs:{operatingLamports:String(OPERATING_LAMPORTS),reboundCoinRentLamports:'0',initialBuyLamports:String(buy),initialBuyQuote:initialBuy,networkFeeLamports:5000*2},
-   pairNote:quote?'Rounds for pairs other than SOL start once REBOUND enables pair-asset accounting; until then this token\'s creator fees stay in its pump.fun creator vault and nothing is lost.':null,
+   pairNote:quote?'This coin\'s creator fees arrive in '+(pair.symbol||'the pair asset')+', so its holders are measured and paid in '+(pair.symbol||'it')+'. The 15 % is swapped to SOL and buys and burns REBOUND.':null,
    steps:['Create token'],irreversible:['The token\'s pump.fun creator (fee recipient) is fixed to its REBOUND creator wallet.']}};
 }
 const {Transaction}=require('@solana/web3.js');
@@ -149,7 +149,7 @@ async function status(ports,{session,attemptId}){
   a=await attemptOf(db,attemptId,session.userId);
  }
  return{attemptId:a.id,state:a.state,activationState:a.activation_state,mint:a.mint,intake:a.intake,settlement:'direct',quoteMint:a.quote_mint||null,
-  rewards:a.state!=='active'?null:a.quote_mint?'pair_pending':'active'};
+  rewards:a.state!=='active'?null:'active'};
 }
 async function register(ports,a,signature){
  const {db,connection}=ports,mint=new PublicKey(a.mint);
@@ -166,9 +166,11 @@ async function register(ports,a,signature){
  const cw=(await db.query('SELECT * FROM reward_creator_wallets WHERE address=$1',[creatorWallet])).rows[0];if(!cw||cw.attempt_id!==a.id)fail('SETUP_REQUIRED','Creator wallet record missing',500);
  const pol=P3.policy(a.policy_version),hash=(await db.query('SELECT hash FROM reward_policies WHERE version=$1',[a.policy_version])).rows[0].hash;
  const st=await connection.getSignatureStatuses([signature],{searchTransactionHistory:true});const slot=st.value[0]?.slot??null,time=slot?await connection.getBlockTime(slot):Math.floor(Date.now()/1000);
- // SOL pairs pay from the first round. Other pairs are registered and listed, but rounds start only once
- // pair-asset accounting is enabled; until then their creator fees stay in the pump.fun creator vault.
- const coinStatus=quoteMint?'registered':'active',rewardStatus=quoteMint?'pair_pending':'active';
+ // Every pair pays from the first round: a SOL coin in SOL, a coin paired with another asset in that asset.
+ const coinStatus='active',rewardStatus='active';
+ let qa=null;if(quoteMint){const p=await connection.getParsedAccountInfo(new PublicKey(quoteMint),'confirmed');const info=p.value?.data?.parsed?.info;
+  const listed=(await quoteMints(connection).catch(()=>[])).find(x=>x.mint===quoteMint);
+  qa={program:p.value?.owner?.toBase58()||null,decimals:info?.decimals??null,symbol:listed?.symbol||null};}
  let fresh=false;
  await DB.transaction(db,async t=>{
   // Two status polls may race: the attempt row lock makes the second one a no-op.
@@ -176,17 +178,17 @@ async function register(ports,a,signature){
   fresh=true;
   await t.query("UPDATE reward_launch_attempts SET creator_wallet=$2,intake=$2,quote_mint=$3 WHERE id=$1",[a.id,creatorWallet,quoteMint]);
   if(!(await t.query('SELECT reward_assign_creator_wallet($1,$2) ok',[a.id,a.mint])).rows[0].ok)fail('SETUP_REQUIRED','Creator wallet could not be assigned',500);
-  await t.query(`INSERT INTO reward_coins(mint,policy_hash,status,kind,namespace,program_version,policy_version,intake,creator_wallet,creator_user,name,symbol,image_uri,metadata_uri,launch_signature,launch_time,launch_slot,schedule_anchor,cycle_seconds,cutoff_lead_seconds,primary_target_mint,token_program,quote_mint)
-   VALUES($1,$2,$20,'third_party',$3,'v3',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$13,$15,$16,$17,$18,$19) ON CONFLICT(mint) DO NOTHING`,
-   [a.mint,hash,a.namespace,a.policy_version,creatorWallet,a.wallet,a.user_id,a.name,a.symbol,a.image_uri,a.metadata_uri,signature,time,slot,pol.cycleSeconds,pol.cutoffLeadSeconds,a.primary_target_mint,m.owner.toBase58(),quoteMint,coinStatus]);
+  await t.query(`INSERT INTO reward_coins(mint,policy_hash,status,kind,namespace,program_version,policy_version,intake,creator_wallet,creator_user,name,symbol,image_uri,metadata_uri,launch_signature,launch_time,launch_slot,schedule_anchor,cycle_seconds,cutoff_lead_seconds,primary_target_mint,token_program,quote_mint,quote_token_program,quote_decimals,quote_symbol)
+   VALUES($1,$2,$20,'third_party',$3,'v3',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$13,$15,$16,$17,$18,$19,$21,$22,$23) ON CONFLICT(mint) DO NOTHING`,
+   [a.mint,hash,a.namespace,a.policy_version,creatorWallet,a.wallet,a.user_id,a.name,a.symbol,a.image_uri,a.metadata_uri,signature,time,slot,pol.cycleSeconds,pol.cutoffLeadSeconds,a.primary_target_mint,m.owner.toBase58(),quoteMint,coinStatus,qa?.program||null,qa?.decimals??null,qa?.symbol||null]);
   if(!(await t.query("SELECT 1 FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired'",[a.mint])).rows[0])
    await t.query(`INSERT INTO reward_funding_wallets(id,namespace,mint,address,mode,signer,ownership_proof,operational_reserve_lamports,status,funding_model)
     VALUES($1,$2,$3,$4,'automatic',$5,$6,$7,'active','income')`,[require('node:crypto').randomUUID(),a.namespace,a.mint,creatorWallet,cw.signer,stable({generatedBy:'worker',attempt:a.id}),'0']);
   await t.query("UPDATE reward_launch_attempts SET state='active',activation_state='active',updated_at=now() WHERE id=$1",[a.id]);
-  await t.query(`INSERT INTO reward_public_tokens(mint,namespace,kind,name,symbol,image_uri,creator_wallet,launch_time,reward_status,pinned,test,quote_mint)
-   VALUES($1,$2,'third_party',$3,$4,$5,$6,$7,$10,false,$8,$9) ON CONFLICT(mint) DO NOTHING`,[a.mint,a.namespace,a.name,a.symbol,a.image_uri,a.wallet,time,a.namespace==='mainnet_test',quoteMint,rewardStatus]);
+  await t.query(`INSERT INTO reward_public_tokens(mint,namespace,kind,name,symbol,image_uri,creator_wallet,launch_time,reward_status,pinned,test,quote_mint,quote_symbol,quote_decimals)
+   VALUES($1,$2,'third_party',$3,$4,$5,$6,$7,$10,false,$8,$9,$11,$12) ON CONFLICT(mint) DO NOTHING`,[a.mint,a.namespace,a.name,a.symbol,a.image_uri,a.wallet,time,a.namespace==='mainnet_test',quoteMint,rewardStatus,qa?.symbol||null,qa?.decimals??null]);
   // Private test: the new token may pay any of its holders (spend caps still apply).
-  if(a.namespace==='mainnet_test'&&!quoteMint)await t.query("UPDATE reward_platform SET test_allowlist_mints=array_append(test_allowlist_mints,$1),updated_at=now() WHERE namespace='mainnet_test' AND NOT ($1=ANY(test_allowlist_mints))",[a.mint]);
+  if(a.namespace==='mainnet_test')await t.query("UPDATE reward_platform SET test_allowlist_mints=array_append(test_allowlist_mints,$1),updated_at=now() WHERE namespace='mainnet_test' AND NOT ($1=ANY(test_allowlist_mints))",[a.mint]);
  },{serializable:false});
  if(!fresh)return;
  // The income ledger starts at the creation: only fees collected after it count (the operating SOL does not).
@@ -194,7 +196,7 @@ async function register(ports,a,signature){
  await require('./admin-v3.cjs').openingCredit(db,'launch:'+a.wallet,{mint:a.mint,requestedCreditLamports:'0',operationalReserveLamports:'0'})
   .catch(e=>Logs.log(db,{severity:'warn',component:'launch',eventType:'opening_request_deferred',mint:a.mint,message:'Income ledger opening deferred to the worker: '+e.message}));
  await Logs.log(db,{severity:'warn',component:'launch',eventType:'token_created',mint:a.mint,message:quoteMint
-  ?`Token created on pump.fun (pair ${quoteMint}) with its REBOUND creator wallet ${creatorWallet}; rounds start once pair-asset accounting is enabled (fees stay in the creator vault until then)`
+  ?`Token created on pump.fun (pair ${qa?.symbol||quoteMint}) with its REBOUND creator wallet ${creatorWallet}; rewards are active in ${qa?.symbol||'the pair asset'} (85 % holders, 15 % swapped to SOL for the REBOUND buy & burn)`
   :`Token created on pump.fun with its REBOUND creator wallet ${creatorWallet}; rewards are active (85 % holders, 15 % REBOUND buy & burn)`});
 }
 module.exports={draft,prepare,submit,status,quoteMints,quoteCategory,OPERATING_LAMPORTS,register};

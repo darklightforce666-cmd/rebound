@@ -5,7 +5,7 @@
 // finalized receipts → 8 retry only after proving the old signature can no longer settle.
 // Rebroadcasting identical signed bytes is allowed; signing a second payment is not.
 const crypto=require('node:crypto'),bs58=require('bs58');
-const {Transaction,VersionedTransaction}=require('@solana/web3.js');
+const {Transaction,VersionedTransaction,TransactionMessage}=require('@solana/web3.js');
 const DB=require('./db.cjs'),{stable}=require('./policy.cjs'),X=require('./execution.cjs'),Logs=require('./logs.cjs');
 const LIVE="('prepared','broadcast','uncertain')";
 
@@ -45,6 +45,17 @@ async function submit(a){
  try{await DB.transaction(db,tx=>X.authorize(tx,spend));}
  catch(e){if(e instanceof X.ExecutionBlocked)return{state:e.code==='DRY_RUN'?'dry_run':'blocked',code:e.code,reason:e.message};throw e;}
  const bh=await connection.getLatestBlockhash('confirmed');
+ // v0 with lookup tables (e.g. a Jupiter swap): signed once, simulated with the accounts `verify` inspects;
+ // `verify(simulation) → reason|null` can refuse what the simulation shows before anything is broadcast.
+ if(a.lookupTables){
+  const vtx=new VersionedTransaction(new TransactionMessage({payerKey:feePayer.publicKey,recentBlockhash:bh.blockhash,instructions}).compileToV0Message(a.lookupTables));
+  vtx.sign([...new Map([feePayer,...signers].map(k=>[k.publicKey.toBase58(),k])).values()]);
+  const sim=await connection.simulateTransaction(vtx,{sigVerify:false,commitment:'confirmed',...(a.simulateAccounts?{accounts:{addresses:a.simulateAccounts.map(String),encoding:'base64'}}:{})}).catch(e=>({value:{err:'simulation_unavailable:'+e.message}}));
+  const refused=sim.value?.err?null:a.verify?await a.verify(sim.value):null;
+  if(sim.value?.err||refused){await Logs.log(db,{severity:'warn',component:'transport',eventType:'simulation_failed',mint:spend?.mint,jobId:job,message:refused?'Refused after simulation: '+refused:'Simulation rejected; nothing submitted',errorCode:'SIMULATION_FAILED',metadata:{err:sim.value?.err||refused,logs:(sim.value?.logs||[]).slice(-8)}});return{state:'held',reason:'simulation_failed',err:sim.value?.err||refused};}
+  const bytes=vtx.serialize();if(bytes.length>1232)throw Object.assign(Error('Transaction exceeds packet limit'),{code:'TRANSACTION_TOO_LARGE'});
+  return persistAndBroadcast(db,connection,{job,kind:a.kind,mint:spend?.mint,signerRole:a.signerRole,intentId:a.intentId,bytes,signature:bs58.encode(vtx.signatures[0]),lastValidBlockHeight:bh.lastValidBlockHeight,context:a.context});
+ }
  const tx=new Transaction({feePayer:feePayer.publicKey,blockhash:bh.blockhash,lastValidBlockHeight:bh.lastValidBlockHeight}).add(...instructions);
  const sim=await connection.simulateTransaction(tx,[feePayer,...signers]).catch(()=>null);   // also signs; re-signed below with the same key
  if(sim?.value?.err){await Logs.log(db,{severity:'warn',component:'transport',eventType:'simulation_failed',mint:spend?.mint,jobId:job,message:'Simulation rejected; nothing submitted',errorCode:'SIMULATION_FAILED',metadata:{err:sim.value.err,logs:(sim.value.logs||[]).slice(-8)}});return{state:'held',reason:'simulation_failed',err:sim.value.err};}

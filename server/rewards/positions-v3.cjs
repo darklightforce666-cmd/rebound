@@ -25,7 +25,7 @@ const OPEN=['scheduled','snapshotting','waiting_for_data'],WINDOW_SLOTS=20000;
 const lotOut=l=>{const o={...l};for(const k of BIG)if(o[k]!=null)o[k]=String(o[k]);return o;};
 const lotIn=l=>{const o={...l};for(const k of BIG)if(o[k]!=null)o[k]=BigInt(o[k]);return o;};
 const eventOf=e=>({id:e.id,mint:e.mint,signature:e.signature,path:e.instruction_path,eventIndex:e.event_index,slot:Number(e.slot),transactionIndex:e.transaction_index,order:e.execution_order,kind:e.kind,owner:e.owner,data:e.data,time:Number(e.data?.time)});
-function excludedOf(coin,extra=[]){const m=H.marketAddresses(coin.mint);return new Set([m.curve,m.pool,m.poolAuthority,...[coin.intake,coin.treasury,...extra].filter(Boolean)]);}
+function excludedOf(coin,extra=[]){const m=H.marketAddresses(coin.mint,coin.quote_mint);return new Set([m.curve,m.pool,m.poolAuthority,...[coin.intake,coin.treasury,...extra].filter(Boolean)]);}
 // Never holders: the markets, program accounts and every fee (dev) wallet the token was ever funded from — the
 // dev's own buys are not compensated out of the holders' share.
 async function excludedFor(db,coin){return excludedOf(coin,(await db.query('SELECT address FROM reward_funding_wallets WHERE mint=$1',[coin.mint])).rows.map(r=>r.address));}
@@ -159,7 +159,7 @@ async function applyBatch(db,coin,st,{events,from,through,throughTime,policy,exc
  if(missing.length){const src=missing.map(c=>String(c.lotId).replace(/:(u|to)$/,''));
   const found=new Set((await db.query('SELECT id FROM reward_events WHERE mint=$1 AND id=ANY($2::text[]) AND slot<=$3',[mint,src,from])).rows.map(r=>r.id));
   closed=new Set(missing.filter(c=>found.has(String(c.lotId).replace(/:(u|to)$/,''))).map(c=>c.lotId));}
- const r=L.replay(events,{excluded,fx,credits:credits.filter(c=>!closed.has(c.lotId)),throughSlot:through,parserHolds,state:s,exitOnOutflow:!!policy.permanentExitOnSale});
+ const r=L.replay(events,{excluded,fx,credits:credits.filter(c=>!closed.has(c.lotId)),throughSlot:through,parserHolds,state:s,exitOnOutflow:!!policy.permanentExitOnSale,quoteAsset:I.quoteOf(coin)||'native-SOL'});
  const holdKey=h=>h.reason+':'+(h.signature||h.lotId||'');
  const mintHolds=[...(st.mint_holds||[])];for(const h of r.mintHolds)if(!mintHolds.some(x=>holdKey(x)===holdKey(h)))mintHolds.push(h);
  const pos=[...r.owners.entries()].map(([owner,bk])=>{const lots=bk.lots.filter(l=>b(l.remainingQuantity)>0n),t=totals(lots,bk.holds);
