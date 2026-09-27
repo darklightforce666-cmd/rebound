@@ -19,17 +19,19 @@ const SUPPORTED=new Set(['pump-curve','pump-canonical-amm']);
 const n=x=>x==null||x===''?0n:BigInt(x);
 
 function nonzero(e,a,b){const x=e[a];return x!==undefined&&x!==null&&BigInt(x)!==0n?BigInt(x):n(e[b]);}
+// Inside a trade = below its CPI tree position (`data.tree`; flat `path` for events without one).
+const at=x=>x.data?.tree??x.path;
 const under=(path,root)=>path===root||path.startsWith(root+'/');
 
 function tradeCost(trade,txEvents){
  const e=trade.data.event,buyer=trade.owner,route=trade.data.route;
  if(trade.data.venue==='pump-curve'){
   const quote=nonzero(e,'quoteAmount','solAmount'),total=quote+n(e.fee)+n(e.creatorFee);
-  const paid=txEvents.filter(x=>x.kind==='funding_transfer'&&x.data.from===buyer&&under(x.path,route)).reduce((s,x)=>s+n(x.data.amount),0n);
+  const paid=txEvents.filter(x=>x.kind==='funding_transfer'&&x.data.from===buyer&&under(at(x),route)).reduce((s,x)=>s+n(x.data.amount),0n);
   return paid>=total&&quote>0n?{lamports:total,quote,fees:total-quote}:null;
  }
  const total=e.userQuoteAmountIn!=null?n(e.userQuoteAmountIn):n(e.quoteAmountIn)+n(e.lpFee)+n(e.protocolFee)+n(e.coinCreatorFee);
- const paid=txEvents.filter(x=>x.kind==='quote_transfer'&&x.data.from===buyer&&under(x.path,route)).reduce((s,x)=>s+n(x.data.amount),0n);
+ const paid=txEvents.filter(x=>x.kind==='quote_transfer'&&x.data.from===buyer&&under(at(x),route)).reduce((s,x)=>s+n(x.data.amount),0n);
  return paid>=total&&total>0n?{lamports:total,quote:n(e.quoteAmountIn),fees:total-n(e.quoteAmountIn)}:null;
 }
 function tradeQuantity(trade){const e=trade.data.event;return trade.data.venue==='pump-curve'?n(e.tokenAmount):n(e.baseAmountOut);}
@@ -87,7 +89,7 @@ function replay(events,{excluded=new Set(),fx=()=>null,credits=[],throughSlot=In
   applyCreditsThrough(Number(g.slot)-1);
   const txe=g.events,deliveries=txe.filter(x=>x.kind==='market_delivery'),matched=new Map();
   for(const t of txe.filter(x=>x.kind==='purchase_candidate'&&SUPPORTED.has(x.data.venue)&&x.data.quoteAsset==='native-SOL')){
-   const q=tradeQuantity(t),d=deliveries.find(d=>!matched.has(d.id)&&n(d.data.amount)===q&&under(d.path,t.data.route));
+   const q=tradeQuantity(t),d=deliveries.find(d=>!matched.has(d.id)&&n(d.data.amount)===q&&under(at(d),t.data.route));
    if(d)matched.set(d.id,t);else if(!excluded.has(t.owner))hold(t.owner,'purchase_delivery_unproven',t);
   }
   const touched=new Set();

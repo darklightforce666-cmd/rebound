@@ -83,3 +83,18 @@ test('credits replay at their snapshot slot: later partial sale removes credit p
  const before=run(c.events,{credits,throughSlot:snapshotSlot});assert.equal(before.owners.get('A').lots[0].remainingQuantity,100n);assert.equal(before.owners.get('A').lots[0].paidCredit,10n*USD);
  const missing=run(c.events,{credits:[{slot:snapshotSlot,lotId:'nope',credit:1n,state:'paid'}]});assert.equal(missing.mintHolds[0].reason,'credit_lot_missing');
 });
+
+test('a trade called through a router: its delivery and payment are inside it by CPI tree position, not by flat path',()=>{
+ const I=require('../../server/rewards/indexer.cjs');
+ const ix=(p,h)=>({programId:p,accounts:[],data:'',stackHeight:h});
+ const tx={transaction:{message:{instructions:[ix('Budget'),ix('Router')]}},meta:{innerInstructions:[{index:1,instructions:[ix('Sys',2),ix('Pump',2),ix('Sys',3),ix('Token',3),ix('Pump',3),ix('Sys',2)]}]}};
+ const t=I.trace(tx),by=p=>t.find(x=>x.path===p);
+ assert.equal(by('1/1').tree,'1/1');                       // the Pump trade
+ assert.equal(by('1/2').tree,'1/1/0');assert.equal(by('1/3').tree,'1/1/1');assert.equal(by('1/4').tree,'1/1/2');   // inside the trade
+ assert.equal(by('1/5').tree,'1/2');                       // after the trade, back in the router
+ const L=require('../../server/rewards/lots-v3.cjs');
+ assert.ok(L.tradeCost({owner:'B',data:{venue:'pump-curve',route:'1/1',event:{solAmount:'100',fee:'1',creatorFee:'1'}}},
+  [{kind:'funding_transfer',path:'1/2',data:{from:'B',amount:'102',tree:'1/1/0'}}]),'the payment is inside the routed trade');
+ assert.equal(L.tradeCost({owner:'B',data:{venue:'pump-curve',route:'1/1',event:{solAmount:'100',fee:'1',creatorFee:'1'}}},
+  [{kind:'funding_transfer',path:'1/5',data:{from:'B',amount:'102',tree:'1/2'}}]),null,'a transfer outside the trade is not its payment');
+});

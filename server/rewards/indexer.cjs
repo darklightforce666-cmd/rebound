@@ -2,7 +2,7 @@
 const {PublicKey,Connection}=require('@solana/web3.js');
 const bs58=require('bs58');
 const P=require('./pump.cjs'),W=require('./wire.cjs'),Policy=require('./policy.cjs'),DB=require('./db.cjs');
-const PARSER='rebound-execution-v3.1';   // v3.1: bn.js numbers decoded by shape (minified hosted bundle)
+const PARSER='rebound-execution-v3.2';   // v3.1: bn.js decoded by shape; v3.2: CPI tree positions (trades through routers)
 const TOKEN=new Set(['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA','TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb']);
 const PUMP=P.SDK.PUMP_PROGRAM_ID.toBase58(),AMM=P.SDK.PUMP_AMM_PROGRAM_ID.toBase58();
 const EVENT_CPI=Buffer.from('e445a52e51cb9a1d','hex');
@@ -20,11 +20,13 @@ function eventDecoder(program,data){
 function trace(tx){
  const out=[],message=tx.transaction.message,inner=new Map((tx.meta.innerInstructions||[]).map(i=>[i.index,i.instructions]));
  for(let root=0;root<message.instructions.length;root++){
-  const top={...message.instructions[root],path:String(root),depth:1,parent:null};out.push(top);const stack=[top];
+  // `path` (root/ordinal) identifies an instruction; `tree` (root/child/grandchild…) is its position in the CPI
+  // tree, so "inside this trade" is a prefix test even when the trade itself was called through a router.
+  const top={...message.instructions[root],path:String(root),tree:String(root),kids:0,depth:1,parent:null};out.push(top);const stack=[top];
   for(const[ordinal,instruction]of (inner.get(root)||[]).entries()){
    const depth=instruction.stackHeight;if(!Number.isInteger(depth)||depth<2||depth>stack.length+1)throw Error('Incomplete CPI execution depth');
    const parent=stack[depth-2];if(!parent)throw Error('Unknown CPI parent');
-   const row={...instruction,path:root+'/'+ordinal,depth,parent};stack.length=depth-1;stack.push(row);out.push(row);
+   const row={...instruction,path:root+'/'+ordinal,tree:parent.tree+'/'+(parent.kids++),kids:0,depth,parent};stack.length=depth-1;stack.push(row);out.push(row);
   }
  }return out.map((x,order)=>({...x,order}));
 }
@@ -36,7 +38,7 @@ function parseTransaction(tx,{slot,time,transactionIndex,coins,ownership=new Map
  for(const b of tx.meta.preTokenBalances||[])if(b.owner)known.set(keys[b.accountIndex],{mint:b.mint,owner:b.owner,amount:b.uiTokenAmount.amount});
  for(const b of tx.meta.postTokenBalances||[])post.set(keys[b.accountIndex],b);
  let instructions;try{instructions=trace(tx);}catch(e){return{events,holds:coins.map(c=>({mint:c.mint,reason:e.message,signature})),ownership};}
- const emit=(ins,kind,mint,owner,data,eventIndex=0)=>{const id=W.hash(signature,ins.path,String(eventIndex),mint||'').toString('hex');events.push({id,mint,signature,path:ins.path,eventIndex,slot,time,transactionIndex,order:ins.order,kind,owner,data,rawDigest:W.hash(stringify(ins)).toString('hex'),parser:PARSER});return id;};
+ const emit=(ins,kind,mint,owner,data,eventIndex=0)=>{const id=W.hash(signature,ins.path,String(eventIndex),mint||'').toString('hex');events.push({id,mint,signature,path:ins.path,eventIndex,slot,time,transactionIndex,order:ins.order,kind,owner,data:ins.tree!=null&&ins.tree!==ins.path?{...data,tree:ins.tree}:data,rawDigest:W.hash(stringify(ins)).toString('hex'),parser:PARSER});return id;};
  for(const ins of instructions){
   const program=address(ins.programId),parsed=ins.parsed,info=parsed?.info;
   if(program===PUMP||program===AMM){
@@ -54,13 +56,13 @@ function parseTransaction(tx,{slot,time,transactionIndex,coins,ownership=new Map
       const root=ins.parent;const direct=root.depth===1;
       const creator=e.creator||e.coinCreator,canonical=program===PUMP||e.pool===P.SDK.canonicalPumpPoolPda(W.pk(mint)).toBase58();
       const user=e.user;
-      if(!buy){emit(ins,'sale',mint,user,{event:e,marketProgram:program,route:root.path});continue;}
+      if(!buy){emit(ins,'sale',mint,user,{event:e,marketProgram:program,route:root.tree??root.path});continue;}
       // BN.toJSON is hexadecimal; normalize SDK BN fields before stringify
       // in eventDecoder, never interpret a BN hex string as decimal.
       const creatorFee=String(e.creatorFee??e.coinCreatorFee??0),quantity=String(e.tokenAmount??e.baseAmountOut??0);
       const quote=String(e.quoteAmount??e.solAmount??e.quoteAmountIn??0);
       const fees=program===PUMP?Policy.sum([e.fee||0,creatorFee,e.buybackFee||0,e.cashback||0,e.holderRewards||0]):Policy.sum([e.lpFee||0,e.protocolFee||0,creatorFee,e.buybackFee||0,e.cashbackFee||0,e.holderRewards||0]);
-      emit(ins,'purchase_candidate',mint,user,{event:e,success:true,finalized:true,complete:true,provenanceComplete:direct,canonical,creator,expectedCreator:coin.current_creator,quoteAsset:e.quoteMint&&![PublicKey.default.toBase58(),'So11111111111111111111111111111111111111112'].includes(e.quoteMint)?'unsupported':'native-SOL',venue:program===PUMP?'pump-curve':canonical?'pump-canonical-amm':'side-pool',quantity,actualQuote:quote,creatorFee,unavoidableFees:String(fees),route:root.path});
+      emit(ins,'purchase_candidate',mint,user,{event:e,success:true,finalized:true,complete:true,provenanceComplete:direct,canonical,creator,expectedCreator:coin.current_creator,quoteAsset:e.quoteMint&&![PublicKey.default.toBase58(),'So11111111111111111111111111111111111111112'].includes(e.quoteMint)?'unsupported':'native-SOL',venue:program===PUMP?'pump-curve':canonical?'pump-canonical-amm':'side-pool',quantity,actualQuote:quote,creatorFee,unavoidableFees:String(fees),route:root.tree??root.path});
      }else if(event.name==='DistributeCreatorFeesEvent')emit(ins,'creator_distribution',mint,null,{event:e,destination:coin.intake,sharing:coin.sharing_config});
      else if(event.name==='CollectCreatorFeeEvent')emit(ins,'initial_creator_collection',mint,null,{event:e,route:ins.parent.path});
      else if(event.name==='CreatePoolEvent')emit(ins,'graduation',mint,null,{event:e});
