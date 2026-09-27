@@ -182,4 +182,4 @@ async function activationSubmit(ports,{session,attemptId,step,signedTransaction}
  return{state:r.state,signature:r.signature,step};
 }
 
-module.exports={draft,prepare,submit,status,activationPrepare,activationSubmit,launchAllowed,ixJson,ixFrom};
+module.exports={draft,prepare,submit,status,activationPrepare,activationSubmit,launchAllowed,ixJson,ixFrom,simulate};

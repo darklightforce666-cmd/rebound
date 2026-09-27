@@ -63,6 +63,11 @@ async function planCall(fn){try{return await fn();}catch(e){if(PLAN_ERRORS[e.cod
 const uuid=v=>{if(typeof v!=='string'||!/^[0-9a-f-]{36}$/.test(v))fail(400,'INVALID_BODY','Invalid id');return v;};
 const b64tx=v=>{if(typeof v!=='string'||v.length>4000)fail(400,'INVALID_BODY','Invalid transaction');return v;};
 const launchPorts=db=>({...chain(db),readMetadata:hash=>Metadata.readMetadata(db,hash)});
+// Launches without the on-chain program (direct settlement): an RPC connection is all they need.
+const LaunchDirect=require('../../server/rewards/launch-direct.cjs');
+async function directLaunches(db,namespace){return((await db.query('SELECT settlement FROM reward_platform WHERE namespace=$1',[namespace])).rows[0]?.settlement||'direct')==='direct';}
+const directPorts=db=>{const connection=rpcConnection();if(!connection)fail(503,'SETUP_REQUIRED','Launches are not configured yet. Nothing was changed.',true);return{db,connection,readMetadata:hash=>Metadata.readMetadata(db,hash)};};
+async function attemptSettlement(db,id){return(await db.query('SELECT settlement FROM reward_launch_attempts WHERE id=$1',[id])).rows[0]?.settlement||null;}
 const validMint=m=>{try{W.pk(m);return m;}catch{fail(400,'MINT_INVALID','Invalid mint address');}};
 
 const PAGE=24;
@@ -124,7 +129,11 @@ const handlers={
    const s=await Session.authenticate(db,event.headers);const mint=validMint(q.mint);
    return{plan:await planCall(()=>Cycle.manualPlan(chain(db),{mint,wallets:s.reboundWallets}))};
   },
-  async 'launch-status'({db,event,q}){const s=await Session.authenticate(db,event.headers);return planCall(()=>Launch.status(launchPorts(db),{session:s,attemptId:uuid(q.id)}));},
+  async 'launch-status'({db,event,q}){const s=await Session.authenticate(db,event.headers);const id=uuid(q.id);
+   if(await attemptSettlement(db,id)==='direct')return planCall(()=>LaunchDirect.status(directPorts(db),{session:s,attemptId:id}));
+   return planCall(()=>Launch.status(launchPorts(db),{session:s,attemptId:id}));},
+  // Pair assets pump.fun admits right now (SOL first) — the launch form offers only these.
+  async 'launch-quotes'({db}){return{quotes:await LaunchDirect.quoteMints(directPorts(db).connection)};},
   async 'admin-overview'({db,event}){const who=await adminAccess(db,event);
    // Hand the hosted worker (Supabase) this site's RPC endpoint: write-only vault function, never read back.
    if(!rpcShared&&process.env.SOLANA_RPC_URL)rpcShared=await db.query('SELECT rebound.worker_store_rpc($1,$2) AS r',[process.env.SOLANA_RPC_URL,process.env.HISTORY_RPC_URL||null]).then(r=>r.rows[0].r).catch(()=>null);
@@ -165,9 +174,15 @@ const handlers={
   },
   // Third-party launch journey (docs/API-V3.md). The browser generates the mint key; the server never sees it.
   async 'launch-draft'({db,event,data}){const s=await Session.authenticate(db,event.headers);
-   return planCall(()=>Launch.draft(launchPorts(db),{session:s,wallet:String(data.wallet||''),idempotencyKey:data.idempotencyKey,metadataHash:String(data.metadataHash||''),name:data.name,symbol:data.symbol,initialBuyLamports:/^\d{1,15}$/.test(String(data.initialBuyLamports??'0'))?BigInt(data.initialBuyLamports??0):fail(400,'INVALID_AMOUNT','Invalid initial buy'),namespace:data.namespace==='production'?'production':'mainnet_test'})).then(a=>({attemptId:a.id,state:a.state}));},
-  async 'launch-prepare'({db,event,data}){const s=await Session.authenticate(db,event.headers);return planCall(()=>Launch.prepare(launchPorts(db),{session:s,attemptId:uuid(data.attemptId),mint:String(data.mint||'')}));},
-  async 'launch-submit'({db,event,data}){const s=await Session.authenticate(db,event.headers);return planCall(()=>Launch.submit(launchPorts(db),{session:s,attemptId:uuid(data.attemptId),index:data.index===1?1:0,signedTransaction:b64tx(data.signedTransaction)}));},
+   const args={session:s,wallet:String(data.wallet||''),idempotencyKey:data.idempotencyKey,metadataHash:String(data.metadataHash||''),name:data.name,symbol:data.symbol,initialBuyLamports:/^\d{1,15}$/.test(String(data.initialBuyLamports??'0'))?BigInt(data.initialBuyLamports??0):fail(400,'INVALID_AMOUNT','Invalid initial buy'),namespace:data.namespace==='production'?'production':'mainnet_test'};
+   if(await directLaunches(db,args.namespace))return planCall(()=>LaunchDirect.draft(directPorts(db),{...args,quoteMint:data.quoteMint?String(data.quoteMint):null})).then(a=>({attemptId:a.id,state:a.state,settlement:'direct'}));
+   return planCall(()=>Launch.draft(launchPorts(db),args)).then(a=>({attemptId:a.id,state:a.state}));},
+  async 'launch-prepare'({db,event,data}){const s=await Session.authenticate(db,event.headers);const id=uuid(data.attemptId);
+   if(await attemptSettlement(db,id)==='direct')return planCall(()=>LaunchDirect.prepare(directPorts(db),{session:s,attemptId:id,mint:String(data.mint||'')}));
+   return planCall(()=>Launch.prepare(launchPorts(db),{session:s,attemptId:id,mint:String(data.mint||'')}));},
+  async 'launch-submit'({db,event,data}){const s=await Session.authenticate(db,event.headers);const id=uuid(data.attemptId);
+   if(await attemptSettlement(db,id)==='direct')return planCall(()=>LaunchDirect.submit(directPorts(db),{session:s,attemptId:id,signedTransaction:b64tx(data.signedTransaction)}));
+   return planCall(()=>Launch.submit(launchPorts(db),{session:s,attemptId:id,index:data.index===1?1:0,signedTransaction:b64tx(data.signedTransaction)}));},
   async 'activation-prepare'({db,event,data}){const s=await Session.authenticate(db,event.headers);return planCall(()=>Launch.activationPrepare(launchPorts(db),{session:s,attemptId:uuid(data.attemptId)}));},
   async 'activation-submit'({db,event,data}){const s=await Session.authenticate(db,event.headers);
    if(!['create_fee_sharing','lock_fee_sharing','activate'].includes(data.step))fail(400,'INVALID_BODY','Unknown setup step');

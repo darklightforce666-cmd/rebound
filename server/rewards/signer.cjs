@@ -6,7 +6,7 @@
 // read the ciphertext, and without the master key it is useless.
 const crypto=require('node:crypto'),fs=require('node:fs/promises');
 const {Keypair}=require('@solana/web3.js'),bs58=require('bs58');
-const ROLES=new Set(['primary_dev','fee_payer','publisher','verifier']);
+const ROLES=new Set(['primary_dev','fee_payer','publisher','verifier','launch_creator']);
 // Keypair.secretKey returns a copy in web3.js 1.9x; wipe the internal buffer (best effort).
 const wipe=kp=>{try{(kp?._keypair?.secretKey||kp?.secretKey)?.fill(0);}catch{}};
 

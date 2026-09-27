@@ -187,7 +187,7 @@ async function buybackMarket({connection=null,payer,buyer,targetMint,lamports,sl
  }
  if(quote.minOut<=0n)throw Object.assign(Error('Quoted output is zero; buyback held'),{code:'BUYBACK_QUOTE_ZERO'});
  if(quote.impactBps>maxImpactBps)throw Object.assign(Error(`Price impact ${quote.impactBps} bps exceeds ${maxImpactBps} bps; buyback held`),{code:'BUYBACK_IMPACT'});
- return{setup,market:ix.keys,program:ix.programId,holding,quote};
+ return{setup,market:ix.keys,program:ix.programId,instruction:ix,holding,quote};
 }
 
 module.exports={marketState,SDK,AMM,sdk,fits,regular,metadata,launch,routingSteps,setupLamports,SHARING_CONFIG_LEN,verifyRouting,collect,collectInitial,curveQuote,curveBuyExactSolIn,buybackMarket};

@@ -196,13 +196,16 @@ async function mountLaunch(host,toast,signal){
  await config().catch(()=>null);
  const enabled=!!cfg?.features?.launches;
  const saved=wallet?.address?localStorage.getItem(attemptKey()):null;
- host.innerHTML='<h2>Launch a token with REBOUND rewards</h2><p>Your wallet creates a regular Pump.fun coin. From its very first trade, all creator fees go to that coin\'s own program-controlled treasury — not to your wallet. Collected fees are split once: 85 % to underwater holders every 30 minutes, 15 % to buy and burn the REBOUND token.</p>'+
+ host.innerHTML='<h2>Launch a token with REBOUND rewards</h2><p>Your wallet creates a regular Pump.fun coin. From its very first trade, all creator fees go to that coin\'s own REBOUND creator wallet — not to your wallet. Collected fees are split once: 85 % to underwater holders every 30 minutes, 15 % to buy and burn the REBOUND token. Holders who sell or transfer are excluded for good; a purchase counts after 15 minutes of holding.</p>'+
   (enabled?(cfg.launchNamespace==='mainnet_test'?'<p class="notice live-notice">Private mainnet test: only allowlisted wallets can launch; launches are labelled TEST.</p>':''):'<p class="notice live-notice">Launches are not open yet. They open after the reward program is deployed and verified.</p>')+
   (saved?'<p><button class="btn outline" id="launch-resume">Resume my launch</button></p>':'')+
-  '<form id="launch-form"><label>Token name<input name="name" required maxlength="32" autocomplete="off"></label><label>Ticker<input name="symbol" required maxlength="10" pattern="[A-Za-z0-9$._-]+" autocomplete="off"></label><label>Description<textarea name="description" maxlength="2000"></textarea></label><label>Image (PNG or JPEG, under 2 MB)<input name="image" type="file" accept="image/png,image/jpeg" required></label><label>Website (optional)<input name="website" type="url" placeholder="https://"></label><label>X / Twitter (optional)<input name="twitter" type="url" placeholder="https://x.com/…"></label><label>Telegram (optional)<input name="telegram" type="url" placeholder="https://t.me/…"></label><label>Initial buy in SOL (optional)<input name="buy" inputmode="decimal" value="0"></label><button class="btn" '+(enabled?'':'disabled')+'>Review launch</button></form><div id="launch-flow" role="status" aria-live="polite"></div>';
+  '<form id="launch-form"><label>Token name<input name="name" required maxlength="32" autocomplete="off"></label><label>Ticker<input name="symbol" required maxlength="10" pattern="[A-Za-z0-9$._-]+" autocomplete="off"></label><label>Description<textarea name="description" maxlength="2000"></textarea></label><label>Image (PNG or JPEG, under 2 MB)<input name="image" type="file" accept="image/png,image/jpeg" required></label><label>Website (optional)<input name="website" type="url" placeholder="https://"></label><label>X / Twitter (optional)<input name="twitter" type="url" placeholder="https://x.com/…"></label><label>Telegram (optional)<input name="telegram" type="url" placeholder="https://t.me/…"></label><label>Pair<select name="quote" id="launch-quote"><option value="">SOL</option></select><small class="field-hint">Like pump.fun: SOL, or an asset pump.fun admits (tokenized stocks, wrapped BTC/ETH…). Other tokens cannot be paired.</small></label><label>Initial buy in SOL (optional, SOL pair only)<input name="buy" inputmode="decimal" value="0"></label><button class="btn" '+(enabled?'':'disabled')+'>Review launch</button></form><div id="launch-flow" role="status" aria-live="polite"></div>';
  const flow=host.querySelector('#launch-flow');
  host.querySelector('#launch-resume')?.addEventListener('click',()=>run(()=>follow(flow,saved,toast)));
  host.querySelector('#launch-form').onsubmit=e=>{e.preventDefault();run(()=>start(flow,new FormData(e.target),toast));};
+ // Pair assets come from pump.fun's own on-chain list; nothing else can be selected.
+ if(enabled)api('launch-quotes',{signal}).then(r=>{const sel=host.querySelector('#launch-quote');if(!sel)return;
+  sel.innerHTML=r.quotes.map(q=>'<option value="'+(q.sol?'':esc(q.mint))+'">'+esc(q.symbol||short(q.mint))+(q.name&&!q.sol?' · '+esc(q.name):'')+'</option>').join('');}).catch(()=>{});
  async function run(fn){if(launchBusy)return;launchBusy=true;try{await fn();}catch(err){flow.innerHTML='<p class="notice live-notice">'+esc(err.message)+'</p>';toast(err.message);}finally{launchBusy=false;}}
 }
 async function start(flow,form,toast){
@@ -214,15 +217,16 @@ async function start(flow,form,toast){
  const proof=await consent('metadata-upload',payload);
  const meta=await api('metadata-upload',{body:{wallet:wallet.address,payload,proof},auth:true});
  const idem=crypto.randomUUID();
- const d=await api('launch-draft',{body:{wallet:wallet.address,idempotencyKey:idem,metadataHash:meta.hash,name:payload.name,symbol:payload.symbol,initialBuyLamports:String(initialBuyLamports),namespace:cfg.launchNamespace},auth:true});
+ const quoteMint=String(form.get('quote')||'')||null;if(quoteMint&&initialBuyLamports>0n)throw Error('An initial buy is available for SOL pairs only — buy on pump.fun after creation.');
+ const d=await api('launch-draft',{body:{wallet:wallet.address,idempotencyKey:idem,metadataHash:meta.hash,name:payload.name,symbol:payload.symbol,initialBuyLamports:String(initialBuyLamports),namespace:cfg.launchNamespace,quoteMint},auth:true});
  localStorage.setItem(attemptKey(),d.attemptId);
  await review(flow,d.attemptId,toast);
 }
 async function review(flow,attemptId,toast){
  mintKey=Keypair.generate();   // ephemeral, stays in this tab; never sent to the server
  const p=await api('launch-prepare',{body:{attemptId,mint:mintKey.publicKey.toBase58()},auth:true});const x=p.disclosure;
- flow.innerHTML='<h3>Step 2 of 4 · Review</h3><div class="live-metrics"><div><span>Creator wallet</span><strong>'+esc(short(x.creatorWallet))+'</strong></div><div><span>Commission treasury (program)</span><strong>'+esc(short(x.commissionTreasury))+'</strong></div><div><span>Initial buy</span><strong>'+sol(x.costs.initialBuyLamports)+'</strong></div><div><span>Burn target</span><strong>'+esc(short(x.primaryBurnTarget))+'</strong></div></div>'+
-  '<p>'+esc(x.feeRouting)+'</p><p>Rounds every '+(x.policy.cycleSeconds/60)+' minutes; snapshot '+x.policy.cutoffLeadSeconds+' s before each round ends; losses in '+esc(x.policy.lossUnit)+'. Policy '+esc(x.policy.version)+'.</p><p>Costs you pay: Pump creation and account rent (about 0.011 SOL), REBOUND coin account '+sol(x.costs.reboundCoinRentLamports)+', network fees, your initial buy, and later about 0.0094 SOL of fee-setup rent. Irreversible: '+esc(x.irreversible.join(' '))+'</p><p>Mint: <span class="live-address">'+esc(p.mint)+'</span></p><button class="btn" id="launch-sign">Create token ('+p.transactions.length+' wallet approval'+(p.transactions.length>1?'s':'')+')</button>';
+ flow.innerHTML='<h3>Step 2 of 4 · Review</h3><div class="live-metrics"><div><span>Creator wallet</span><strong>'+esc(short(x.creatorWallet))+'</strong></div><div><span>'+(p.settlement==='direct'?'Fee wallet (REBOUND creator wallet)':'Commission treasury (program)')+'</span><strong>'+esc(short(x.commissionTreasury))+'</strong></div>'+(x.pair?'<div><span>Pair</span><strong>'+esc(x.pair.symbol||short(x.pair.mint))+'</strong></div>':'')+'<div><span>Initial buy</span><strong>'+sol(x.costs.initialBuyLamports)+'</strong></div><div><span>Burn target</span><strong>'+esc(short(x.primaryBurnTarget))+'</strong></div></div>'+
+  '<p>'+esc(x.feeRouting)+'</p>'+(x.pairNote?'<p class="notice live-notice">'+esc(x.pairNote)+'</p>':'')+'<p>Rounds every '+(x.policy.cycleSeconds/60)+' minutes; snapshot '+x.policy.cutoffLeadSeconds+' s before each round ends; losses in '+esc(x.policy.lossUnit)+'. Policy '+esc(x.policy.version)+'.</p><p>'+(p.settlement==='direct'?'Holders who sell or transfer are excluded for good; a purchase counts after '+Math.round((x.policy.maturitySeconds||0)/60)+' minutes of holding. Costs you pay: Pump creation and account rent (about 0.011 SOL), '+sol(x.costs.operatingLamports)+' for the creator wallet\'s own network fees (fee collection, payouts, burns), network fees and your initial buy.':'Costs you pay: Pump creation and account rent (about 0.011 SOL), REBOUND coin account '+sol(x.costs.reboundCoinRentLamports)+', network fees, your initial buy, and later about 0.0094 SOL of fee-setup rent.')+' Irreversible: '+esc(x.irreversible.join(' '))+'</p><p>Mint: <span class="live-address">'+esc(p.mint)+'</span></p><button class="btn" id="launch-sign">Create token ('+p.transactions.length+' wallet approval'+(p.transactions.length>1?'s':'')+')</button>';
  flow.querySelector('#launch-sign').onclick=async()=>{try{
   flow.querySelector('#launch-sign').disabled=true;
   const s=await api('launch-submit',{body:{attemptId,index:0,signedTransaction:await signB64(p.transactions[0],[mintKey])},auth:true});
@@ -230,6 +234,7 @@ async function review(flow,attemptId,toast){
   const st=await waitFor(attemptId,a=>a.state!=='creation_submitted');
   if(st.state==='draft'){flow.innerHTML='<p class="notice live-notice">The creation did not land; no token exists. Review again to retry with a fresh mint.</p><button class="btn" id="launch-again">Review again</button>';flow.querySelector('#launch-again').onclick=()=>review(flow,attemptId,toast).catch(e=>toast(e.message));return;}
   if(p.transactions[1]){flow.innerHTML='<p>Token created. Approve your initial buy.</p>';await api('launch-submit',{body:{attemptId,index:1,signedTransaction:await signB64(p.transactions[1])},auth:true});}
+  if(p.settlement==='direct'){const a=await waitFor(attemptId,x=>x.state==='active'||x.state==='failed_action_required',120000);mintKey=null;return directDone(flow,a);}
   mintKey=null;await activation(flow,attemptId,toast);
  }catch(e){flow.querySelector('#launch-sign')&&(flow.querySelector('#launch-sign').disabled=false);toast(e.message);}};
 }
@@ -248,7 +253,17 @@ async function follow(flow,attemptId,toast){
  const st=await api('launch-status',{query:{id:attemptId},auth:true});
  if(['draft','awaiting_creation_signature'].includes(st.state))return review(flow,attemptId,toast);
  if(st.state==='creation_submitted'){flow.innerHTML='<p>Waiting for the creation to finalize…</p>';await waitFor(attemptId,a=>a.state!=='creation_submitted');return follow(flow,attemptId,toast);}
+ if(st.settlement==='direct')return directDone(flow,st);
  return activation(flow,attemptId,toast);
+}
+// Launch without the program: nothing to activate; the token is live once registered.
+function directDone(flow,a){
+ if(a.state==='active'){localStorage.removeItem(attemptKey());
+  flow.innerHTML=a.rewards==='pair_pending'
+   ?'<p><b>Token live.</b> Rounds for pairs other than SOL start once REBOUND enables pair-asset accounting; until then its creator fees stay in its pump.fun creator vault and nothing is lost. <a href="#token/'+esc(a.mint)+'">Open your token →</a></p>'
+   :'<p><b>Token live, rewards active.</b> Its creator fees go to its REBOUND creator wallet: 85 % to underwater holders, 15 % buys and burns the REBOUND token. <a href="#token/'+esc(a.mint)+'">Open your token →</a></p>';return;}
+ if(a.state==='failed_action_required'){flow.innerHTML='<p class="notice live-notice">The token was created but its creator could not be verified; rewards stay off. Contact the team.</p>';return;}
+ flow.innerHTML='<p>Waiting for the token to be registered… Reopen this page in a minute.</p>';
 }
 
 // ---------------- administrator dashboard ----------------

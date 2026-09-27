@@ -46,6 +46,7 @@ class SvmConnection{
   for(const a of m.accounts)if(!a.missing)this.svm.setAccount({address:A(a.id),lamports:BigInt(a.lamports),programAddress:A(a.owner),executable:a.executable,data:Buffer.from(a.data,'base64'),space:BigInt(Buffer.from(a.data,'base64').length)});
   return m;}
  async getBalance(pk){return Number(this.svm.getBalance(A(pk))||0n);}
+ async getBalanceAndContext(pk){return{context:{slot:await this.getSlot()},value:await this.getBalance(pk)};}
  async simulateTransaction(tx,signers){
   if(tx instanceof VersionedTransaction){   // web3.js v1 form: (versionedTx, {sigVerify:false, replaceRecentBlockhash:true})
    const {blockhash}=await this.getLatestBlockhash();tx.message.recentBlockhash=blockhash;
@@ -75,6 +76,7 @@ class SvmConnection{
   return{slot:Number(this.svm.getClock().slot),blockTime:Number(this.svm.getClock().unixTimestamp),transaction:{signatures:[sig],message:{accountKeys:keys.map((k,i)=>({pubkey:k,signer:i<signers,writable:msg.isAccountWritable(i)})),instructions:msg.instructions.map(i=>one(i.programIdIndex,i.accounts,bs58.decode(i.data)))}},
    meta:{err:null,fee:5000*signers,preBalances:pre,postBalances:keys.map(k=>Number(this.svm.getBalance(A(k))||0n)),innerInstructions:inner,preTokenBalances:[],postTokenBalances:[],logMessages:meta.logs()}};
  }
+ async getSignaturesForAddress(key,o={}){return this.rpc().call('getSignaturesForAddress',[key.toBase58(),o]);}
  async getTransaction(sig){return this.parsed.get(sig)||null;}
  async getParsedTransaction(sig){return this.parsed.get(sig)||null;}
  // Minimal JSON-RPC facade (history-v3 Rpc interface) over the landed transactions.

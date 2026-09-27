@@ -65,3 +65,4 @@ tr.sev-warn td{color:#eec191}tr.sev-error td,tr.sev-critical td{color:#ffb1b1}
 .data-fresh.info{color:#dfe9e2}
 .token-inline-img{width:28px;height:28px;border-radius:50%;object-fit:cover;vertical-align:-6px;margin-right:10px}
 .live-logo{object-fit:cover;border-radius:50%}
+.field-hint{display:block;margin-top:4px;color:#8fa197;font-size:.8rem}

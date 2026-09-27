@@ -113,3 +113,8 @@ GRANT SELECT ON reward_history_queue TO rebound_api;
 GRANT SELECT,INSERT,UPDATE,DELETE ON reward_holder_positions,reward_holder_accounts,reward_projection_state TO rebound_scheduler;
 GRANT SELECT ON reward_holder_positions,reward_holder_accounts,reward_projection_state TO rebound_api;
 GRANT DELETE ON reward_public_holders TO rebound_scheduler;
+
+-- ---------- launchpad without the program (019) ----------
+GRANT SELECT,INSERT,UPDATE ON reward_creator_wallets,reward_burns TO rebound_scheduler;
+GRANT SELECT ON reward_creator_wallets,reward_burns TO rebound_api;
+GRANT EXECUTE ON FUNCTION reward_reserve_creator_wallet(uuid),reward_assign_creator_wallet(uuid,text) TO rebound_api;

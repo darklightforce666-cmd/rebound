@@ -11,7 +11,7 @@ const {Connection,PublicKey}=require('@solana/web3.js');
 const DB=require('./db.cjs'),P3=require('./policy-v3.cjs'),H=require('./history-v3.cjs'),I=require('./indexer.cjs'),Pump=require('./pump.cjs');
 const FX=require('./sol-usd.cjs'),F=require('./primary-funding.cjs'),FS=require('./funding-store.cjs'),C=require('./cycle-v3.cjs'),V=require('./verifier-v3.cjs');
 const Logs=require('./logs.cjs'),Signer=require('./signer.cjs'),W3=require('./wire-v3.cjs'),{stable}=require('./policy.cjs');
-const R=require('./receipts-v3.cjs'),BB=require('./buyback-v3.cjs'),Admin=require('./admin-v3.cjs'),Inbox=require('./key-inbox.cjs'),Direct=require('./cycle-direct.cjs'),Positions=require('./positions-v3.cjs');
+const R=require('./receipts-v3.cjs'),BB=require('./buyback-v3.cjs'),Admin=require('./admin-v3.cjs'),Inbox=require('./key-inbox.cjs'),Direct=require('./cycle-direct.cjs'),Positions=require('./positions-v3.cjs'),TP=require('./third-party-direct.cjs');
 const b=x=>BigInt(x);
 
 // ---------------- history ingestion ----------------
@@ -369,7 +369,12 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
    if(settles)await Inbox.processInbox(sdb,{worker}).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'key_inbox_failed',message:e.message,errorCode:e.code||'INBOX_FAILED'}));
    if(settles)await applyBudgetRequests(sdb,{connection,program}).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'funding_budget_failed',message:e.message,errorCode:e.code||'BUDGET_FAILED'}));
    if(settles)await Admin.applyOpeningRequests(sdb,connection).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'opening_credit_failed',message:e.message}));
-   if(settles)for(const coin of coins.filter(c=>c.kind==='primary'))   // dev-wallet funding ledger (scheduler-only writes)
+   const settlementOf=settles?Object.fromEntries((await sdb.query('SELECT namespace,settlement FROM reward_platform')).rows.map(r=>[r.namespace,r.settlement])):{};
+   // Launched tokens (direct settlement) get their creator wallets from this pool.
+   if(settles&&Object.values(settlementOf).includes('direct')&&TP.hasMasterKey(process.env))await TP.ensureCreatorWallets(sdb,{connection}).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'creator_pool_failed',message:e.message,errorCode:e.code||'CREATOR_POOL'}));
+   // Launched tokens without the program: exactly those whose intake is an assigned pool creator wallet.
+   const launched=settles?new Set((await sdb.query("SELECT mint FROM reward_creator_wallets WHERE status='assigned' AND mint IS NOT NULL")).rows.map(r=>r.mint)):new Set();
+   if(settles)for(const coin of coins.filter(c=>c.kind==='primary'||(c.kind==='third_party'&&settlementOf[c.namespace]==='direct'&&launched.has(c.mint))))   // wallet funding ledgers (scheduler-only writes)
     await DB.withLease(sdb,'funding:'+coin.mint,worker,async()=>{const r=await reconcileFunding({db:sdb,rpc,program},coin);
      if(r?.gap)await Logs.log(sdb,{severity:'warn',component:'scheduler',eventType:'funding_reconcile_gap',mint:coin.mint,message:'Dev-wallet reconciliation paused at an unreadable or incomplete history ('+r.gap+'); it resumes from there'});
     },{seconds:120,busy:()=>null}).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'funding_reconcile_failed',mint:coin.mint,message:e.message,errorCode:e.code||'RECONCILE_FAILED'}));
@@ -379,11 +384,20 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
    // Each projection gets its own time budget (never what is left of the indexer's pass).
    const budget=Number(process.env.REWARDS_POSITIONS_TIME_BUDGET_MS||40000),maxEvents=Number(process.env.REWARDS_POSITIONS_MAX_EVENTS||20000);
    const positions={project:(c,o={})=>Positions.project({db:sdb},c,{maxEvents,...o,deadline:o.deadline??Date.now()+budget}),inputsAt:(c,cut,slot)=>Positions.inputsAt(sdb,c,cut,slot),applyCredits:Positions.applyCredits};
-   const direct=c=>['active','paused'].includes(c.status)&&c.kind==='primary'&&settlement[c.namespace]==='direct'&&c.schedule_anchor!=null;   // paused: pays funded awards only
+   // The REBOUND token and tokens launched through the launchpad without the program. paused: pays funded awards only.
+   const direct=c=>['active','paused'].includes(c.status)&&(c.kind==='primary'||(c.kind==='third_party'&&launched.has(c.mint)))&&settlement[c.namespace]==='direct'&&c.schedule_anchor!=null;
    if(settles)for(const coin of coins.filter(direct))
     await Direct.tick({db:sdb,connection,worker,inputs,positions,displayBudgetMs:Math.min(20000,budget),now:async()=>connection.getBlockTime(await connection.getSlot('finalized')),
      cutoffSlot:async t=>(await H.findCutoffSlot(rpc,t)).slot,signer:fw=>Signer.load(sdb,fw.signer)},coin)
      .catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'tick_failed',mint:coin.mint,message:e.message,errorCode:e.code||'SCHEDULER_ERROR'}));
+   // Launched tokens: sweep creator fees into their creator wallets; 15 % buys and burns the REBOUND token.
+   if(settles)for(const coin of coins.filter(c=>direct(c)&&c.kind==='third_party'&&c.status==='active'))
+    await DB.withLease(sdb,'launched:'+coin.mint,worker,async()=>{
+     const fw=(await sdb.query("SELECT * FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired'",[coin.mint])).rows[0];if(!fw?.signer)return;
+     // Independent steps: a held collection never blocks the burn of income already collected.
+     await TP.collectFees({db:sdb,connection},coin,fw).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'creator_fee_collection_failed',mint:coin.mint,message:e.message,errorCode:e.code||'COLLECT_FAILED'}));
+     await TP.burn({db:sdb,connection},coin,fw);
+    },{seconds:120,busy:()=>null}).catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'launched_token_step_failed',mint:coin.mint,message:e.message,errorCode:e.code||'LAUNCHED_STEP'}));
    if(settles)for(const coin of coins.filter(c=>!direct(c)))   // every other token: positions for the site
     await DB.withLease(sdb,'coin:'+coin.mint,worker,()=>positions.project(coin),{seconds:120,busy:()=>null})
      .catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'positions_failed',mint:coin.mint,message:e.message,errorCode:e.code||'POSITIONS_FAILED'}));
