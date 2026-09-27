@@ -104,3 +104,7 @@ GRANT SELECT ON reward_public_holders, reward_public_payouts TO rebound_api;
 GRANT INSERT, UPDATE ON reward_public_holders, reward_public_payouts TO rebound_scheduler;
 GRANT USAGE, SELECT ON SEQUENCE reward_public_payouts_id_seq TO rebound_scheduler;
 GRANT UPDATE(settlement) ON reward_platform TO rebound_api;
+
+-- ---------- history queue (016) ----------
+GRANT INSERT,UPDATE ON reward_history_queue TO rebound_indexer;
+GRANT SELECT ON reward_history_queue TO rebound_api;

@@ -40,7 +40,7 @@ async function handle({dbUrl,token}){
   SOLANA_RPC_URL:s.rpc_url,...(s.history_rpc_url?{HISTORY_RPC_URL:s.history_rpc_url}:{}),
   REWARDS_SIGNER_MASTER_KEY:s.master_key,REWARDS_INBOX_KEY:s.inbox_jwk,
   REWARDS_MAX_EXECUTION_MODE:s.max_mode||'dry_run',REWARDS_ALLOW_PRODUCTION:'false',
-  REWARDS_INGEST_MAX_TX:s.ingest_max_tx||'120',HISTORY_RPC_MIN_INTERVAL_MS:s.rpc_interval_ms||'60',
+  REWARDS_INGEST_MAX_TX:s.ingest_max_tx||'300',HISTORY_RPC_MIN_INTERVAL_MS:s.rpc_interval_ms||'60',
  });
  const {main}=require('../../../server/rewards/worker-v3.cjs');
  const started=Date.now();

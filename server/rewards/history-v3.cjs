@@ -20,6 +20,22 @@ class Rpc{
    return body.result;
   }
  }
+ // JSON-RPC batch: one HTTP round trip for many calls. Returns results in order; an item that errors
+ // is retried alone (a failure never becomes silent data).
+ async batch(calls){
+  if(!calls.length)return[];
+  for(let attempt=0;;attempt++){
+   const wait=this.last+this.min-Date.now();if(wait>0)await new Promise(r=>setTimeout(r,wait));this.last=Date.now();this.calls+=calls.length;
+   const base=this.id;const body=calls.map(([method,params],i)=>({jsonrpc:'2.0',id:base+i+1,method,params}));this.id+=calls.length;
+   let res;try{res=await this.fetch(this.url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(60000)});}
+   catch(e){if(attempt<this.retries){await new Promise(r=>setTimeout(r,500*2**attempt));continue;}throw Object.assign(Error('RPC unreachable'),{code:'RPC_UNAVAILABLE'});}
+   if(res.status===429||res.status>=500){if(attempt<this.retries){await new Promise(r=>setTimeout(r,1000*2**attempt));continue;}throw Object.assign(Error('RPC HTTP '+res.status),{code:'RPC_UNAVAILABLE'});}
+   const out=await res.json();if(!Array.isArray(out)){if(attempt<this.retries){await new Promise(r=>setTimeout(r,1000*2**attempt));continue;}throw Object.assign(Error('RPC batch not supported'),{code:'RPC_ERROR'});}
+   const byId=new Map(out.map(r=>[r.id,r]));const results=[];
+   for(const [i,[method,params]] of calls.entries()){const r=byId.get(base+i+1);results.push(!r||r.error?await this.call(method,params):r.result);}
+   return results;
+  }
+ }
 }
 
 function marketAddresses(mint){
@@ -97,7 +113,14 @@ function parseAll(history,coin){
  }
  return{events,holds};
 }
-module.exports={Rpc,marketAddresses,signaturesFor,collect,parseAll,TX_VERSION,reportedIndex};
+// Token accounts that hold the mint right now (one request): {account, owner, amount}. Token or Token-2022.
+async function currentHolderAccounts(rpc,mint){
+ const info=await rpc.call('getAccountInfo',[mint,{encoding:'base64',commitment:'finalized'}]);
+ const program=info?.value?.owner;if(!program)throw Object.assign(Error('mint not found'),{code:'MINT_NOT_FOUND'});
+ const list=await rpc.call('getProgramAccounts',[program,{encoding:'jsonParsed',commitment:'finalized',filters:[{memcmp:{offset:0,bytes:mint}}]}]);
+ return(list||[]).map(a=>({account:a.pubkey,owner:a.account?.data?.parsed?.info?.owner,amount:a.account?.data?.parsed?.info?.tokenAmount?.amount})).filter(a=>a.account&&a.amount&&a.amount!=='0');
+}
+module.exports={Rpc,marketAddresses,signaturesFor,collect,parseAll,TX_VERSION,reportedIndex,currentHolderAccounts};
 
 // Latest produced, finalized slot whose block time is ≤ cutoff (spec §9). Never slides forward.
 // f(x) = time(first produced slot ≥ x) ≤ cutoff is monotone (true, then false): binary search the

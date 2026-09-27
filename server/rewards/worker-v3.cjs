@@ -15,46 +15,71 @@ const R=require('./receipts-v3.cjs'),BB=require('./buyback-v3.cjs'),Admin=requir
 const b=x=>BigInt(x);
 
 // ---------------- history ingestion ----------------
-// maxTx bounds one pass (hosted worker: short invocations); the rest continues on the next pass.
-async function ingest({db,rpc},coin,{maxTx=Infinity}={}){let fetched=0;
+// Smarter ingestion (migration 016). Signatures are listed only where relevant transactions can be:
+// the mint, its bonding curve, its canonical pool (every trade) and the token accounts that hold it NOW
+// (transfers into current holders). Wallets that sold everything are never crawled. Each listed signature
+// enters a durable queue once (deduplicated across addresses); each transaction is fetched at most once,
+// in JSON-RPC batches. maxTx bounds one pass; the queue carries the rest to the next pass.
+// If the RPC cannot list current holders, it falls back to following every token account seen in history.
+async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4}={}){
  const mint=coin.mint,m=H.marketAddresses(mint),head=await rpc.call('getSlot',[{commitment:'finalized'}]);
+ const incomplete=[];let newEvents=0,newTx=0;
  for(const [address,role] of [[m.mint,'mint'],[m.curve,'curve'],[m.pool,'pool']])
   await db.query('INSERT INTO reward_history_cursors(mint,address,role,discovered_slot) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING',[mint,address,role,head]);
- const incomplete=[],seen=new Set();let newEvents=0,newTx=0;
- const queue=(await db.query("SELECT * FROM reward_history_cursors WHERE mint=$1 AND role<>'funding_wallet' ORDER BY CASE role WHEN 'mint' THEN 0 WHEN 'curve' THEN 1 WHEN 'pool' THEN 2 ELSE 3 END,address",[mint])).rows;
- while(queue.length){
-  const cur=queue.shift();if(seen.has(cur.address))continue;seen.add(cur.address);
-  const r=await H.signaturesFor(rpc,cur.address,{until:cur.newest_signature||null});if(!r.complete)incomplete.push({address:cur.address,reason:r.reason});
-  let gap=!r.complete;   // a cursor never advances past a transaction that was not ingested
-  const sigs=r.signatures.filter(s=>!s.err).reverse();       // oldest first
-  for(const s of sigs){
-   if((await db.query('SELECT 1 FROM reward_events WHERE signature=$1 LIMIT 1',[s.signature])).rows.length){continue;}
-   if(fetched>=maxTx){incomplete.push({address:cur.address,reason:'continues_next_pass'});gap=true;break;}
-   const tx=await rpc.call('getTransaction',[s.signature,{encoding:'jsonParsed',commitment:'finalized',maxSupportedTransactionVersion:H.TX_VERSION}]);fetched++;
-   if(!tx){incomplete.push({signature:s.signature,reason:'transaction_unavailable'});gap=true;break;}
-   let index=H.reportedIndex(tx,s);
-   if(index==null){const block=await rpc.call('getBlock',[tx.slot,{transactionDetails:'signatures',rewards:false,commitment:'finalized',maxSupportedTransactionVersion:H.TX_VERSION}]);index=(block?.signatures||[]).indexOf(s.signature);}if(index<0){incomplete.push({slot:tx.slot,reason:'in_block_order_unavailable'});gap=true;break;}
-   const keys=tx.transaction.message.accountKeys.map(k=>typeof k==='string'?k:k.pubkey);
-   for(const bal of [...(tx.meta?.preTokenBalances||[]),...(tx.meta?.postTokenBalances||[])])if(bal.mint===mint){
-    const acct=keys[bal.accountIndex];if(!seen.has(acct)&&!queue.some(q=>q.address===acct)){
-     const ins=await db.query("INSERT INTO reward_history_cursors(mint,address,role,discovered_slot) VALUES($1,$2,'token_account',$3) ON CONFLICT DO NOTHING RETURNING *",[mint,acct,tx.slot]);
-     if(ins.rows[0])queue.push(ins.rows[0]);}
+ let holders=null;
+ try{holders=await H.currentHolderAccounts(rpc,mint);}catch{holders=null;}
+ if(holders)for(const h of holders)await db.query("INSERT INTO reward_history_cursors(mint,address,role,discovered_slot) VALUES($1,$2,'token_account',$3) ON CONFLICT DO NOTHING",[mint,h.account,head]);
+ const holderSet=holders?new Set(holders.map(h=>h.account)):null;
+ const cursors=(await db.query("SELECT * FROM reward_history_cursors WHERE mint=$1 AND role<>'funding_wallet' ORDER BY CASE role WHEN 'mint' THEN 0 WHEN 'curve' THEN 1 WHEN 'pool' THEN 2 ELSE 3 END,address",[mint])).rows
+  .filter(c=>c.role!=='token_account'||!holderSet||holderSet.has(c.address));
+ // 1. List new signatures (cheap) into the queue.
+ for(const cur of cursors){
+  const r=await H.signaturesFor(rpc,cur.address,{until:cur.newest_signature||null});
+  if(!r.complete){incomplete.push({address:cur.address,reason:r.reason});continue;}
+  const rows=r.signatures.filter(x=>!x.err).map(x=>({signature:x.signature,slot:x.slot,block_index:Number.isInteger(x.transactionIndex)?x.transactionIndex:null}));
+  if(rows.length)await db.query(`INSERT INTO reward_history_queue(mint,signature,slot,block_index) SELECT $1,signature,slot,block_index FROM jsonb_to_recordset($2::jsonb) AS x(signature text,slot bigint,block_index int) ON CONFLICT DO NOTHING`,[mint,JSON.stringify(rows)]);
+  if(r.signatures.length)await db.query('UPDATE reward_history_cursors SET newest_signature=$3,newest_slot=$4,updated_at=now() WHERE mint=$1 AND address=$2',[mint,cur.address,r.signatures[0].signature,r.signatures[0].slot]);
+ }
+ // Transactions already ingested by an earlier version are never fetched again.
+ await db.query('UPDATE reward_history_queue q SET fetched_at=now(),events=0 WHERE q.mint=$1 AND q.fetched_at IS NULL AND EXISTS(SELECT 1 FROM reward_events e WHERE e.signature=q.signature)',[mint]);
+ // 2. Fetch pending transactions in batches (oldest first).
+ const limit=Number.isFinite(maxTx)?Math.max(1,Math.floor(maxTx)):100000;
+ const pending=(await db.query('SELECT signature,slot,block_index FROM reward_history_queue WHERE mint=$1 AND fetched_at IS NULL ORDER BY slot,signature LIMIT $2',[mint,limit])).rows;
+ const chunks=[];for(let i=0;i<pending.length;i+=batch)chunks.push(pending.slice(i,i+batch));
+ const blockCache=new Map();
+ const blockIndex=async(slot,sig)=>{if(!blockCache.has(slot)){const bl=await rpc.call('getBlock',[slot,{transactionDetails:'signatures',rewards:false,commitment:'finalized',maxSupportedTransactionVersion:H.TX_VERSION}]);blockCache.set(slot,bl?.signatures||[]);}return blockCache.get(slot).indexOf(sig);};
+ const fetchChunk=async rows=>{
+  const params=rows.map(r=>['getTransaction',[r.signature,{encoding:'jsonParsed',commitment:'finalized',maxSupportedTransactionVersion:H.TX_VERSION}]]);
+  const txs=typeof rpc.batch==='function'?await rpc.batch(params):await Promise.all(params.map(([mm,pp])=>rpc.call(mm,pp)));
+  for(const [i,row] of rows.entries()){
+   const tx=txs[i];if(!tx){incomplete.push({signature:row.signature,reason:'transaction_unavailable'});continue;}
+   let index=H.reportedIndex(tx,{transactionIndex:row.block_index??undefined});if(index==null)index=await blockIndex(tx.slot,row.signature);
+   if(index<0){incomplete.push({slot:tx.slot,reason:'in_block_order_unavailable'});continue;}
+   if(!holderSet){   // fallback: discover the mint's token accounts from balances and follow them next pass
+    const keys=tx.transaction.message.accountKeys.map(k=>typeof k==='string'?k:k.pubkey);
+    for(const bal of [...(tx.meta?.preTokenBalances||[]),...(tx.meta?.postTokenBalances||[])])if(bal.mint===mint)
+     await db.query("INSERT INTO reward_history_cursors(mint,address,role,discovered_slot) VALUES($1,$2,'token_account',$3) ON CONFLICT DO NOTHING",[mint,keys[bal.accountIndex],tx.slot]);
    }
    const parsed=I.parseTransaction(tx,{slot:tx.slot,time:tx.blockTime,transactionIndex:index,coins:[{mint,intake:coin.intake,sharing_config:coin.sharing_config,current_creator:null}]});
    await DB.transaction(db,async t=>{
     for(const e of parsed.events)await t.query('INSERT INTO reward_events(id,mint,signature,instruction_path,event_index,slot,transaction_index,execution_order,kind,owner,data,raw_digest,parser_version,finalized) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true) ON CONFLICT DO NOTHING',
      [e.id,e.mint,e.signature,e.path,e.eventIndex,e.slot,index,e.order,e.kind,e.owner,stable({...e.data,time:tx.blockTime}),e.rawDigest,I.PARSER]);
-    if(parsed.holds.length)await t.query("INSERT INTO reward_audit(kind,mint,actor,evidence) VALUES('parser_hold',$1,'indexer',$2)",[mint,stable({signature:s.signature,holds:parsed.holds})]);
-   });
+    if(parsed.holds.length)await t.query("INSERT INTO reward_audit(kind,mint,actor,evidence) VALUES('parser_hold',$1,'indexer',$2)",[mint,stable({signature:row.signature,holds:parsed.holds})]);
+    await t.query('UPDATE reward_history_queue SET fetched_at=now(),events=$3 WHERE mint=$1 AND signature=$2',[mint,row.signature,parsed.events.length]);
+   },{serializable:false});
    newEvents+=parsed.events.length;newTx++;
   }
-  if(r.signatures.length&&!gap)await db.query('UPDATE reward_history_cursors SET newest_signature=$3,newest_slot=$4,updated_at=now() WHERE mint=$1 AND address=$2',[mint,cur.address,r.signatures[0].signature,r.signatures[0].slot]);
- }
+ };
+ for(let i=0;i<chunks.length;i+=parallel)await Promise.all(chunks.slice(i,i+parallel).map(fetchChunk));
+ // 3. Coverage: complete only when every relevant address is listed through head and nothing is pending.
+ const q=(await db.query('SELECT count(*)::int total, count(*) FILTER (WHERE fetched_at IS NOT NULL)::int fetched FROM reward_history_queue WHERE mint=$1',[mint])).rows[0];
+ if(q.total>q.fetched&&!incomplete.length)incomplete.push({reason:'continues_next_pass',pending:q.total-q.fetched});
  const complete=incomplete.length===0;
  await db.query(`INSERT INTO reward_checkpoints(name,through_slot,through_time,start_slot,complete,parser_version,digest,incident) VALUES($1,$2,$3,$2,$4,$5,'',$6)
   ON CONFLICT(name) DO UPDATE SET through_slot=CASE WHEN EXCLUDED.complete THEN EXCLUDED.through_slot ELSE reward_checkpoints.through_slot END,through_time=CASE WHEN EXCLUDED.complete THEN EXCLUDED.through_time ELSE reward_checkpoints.through_time END,complete=EXCLUDED.complete,incident=EXCLUDED.incident,updated_at=now()`,
   ['history:'+mint,head,await rpc.call('getBlockTime',[head]),complete,I.PARSER,complete?null:stable({incomplete:incomplete.slice(0,20)})]);
- return{head,newTx,newEvents,complete,incomplete};
+ await db.query('UPDATE reward_public_tokens SET history_fetched=$2,history_total=$3,history_complete=$4 WHERE mint=$1',[mint,q.fetched,q.total,complete]).catch(()=>{});
+ return{head,newTx,newEvents,complete,incomplete,holders:holders?holders.length:null,fetched:q.fetched,total:q.total};
 }
 
 // ---------------- evidence loaders for snapshots (scheduler and verifier use the same code) ----------------
@@ -244,7 +269,7 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
     await sampleSolUsd({db:idb,connection}).catch(e=>Logs.log(idb,{severity:'warn',component:'indexer',eventType:'sol_usd_sample_failed',message:e.message,errorCode:e.code}));
     for(const coin of coins){
      await DB.withLease(idb,'ingest:'+coin.mint,worker,async()=>{
-      const r=await ingest({db:idb,rpc},coin,{maxTx:Number(process.env.REWARDS_INGEST_MAX_TX||Infinity)});if(r.newTx)await Logs.log(idb,{component:'indexer',eventType:'history_ingested',mint:coin.mint,message:`Ingested ${r.newTx} finalized transaction(s), ${r.newEvents} event(s); coverage ${r.complete?'complete':'INCOMPLETE'} through slot ${r.head}`,metadata:{incomplete:r.incomplete.slice(0,5)}});
+      const r=await ingest({db:idb,rpc},coin,{maxTx:Number(process.env.REWARDS_INGEST_MAX_TX||Infinity)});if(r.newTx)await Logs.log(idb,{component:'indexer',eventType:'history_ingested',mint:coin.mint,message:`History: +${r.newTx} transaction(s), ${r.newEvents} event(s); ${r.fetched}/${r.total} fetched`+(r.holders!=null?`, ${r.holders} current holder account(s)`:'')+`; coverage ${r.complete?'complete':'in progress'} through slot ${r.head}`,metadata:{incomplete:r.incomplete.slice(0,5)}});
       await heartbeat({db:idb,connection},coin).catch(e=>Logs.log(idb,{severity:'warn',component:'indexer',eventType:'heartbeat_failed',mint:coin.mint,message:e.message,errorCode:e.code||'HEARTBEAT_FAILED'}));
       await backfillSolUsd({db:idb},coin.mint).catch(e=>Logs.log(idb,{severity:'warn',component:'indexer',eventType:'sol_usd_backfill_failed',mint:coin.mint,message:e.message,errorCode:e.code}));
       if(coin.kind!=='primary'&&program)await R.scanIntake({db:idb,rpc,program},coin);   // creator-fee income vs setup rent/donations

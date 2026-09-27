@@ -61,14 +61,14 @@ test('ingest discovers token accounts, records exact in-block order, and resumes
  }finally{await db.close();}
 });
 
-test('an unavailable transaction marks coverage incomplete and never advances the cursor past it',async()=>{
+test('an unavailable transaction marks coverage incomplete and stays queued until it is fetched',async()=>{
  const {db,mint,coin}=await setup();try{
   const chain=fakeChain(),A=key(),B=key(),ta=key(),tb=key();
   const s1=chain.add(transfer({mint,from:A,fromAcc:ta,to:B,toAcc:tb,amount:5,pre:[100,0],slot:20}),[mint,ta,tb]);
   chain.down.add(s1);
   let r=await Wk.ingest({db,rpc:chain},coin);assert.equal(r.complete,false);
   let cp=(await db.query('SELECT * FROM reward_checkpoints WHERE name=$1',['history:'+mint])).rows[0];assert.equal(cp.complete,false);assert.match(JSON.stringify(cp.incident),/transaction_unavailable/);
-  assert.equal((await db.query("SELECT newest_signature FROM reward_history_cursors WHERE mint=$1 AND role='mint'",[mint])).rows[0].newest_signature,null);
+  assert.equal((await db.query('SELECT fetched_at FROM reward_history_queue WHERE mint=$1 AND signature=$2',[mint,s1])).rows[0].fetched_at,null,'listed but not fetched: kept in the queue');
   const inputs=await Wk.inputsLoader(db)(coin,1,1000+30,30);assert.equal(inputs.coverage.complete,false,'snapshot sees incomplete coverage and holds');
   chain.down.clear();r=await Wk.ingest({db,rpc:chain},coin);assert.equal(r.complete,true);assert.equal(r.newTx,1);
   cp=(await db.query('SELECT * FROM reward_checkpoints WHERE name=$1',['history:'+mint])).rows[0];assert.equal(cp.complete,true);
@@ -169,5 +169,25 @@ test('SOL/USD: Hermes sample preferred when keyed; purchases without a valid sam
   assert.equal(live.time,1_800_000_500);
   const fallback=await Wk.sampleSolUsd({db,connection:{getAccountInfoAndContext:async()=>({context:{slot:1},value:null})},hermes:async()=>{throw Object.assign(Error('down'),{code:'SOL_USD_SOURCE_UNAVAILABLE'});}});
   assert.equal(fallback,null);assert.ok((await db.query("SELECT 1 FROM reward_logs WHERE event_type='sol_usd_hermes_failed'")).rows.length);
+ }finally{await db.close();}
+});
+
+test('with current holders known, only their token accounts are crawled and each transaction is fetched once, in batches',async()=>{
+ const {db,mint,coin}=await setup();try{
+  const chain=fakeChain({reportIndex:true}),A=key(),B=key(),C=key(),ta=key(),tb=key(),tc=key();
+  chain.add(transfer({mint,from:A,fromAcc:ta,to:B,toAcc:tb,amount:40,pre:[100,0],slot:10}),[mint,ta,tb]);
+  chain.add(transfer({mint,from:A,fromAcc:ta,to:C,toAcc:tc,amount:60,pre:[60,0],slot:11}),[ta,tc]);   // A sold out
+  const orig=chain.call.bind(chain);let batches=0;
+  chain.call=async(m,p)=>{if(m==='getAccountInfo')return{value:{owner:TOKEN}};
+   if(m==='getProgramAccounts'){chain.calls[m]=(chain.calls[m]||0)+1;return[tb,tc].map(a=>({pubkey:a,account:{data:{parsed:{info:{owner:a===tb?B:C,tokenAmount:{amount:'10'}}}}}}));}
+   return orig(m,p);};
+  chain.batch=async calls=>{batches++;return Promise.all(calls.map(([m,p])=>chain.call(m,p)));};
+  const r=await Wk.ingest({db,rpc:chain},coin);
+  assert.equal(r.complete,true);assert.equal(r.newTx,2);assert.equal(r.holders,2);assert.ok(batches>=1);
+  assert.equal(chain.calls.getTransaction,2,'each transaction exactly once, although listed under several addresses');
+  const listed=(await db.query('SELECT count(*)::int n FROM reward_history_queue WHERE mint=$1',[mint])).rows[0].n;assert.equal(listed,2);
+  const crawled=chain.calls.getSignaturesForAddress;
+  assert.equal(crawled,5,'mint, curve, pool and the two current holders; the sold-out wallet is never listed');
+  const again=await Wk.ingest({db,rpc:chain},coin);assert.equal(again.newTx,0);assert.equal(chain.calls.getTransaction,2);
  }finally{await db.close();}
 });

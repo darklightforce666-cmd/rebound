@@ -55,3 +55,7 @@ tr.sev-warn td{color:#eec191}tr.sev-error td,tr.sev-critical td{color:#ffb1b1}
 .live-card h3{margin-top:22px}
 @media(max-width:540px){.live-table{font-size:13px}.token-tile.featured{padding:14px}}
 .live-card label.adm-check{display:flex;align-items:flex-start;gap:10px;margin:12px 0;color:#cfe0d4}.live-card label.adm-check input{width:18px;height:18px;flex:none;margin-top:3px;accent-color:#c5f36b}
+.history-progress{margin:12px 0 18px;padding:12px 14px;border:1px solid #2c4437;border-radius:10px;background:#101c15}
+.history-progress span{color:#dfe9e2}.history-progress small{display:block;color:#8fa197;margin-top:6px}
+.history-progress progress{width:100%;height:8px;margin-top:8px;accent-color:#c5f36b}
+.tile-loading{color:#e9dca0}
