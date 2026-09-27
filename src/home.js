@@ -19,8 +19,10 @@ const reduced=()=>typeof matchMedia==='function'&&matchMedia('(prefers-reduced-m
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const MARK='<svg viewBox="0 0 34 34" aria-hidden="true"><g transform="translate(-1 1)"><path d="M7 9v9a9 9 0 0 0 18 0V6M19 11l6-6 5 6" fill="none" stroke="#E4F0E8" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"/></g></svg>';
 const CHECK='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>';
-export const ROUND_STATE={scheduled:'Scheduled',snapshotting:'Snapshot',waiting_for_data:'Waiting for data',funded:'Reserved — paying at round end',paying:'Paying',partially_paid:'Partly paid',complete:'Settled',dry_run:'Dry run — nothing sent',skipped_no_funds:'No funds this round',skipped_no_eligible_holders:'Nobody underwater',missed:'Missed'};
-const REASON={paused:'paused',snapshot_window_closed:'snapshot window closed'};
+export const ROUND_STATE={scheduled:'Scheduled',snapshotting:'Taking snapshot',waiting_for_data:'Taking snapshot',funded:'Reserved — paying at round end',paying:'Paying',partially_paid:'Partly paid',complete:'Settled',dry_run:'Dry run — nothing sent',skipped_no_funds:'No funds this round',skipped_no_eligible_holders:'Nobody underwater',missed:'Skipped'};
+const REASON={paused:'paused',snapshot_window_closed:'snapshot window closed',price_window_incomplete:'no 15-minute price yet',history_incomplete:'loading history',history_behind_cutoff:'verifying trades',positions_behind_cutoff:'applying trades',cutoff_slot_unproven:'confirming the snapshot slot',fee_wallet_key_missing:'fee wallet key missing',dry_run:'dry run',no_funds:'no funds',budget_used_up:'budget used up',no_new_fees:'no new fees'};
+const PRE=['scheduled','snapshotting','waiting_for_data'];
+const hhmmss=t=>new Date(Number(t)*1000).toLocaleTimeString();
 
 /** Odometer count-up (Motion kit): each digit rolls into place once; plain text with reduced motion. */
 export function odometer(el,text,armOnly=false){
@@ -63,7 +65,8 @@ export async function mountHome(host,{api,realtime,esc,signal,primary}){
 
  function timing(){const cs=st.token?.cycles||[],c=cs[0];if(!c)return null;
   let len=Number(st.cfg?.policy?.cycleSeconds||1800);
-  for(let i=1;i<cs.length;i++){const dn=cs[i-1].cycle_number-cs[i].cycle_number,de=Number(cs[i-1].scheduled_end)-Number(cs[i].scheduled_end);if(dn>0&&de>0){len=de/dn;break;}}
+  // Round length: the shortest spacing between recent rounds (a round that waited at its snapshot only ever lengthens one).
+  let best=null;for(let i=1;i<Math.min(cs.length,8);i++){const dn=cs[i-1].cycle_number-cs[i].cycle_number,de=Number(cs[i-1].scheduled_end)-Number(cs[i].scheduled_end);if(dn>0&&de>0){const v=de/dn;if(best==null||v<best)best=v;}}if(best)len=best;
   const end=Number(c.scheduled_end),cut=Number(c.cutoff_time);return{c,len,end,cut,lead:Math.max(0,end-cut)};}
 
  function renderRound(){
@@ -79,7 +82,7 @@ export async function mountHome(host,{api,realtime,esc,signal,primary}){
    last='<span>Round #'+esc(settled.cycle_number)+' paid <b class="mono">'+solText(settled.paid_lamports)+' SOL</b> to '+esc(settled.paid_recipients)+' holder'+(settled.paid_recipients==1?'':'s')+'</span>'+tx(pay?.signature,'tx');}
   else if(lastDone)last='<span>Last round #'+esc(lastDone.cycle_number)+': '+esc(ROUND_STATE[lastDone.state]||lastDone.state.replaceAll('_',' '))+(lastDone.reason&&REASON[lastDone.reason]?' ('+esc(REASON[lastDone.reason])+')':'')+'. No round has paid out yet.</span>';
   else last='<span>No round has finished yet.</span>';
-  const pills=[paused?'<span class="pill amber">Paused — rounds run as a dry run, nothing is sent</span>':'',!paused&&tm?.c.mode==='dry_run'?'<span class="pill">Dry run</span>':'',tok.test?'<span class="pill">Test token</span>':''].join('');
+  const pills=[paused?'<span class="pill amber">Paused — rounds run as a dry run, nothing is sent</span>':'',!paused&&tm?.c.mode==='dry_run'?'<span class="pill">Dry run</span>':''].join('');
   const budget=tm&&tm.c.available_lamports!=null?solText(tm.c.available_lamports):null;
   box.innerHTML='<div class="round-top"><div class="ring"><svg viewBox="0 0 200 200" aria-hidden="true"><circle cx="100" cy="100" r="88" class="ring-track"/><circle cx="100" cy="100" r="88" class="ring-bar" id="ring-bar" stroke-dasharray="'+C+'" transform="rotate(-90 100 100)"/><circle cx="'+sx.toFixed(1)+'" cy="'+sy.toFixed(1)+'" r="6" class="ring-snap" id="ring-snap"/></svg>'+
    '<div class="ring-center"><span class="ring-time mono" id="ring-time">'+(tm?mmss(tm.end-now()):'—')+'</span><span class="ring-phase" id="ring-phase">'+(tm?'until payout':'no round')+'</span></div></div>'+
@@ -87,20 +90,39 @@ export async function mountHome(host,{api,realtime,esc,signal,primary}){
    '<span class="round-sub">Holder budget this round</span><span class="round-amt mono">'+(budget!=null?budget+' <small>SOL</small>':'— <small>fixed at the snapshot</small>')+'</span>'+
    '<div class="split" aria-hidden="true"><i style="width:'+h+'%"></i><i style="width:'+o+'%"></i></div><div class="split-legend"><span><b>'+h+'%</b> holders</span><span><b class="amber">'+o+'%</b> '+(tok.kind==='primary'?'dev wallet':'buy &amp; burn')+'</span></div>'+
    '<span class="round-snapnote">Snapshot at T−'+(tm?tm.lead:p.cutoffLeadSeconds||60)+' s <i class="dot amber"></i></span></div></div>'+
+   '<div class="round-proc" id="round-proc" role="status" hidden></div>'+
    (pills?'<div class="round-pills">'+pills+'</div>':'')+'<div class="round-foot">'+last+'</div>';
   clearInterval(st.timer);if(tm){tick();st.timer=setInterval(tick,1000);}
  }
+ // Snapshot state comes from the worker, never from the clock: at the cutoff the timer holds (and shows the
+ // transactions being verified) until the round's snapshot has really been taken; the payout countdown then
+ // resumes from the round's actual end.
+ function procHtml(tm){
+  const tok=st.token?.token||{},reason=tm.c.reason;
+  if(tok.history_complete===false&&Number(tok.history_total)>0){const f=Number(tok.history_fetched||0),T=Number(tok.history_total);
+   return '<b>Loading the token’s trade history</b><span>'+f.toLocaleString('en-US')+' of '+T.toLocaleString('en-US')+' transactions read</span><div class="proc-bar"><i style="width:'+Math.min(100,Math.round(f/T*100))+'%"></i></div>';}
+  if(reason&&!['history_behind_cutoff','positions_behind_cutoff','history_incomplete','cutoff_slot_unproven'].includes(reason))
+   return '<b>Waiting before the snapshot</b><span>'+esc(REASON[reason]||reason.replaceAll('_',' '))+'</span><div class="proc-bar indeterminate"><i></i></div>';
+  const pos=Number(tok.positions_time||0);
+  const pct=pos?Math.min(100,Math.max(0,Math.round((pos-(tm.cut-tm.len))/tm.len*100))):0;
+  return '<b>Verifying trades up to the snapshot</b><span>'+(pos?'Verified through '+hhmmss(pos)+' · snapshot at '+hhmmss(tm.cut):'Snapshot at '+hhmmss(tm.cut))+'</span><div class="proc-bar'+(pos>=tm.cut||!pos?' indeterminate':'')+'"><i style="width:'+pct+'%"></i></div>';
+ }
+ const refresh=()=>{st.refetch=Date.now();api('token',{query:{mint:primary},signal}).then(r=>{if(!alive())return;st.token=r;if(r.now)st.skew=r.now-Math.floor(Date.now()/1000);renderRound();renderRounds();}).catch(()=>{});};
  function tick(){
   if(!alive()){clearInterval(st.timer);return;}const tm=timing();if(!tm)return;
-  const n=now(),left=tm.end-n,bar=q('#ring-bar'),time=q('#ring-time'),phase=q('#ring-phase'),snap=q('#ring-snap');
-  if(bar)bar.style.strokeDashoffset=(552.92*Math.min(1,Math.max(0,left/tm.len))).toFixed(1);
-  if(time)time.textContent=left>0?mmss(left):'0:00';
-  const snapped=n>=tm.cut&&left>0;
-  if(phase){phase.textContent=left<=0?'settling…':snapped?'Snapshot taken':'until payout';phase.classList.toggle('amber',snapped);}
-  if(snap)snap.classList.toggle('flash',snapped);
-  const pill=q('#rounds-live');if(pill)pill.textContent=left>0?mmss(left):'settling';
-  // The next round is opened by the worker; re-read shortly after this one ends.
-  if(left<=-3&&Date.now()-st.refetch>15000){st.refetch=Date.now();api('token',{query:{mint:primary},signal}).then(r=>{if(!alive())return;st.token=r;if(r.now)st.skew=r.now-Math.floor(Date.now()/1000);renderRound();renderRounds();}).catch(()=>{});}
+  const n=now(),left=tm.end-n,bar=q('#ring-bar'),time=q('#ring-time'),phase=q('#ring-phase'),snap=q('#ring-snap'),ring=q('.ring'),proc=q('#round-proc');
+  const holding=n>=tm.cut&&PRE.includes(tm.c.state),taken=!PRE.includes(tm.c.state);
+  const shown=holding?tm.lead:Math.max(0,left);
+  if(bar)bar.style.strokeDashoffset=(552.92*Math.min(1,Math.max(0,shown/tm.len))).toFixed(1);
+  if(time)time.textContent=mmss(shown);
+  if(ring)ring.classList.toggle('holding',holding);
+  if(phase){phase.textContent=holding?'Taking snapshot…':left<=0?(['funded','paying','partially_paid'].includes(tm.c.state)?'paying…':'settling…'):taken&&n>=tm.cut?'Snapshot taken':'until payout';
+   phase.classList.toggle('teal',holding);phase.classList.toggle('amber',!holding&&taken&&n>=tm.cut&&left>0);}
+  if(snap)snap.classList.toggle('flash',holding);
+  if(proc){proc.hidden=!holding;if(holding)proc.innerHTML=procHtml(tm);}
+  const pill=q('#rounds-live');if(pill)pill.textContent=holding?'taking snapshot':left>0?mmss(left):'settling';
+  // Re-read while the snapshot is pending (every 5 s) and after the round ends (every 10 s).
+  if((holding&&Date.now()-st.refetch>5000)||(left<=-2&&Date.now()-st.refetch>10000))refresh();
  }
 
  function renderVerify(err){
@@ -123,8 +145,9 @@ export async function mountHome(host,{api,realtime,esc,signal,primary}){
  function renderRounds(){
   const box=q('#rounds-table');if(!box)return;const t=st.token;
   if(!t||t.error||!t.cycles?.length){box.innerHTML='<p class="muted">No rounds yet. The first round appears here when the token’s history is verified.</p>';return;}
-  const n=now(),rows=t.cycles.slice(0,6).map((c,i)=>{const live=i===0&&Number(c.scheduled_end)>n,pay=(t.payouts||[]).find(x=>x.cycle_number===c.cycle_number);
-   const status=live?'<span class="pill live"><i class="pulse"></i><span id="rounds-live">'+mmss(Number(c.scheduled_end)-n)+'</span></span>':pay?tx(pay.signature,ROUND_STATE[c.state]||'Settled'):'<span class="state s-'+esc(c.state)+'">'+esc(ROUND_STATE[c.state]||c.state.replaceAll('_',' '))+'</span>';
+  const n=now(),rows=t.cycles.slice(0,6).map((c,i)=>{const snapping=i===0&&PRE.includes(c.state)&&n>=Number(c.cutoff_time),live=i===0&&(Number(c.scheduled_end)>n||snapping),pay=(t.payouts||[]).find(x=>x.cycle_number===c.cycle_number);
+   const label=ROUND_STATE[c.state]||c.state.replaceAll('_',' '),why=c.state==='missed'&&c.reason&&REASON[c.reason]?' — '+REASON[c.reason]:'';
+   const status=live?'<span class="pill '+(snapping?'teal':'live')+'"><i class="pulse"></i><span id="rounds-live">'+(snapping?'taking snapshot':mmss(Number(c.scheduled_end)-n))+'</span></span>':pay?tx(pay.signature,label):'<span class="state s-'+esc(c.state)+'">'+esc(label+why)+'</span>';
    return '<tr><td class="mono">#'+esc(Number(c.cycle_number).toLocaleString('en-US'))+'</td><td class="num">'+(c.available_lamports!=null?solText(c.available_lamports):'—')+'</td><td class="num">'+(c.holders_underwater??'—')+'</td><td class="num '+(big(c.paid_lamports)>0n?'pos':'dim')+'">'+(big(c.paid_lamports)>0n?solText(c.paid_lamports)+' SOL':live?'—':'0')+'</td><td class="st">'+status+'</td></tr>';}).join('');
   box.innerHTML='<table><thead><tr><th>Round</th><th class="num">Holder budget, SOL</th><th class="num">Underwater</th><th class="num">Paid out</th><th class="st">Status</th></tr></thead><tbody>'+rows+'</tbody></table>';
  }
@@ -137,7 +160,7 @@ export async function mountHome(host,{api,realtime,esc,signal,primary}){
   box.innerHTML=list.map(t=>{const name=(t.symbol||t.name||'?').trim(),cap=usdPico(t.market_cap_usd_pico);
    const status=t.reward_status==='pair_pending'?['amber','Rounds start with pair support']:t.reward_status==='active'?['mint','Rewards active']:['amber',String(t.reward_status||'pending').replaceAll('_',' ')];
    const img=t.image_uri&&/^https:\/\//.test(t.image_uri)?'<img src="'+esc(t.image_uri)+'" alt="" loading="lazy">':t.featured?'<span class="coin-mark">'+MARK+'</span>':'<span class="coin-ph">'+esc(name.replace(/^\$/,'').slice(0,2).toUpperCase())+'</span>';
-   return '<a class="coin-card'+(t.featured?' featured':'')+'" href="#token/'+esc(t.mint)+'"><div class="coin-top">'+img+'<span class="coin-name">$'+esc(name.replace(/^\$/,''))+(t.test?' <i class="pill small">test</i>':'')+'</span><span class="coin-cap mono">'+(cap||'')+'</span></div>'+
+   return '<a class="coin-card'+(t.featured?' featured':'')+'" href="#token/'+esc(t.mint)+'"><div class="coin-top">'+img+'<span class="coin-name">$'+esc(name.replace(/^\$/,''))+'</span><span class="coin-cap mono">'+(cap||'')+'</span></div>'+
     '<div class="coin-stats"><span><b class="mono">'+solText(t.paid_lamports)+'</b> SOL paid</span><span><b class="mono">'+esc(t.paid_recipients||0)+'</b> holders paid</span></div>'+
     '<span class="coin-status '+status[0]+'"><i></i>'+esc(status[1])+'</span></a>';}).join('');
  }
@@ -166,17 +189,17 @@ function flowDiagram(h,o){
   node(980,26,300,88,h+'%','Underwater holders','mint')+node(980,246,300,88,o+'%','Buy &amp; burn REBOUND<span class="embers" aria-hidden="true"><i></i><i></i><i></i></span>','amber')+'</div>'+
   '<ol class="flow-list"><li><span>01</span>Trades on Pump.fun pay creator fees</li><li><span>02</span>Fees land in the token’s own fee wallet</li><li><span class="mint">'+h+'%</span>Underwater holders, by remaining loss</li><li><span class="amber">'+o+'%</span>Buys and burns REBOUND</li></ol>';
 }
-const WATERLINE_ART='<svg viewBox="0 0 640 440" preserveAspectRatio="xMidYMid slice"><rect x="0" y="190" width="640" height="250" fill="#0E2A33" opacity=".55"/><line x1="0" y1="190" x2="640" y2="190" stroke="#3AA7C9" stroke-width="2" stroke-dasharray="8 8"/>'+
- '<path d="M20 300 C90 290 130 150 200 170 C250 184 250 120 300 150 C360 186 380 320 450 300 C490 290 505 262 540 268" fill="none" stroke="#EAF5EE" stroke-width="3" stroke-linecap="round"/><circle cx="258" cy="156" r="7" fill="#050F0B" stroke="#EAF5EE" stroke-width="3"/>'+
- '<line x1="540" y1="190" x2="540" y2="268" stroke="#FFB547" stroke-width="2"/><line x1="532" y1="190" x2="548" y2="190" stroke="#FFB547" stroke-width="2"/><circle cx="540" cy="268" r="9" fill="#FFB547"/></svg>'+
- '<div class="wl-wave"><svg viewBox="0 0 800 14"><path d="M0 7 Q30 0 60 7 T120 7 T180 7 T240 7 T300 7 T360 7 T420 7 T480 7 T540 7 T600 7 T660 7 T720 7 T780 7" fill="none" stroke="#3AA7C9" stroke-width="2" opacity=".5"/></svg></div>'+
+const WATERLINE_ART='<svg viewBox="0 0 640 440" preserveAspectRatio="xMidYMid slice"><rect x="0" y="190" width="640" height="250" fill="#7FD8E6" fill-opacity=".07" opacity=".55"/><line x1="0" y1="190" x2="640" y2="190" stroke="#7FD8E6" stroke-width="2" stroke-dasharray="8 8"/>'+
+ '<path d="M20 300 C90 290 130 150 200 170 C250 184 250 120 300 150 C360 186 380 320 450 300 C490 290 505 262 540 268" fill="none" stroke="#F4EFE3" stroke-width="3" stroke-linecap="round"/><circle cx="258" cy="156" r="7" fill="#06231B" stroke="#F4EFE3" stroke-width="3"/>'+
+ '<line x1="540" y1="190" x2="540" y2="268" stroke="#FF7A45" stroke-width="2"/><line x1="532" y1="190" x2="548" y2="190" stroke="#FF7A45" stroke-width="2"/><circle cx="540" cy="268" r="9" fill="#FF7A45"/></svg>'+
+ '<div class="wl-wave"><svg viewBox="0 0 800 14"><path d="M0 7 Q30 0 60 7 T120 7 T180 7 T240 7 T300 7 T360 7 T420 7 T480 7 T540 7 T600 7 T660 7 T720 7 T780 7" fill="none" stroke="#7FD8E6" stroke-width="2" opacity=".5"/></svg></div>'+
  '<span class="wl-tag entry">YOUR ENTRY</span><span class="wl-tag now">now</span><span class="wl-tag gap">remaining loss</span><i class="wl-lift"></i><i class="wl-lift"></i><i class="wl-lift"></i>';
 
 // ---------------- wallet check ----------------
 export async function mountCheck(host,{api,esc,signal,isAddress,chain,connected}){
  const form=host.querySelector('#check-form'),input=host.querySelector('#check-addr'),err=host.querySelector('#check-err'),panel=host.querySelector('#check-panel'),btn=host.querySelector('#check-go');
  let run=0;
- const idle=()=>{panel.innerHTML='<div class="check-idle"><div class="wl-mini" aria-hidden="true"><div class="wl-mini-water"></div><div class="wl-mini-wave"><svg viewBox="0 0 480 14"><path d="M0 7 Q30 0 60 7 T120 7 T180 7 T240 7 T300 7 T360 7 T420 7 T480 7" fill="none" stroke="#3AA7C9" stroke-width="2"/></svg></div><svg viewBox="0 0 360 180" class="wl-mini-line"><path d="M20 60 C80 50 110 120 170 130 C220 138 250 110 290 118 L340 112" fill="none" stroke="#EAF5EE" stroke-width="3" stroke-linecap="round" stroke-dasharray="4 8"/></svg></div>'+
+ const idle=()=>{panel.innerHTML='<div class="check-idle"><div class="wl-mini" aria-hidden="true"><div class="wl-mini-water"></div><div class="wl-mini-wave"><svg viewBox="0 0 480 14"><path d="M0 7 Q30 0 60 7 T120 7 T180 7 T240 7 T300 7 T360 7 T420 7 T480 7" fill="none" stroke="#7FD8E6" stroke-width="2"/></svg></div><svg viewBox="0 0 360 180" class="wl-mini-line"><path d="M20 60 C80 50 110 120 170 130 C220 138 250 110 290 118 L340 112" fill="none" stroke="#F4EFE3" stroke-width="3" stroke-linecap="round" stroke-dasharray="4 8"/></svg></div>'+
   '<h3>Paste a wallet to see its waterline</h3><p>We show what it paid for the REBOUND tokens it still holds, what they are worth now, what it has already received — and what is left.</p></div>';};
  idle();
  const setBtn=s=>{btn.dataset.state=s;btn.disabled=s==='busy';btn.querySelector('.press-label').textContent=s==='busy'?'Checking…':s==='done'?'Done':'Check wallet';};
@@ -201,7 +224,7 @@ export async function mountCheck(host,{api,esc,signal,isAddress,chain,connected}
   if(id!==run)return;
   // 2. REBOUND tokens: held ones and ones this wallet was ever awarded in.
   const found=await step(async()=>{
-   const [prod,test,aw]=await Promise.all([api('tokens',{signal}).catch(()=>({tokens:[]})),api('tokens',{query:{view:'test'},signal}).catch(()=>({tokens:[]})),api('wallet-rewards',{query:{wallet:addr},signal}).catch(()=>({awards:[]}))]);
+   const [prod,test,aw]=await Promise.all([api('tokens',{signal}).catch(()=>({tokens:[]})),Promise.resolve({tokens:[]}),api('wallet-rewards',{query:{wallet:addr},signal}).catch(()=>({awards:[]}))]);
    const all=new Map();for(const t of [...prod.tokens,...test.tokens])all.set(t.mint,t);
    const held=new Set((w.d?.tokens||[]).map(t=>t.mint)),awarded=new Set((aw.awards||[]).map(a=>a.mint));
    const mine=[...all.values()].filter(t=>held.has(t.mint)||awarded.has(t.mint));

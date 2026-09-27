@@ -43,23 +43,24 @@ function tokenCard(mint){return '<section class="card live-card"><div class="liv
 // rewards bundle (ReboundV3.mount → home.js). Empty or unavailable data is shown as such.
 const MARK_PATH='<svg viewBox="0 0 34 34" aria-hidden="true"><g transform="translate(-1 1)"><path d="M7 9v9a9 9 0 0 0 18 0V6M19 11l6-6 5 6" fill="none" stroke="#E4F0E8" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"/></g></svg>';
 function explore(){return '<div id="home" class="home">'+
- '<section class="home-hero"><div class="home-hero-copy"><h1>Bought the top?<br><span>Get bounced back.</span></h1>'+
+ '<section class="home-hero"><div class="home-hero-copy"><h1>Bought the top?<br><em>Get bounced back.</em></h1>'+
  '<p id="home-lede">85% of creator fees go to holders who are underwater. Every round, in SOL.</p>'+
  '<div class="home-actions"><a class="btn-primary lg" href="#check">Check my wallet <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a><a class="btn-ghost lg" href="#launch">Launch a token</a></div>'+
  '<button type="button" class="ca-chip" id="home-ca" data-action="copy-ca" data-copy="'+esc(primary)+'" aria-label="Copy the REBOUND token contract address"><span class="ca-mark">'+MARK_PATH+'</span><b id="home-ca-name">'+esc(siteName?'$'+siteName:'$REBOUND')+'</b><span class="ca-label">CA</span><span class="ca-addr mono">'+esc(primary.slice(0,6)+'…'+primary.slice(-6))+'</span><span class="ca-icon" aria-hidden="true"></span></button></div>'+
  '<div class="round-wrap"><article class="round-card" id="round-card" aria-live="polite"><p class="round-loading">Reading the current round…</p></article><div class="payout-toast-slot" id="payout-toast"></div></div></section>'+
- '<section class="home-section"><h2>Don’t trust. Verify.</h2><div class="verify-grid" id="verify-grid"><p class="muted">Loading on-chain totals…</p></div></section>'+
- '<section class="home-section" id="flow"><h2>Follow every lamport.</h2><div class="flow" id="flow-diagram"></div><p class="flow-note" id="flow-note"></p></section>'+
- '<section class="home-section waterline-section"><div class="waterline-copy"><h2>Below the waterline?<br>You’re first in line.</h2><p>Each round’s holder budget is shared in proportion to remaining loss — and never pays more than the loss.</p>'+
+ '<div class="waterline-band" aria-hidden="true"><i></i><i></i><span>THE WATERLINE</span></div>'+
+ '<section class="home-section"><h2>Don’t trust. <em>Verify.</em></h2><div class="verify-grid" id="verify-grid"><p class="muted">Loading on-chain totals…</p></div></section>'+
+ '<section class="home-section" id="flow"><h2>Follow every <em>lamport.</em></h2><div class="flow" id="flow-diagram"></div><p class="flow-note" id="flow-note"></p></section>'+
+ '<section class="home-section waterline-section"><div class="waterline-copy"><h2>Below the waterline?<br>You’re <em>first in line.</em></h2><p>Each round’s holder budget is shared in proportion to remaining loss — and never pays more than the loss.</p>'+
  '<div class="formula"><div><span>SOL paid for tokens still held</span><i>cost</i></div><div><span>− their value now <small>(higher of spot and the 15-min average)</small></span><i>value</i></div><div><span>− compensation already received</span><i>paid</i></div><hr><div class="formula-total"><span>Remaining loss</span><i>loss</i></div></div>'+
  '<a class="btn-primary" href="#check">Calculate mine</a></div><div class="waterline-art" aria-hidden="true"></div></section>'+
- '<section class="home-section" id="rounds"><div class="section-row"><h2>Every round, on the record.</h2><a class="proof" id="rounds-all" href="#token/'+esc(primary)+'" data-proof="Opens the token page · every payout with its transaction">Full history ↗</a></div><div class="rounds-table" id="rounds-table"><p class="muted">Loading rounds…</p></div></section>'+
- '<section class="home-section" id="coins"><h2>Coins on rebound</h2><div class="coin-grid" id="coin-grid"><p class="muted">Loading verified tokens…</p></div></section>'+
- '<section class="home-section"><div class="cta-band"><h2>Launch a coin whose fees<br>fight for its holders.</h2><a class="btn-primary lg" href="#launch">Launch a token</a><span class="cta-mark" aria-hidden="true">'+MARK_PATH+'</span></div></section>'+
+ '<section class="home-section" id="rounds"><div class="section-row"><h2>Every round, on the <em>record.</em></h2><a class="proof" id="rounds-all" href="#token/'+esc(primary)+'" data-proof="Opens the token page · every payout with its transaction">Full history ↗</a></div><div class="rounds-table" id="rounds-table"><p class="muted">Loading rounds…</p></div></section>'+
+ '<section class="home-section" id="coins"><h2>Coins on <em>rebound</em></h2><div class="coin-grid" id="coin-grid"><p class="muted">Loading verified tokens…</p></div></section>'+
+ '<section class="home-section"><div class="cta-band"><h2>Launch a coin whose fees<br><em>fight for its holders.</em></h2><a class="btn-primary lg" href="#launch">Launch a token</a><span class="cta-mark" aria-hidden="true">'+MARK_PATH+'</span></div></section>'+
  '</div>';}
 // Wallet check: read-only analysis of any wallet from public data (filled by home.js).
 function check(addr){const a=D.isAddress(addr)?addr:'';return '<div id="check" class="check">'+
- '<div class="check-side"><a class="proof back" href="#explore">← Back to home</a><span class="eyebrow-mono teal">WALLET CHECK</span><h1>Are you<br>underwater?</h1>'+
+ '<div class="check-side"><a class="proof back" href="#explore">← Back to home</a><span class="eyebrow-mono teal">WALLET CHECK</span><h1>Are you<br><em>underwater?</em></h1>'+
  '<p>Paste any Solana wallet. We read its REBOUND positions — what it paid for the tokens it still holds, what they are worth now, what it has already received — and what the next round could send it.</p>'+
  '<form id="check-form" class="check-form" novalidate><label for="check-addr">Wallet address</label><input id="check-addr" class="field mono" value="'+esc(a||wallet.address||'')+'" placeholder="Paste a Solana address" spellcheck="false" autocomplete="off" maxlength="44"><span id="check-err" class="field-err" role="status"></span>'+
  '<button type="submit" class="btn-primary lg press" id="check-go"><span class="press-label">Check wallet</span></button>'+(wallet.address?'':'<button type="button" class="text-button mint" data-action="wallet">Or connect your wallet →</button>')+'</form>'+

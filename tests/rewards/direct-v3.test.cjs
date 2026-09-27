@@ -40,7 +40,8 @@ async function world({mode='mainnet_test',holders=3,budget=5n*SOL,key=true,walle
  if(key){const s=await Signer.importSigner(db,{role:'primary_dev',secretText:JSON.stringify(Array.from(dev.secretKey)),expectedAddress:dev.publicKey.toBase58(),env});
   await db.query("UPDATE reward_funding_wallets SET mode='automatic',signer=$2 WHERE mint=$1",[mint,s.id]);}
  await db.query("INSERT INTO reward_public_tokens(mint,namespace,kind,reward_status,pinned,test) VALUES($1,'mainnet_test','primary','active',true,true)",[mint]);
- const inputs=async(coinRow,n,cutoff,slot)=>({credits:await require('../../server/rewards/worker-v3.cjs').loadCredits(db,mint,slot),events:c.events,coverage:{complete:true,throughSlot:10_000},excluded:new Set(['CurvePDA']),fx:()=>null,solSeries:[]});
+ let verified=10_000;
+ const inputs=async(coinRow,n,cutoff,slot)=>({credits:await require('../../server/rewards/worker-v3.cjs').loadCredits(db,mint,slot),events:c.events,coverage:{complete:true,throughSlot:verified},excluded:new Set(['CurvePDA']),fx:()=>null,solSeries:[]});
  const ports={db,connection:conn,worker:'w1',inputs,env,cutoffSlot:async t=>1000+(t-T0),now:async()=>conn.getBlockTime(),signer:fw=>Signer.load(db,fw.signer,{env})};
  if(MODE==='positions'){
   await storeEvents(db,mint,c.events);
@@ -51,7 +52,8 @@ async function world({mode='mainnet_test',holders=3,budget=5n*SOL,key=true,walle
  }
  const coin=async()=>(await db.query('SELECT * FROM reward_coins WHERE mint=$1',[mint])).rows[0];
  const tick=async(k=3)=>{let r;for(let i=0;i<k;i++){conn.finalizeAll();r=await D.tick(ports,await coin());}return r;};
- return{conn,db,ports,mint,dev,people,tick,dir,cycle:async n=>(await db.query('SELECT * FROM reward_cycles WHERE id=$1',[`${mint}:${n}`])).rows[0],
+ const setVerified=async v=>{verified=v;if(MODE==='positions')await db.query('UPDATE reward_checkpoints SET through_slot=$2 WHERE name=$1',['verified:'+mint,v]);};
+ return{conn,db,ports,mint,dev,people,tick,dir,setVerified,cycle:async n=>(await db.query('SELECT * FROM reward_cycles WHERE id=$1',[`${mint}:${n}`])).rows[0],
   awards:async n=>(await db.query('SELECT * FROM reward_awards WHERE cycle_id=$1 ORDER BY leaf_index',[`${mint}:${n}`])).rows,done:async()=>{await db.close();fs.rmSync(dir,{recursive:true,force:true});}};
 }
 
@@ -193,5 +195,39 @@ test('85/15: without a budget, a round pays at most 85 % of the fees that reache
   assert.equal((await w.cycle(1)).state,'funded');assert.ok(total<=17n*SOL/10n&&total>=17n*SOL/10n-3n,'85 % of 2 SOL: '+total);
   const after=await D.available(w.db,w.conn,(await w.db.query('SELECT * FROM reward_funding_wallets WHERE mint=$1',[w.mint])).rows[0]);
   assert.ok(after.lamports<=3n,'the holder share is used up until new fees arrive');
+ }finally{await w.done();}
+});
+
+test('a round whose history is still catching up waits at the snapshot — never missed — and the schedule follows it',async()=>{
+ const w=await world();try{
+  await w.setVerified(1050);                                                        // verified only through slot 1050; round 1 cuts off at slot 1090
+  await w.tick(1);w.conn.setTime(T0+90,1500);await w.tick();
+  let r1=await w.cycle(1);assert.equal(r1.state,'waiting_for_data');assert.equal(r1.reason,'history_behind_cutoff');
+  w.conn.setTime(T0+400,1600);await w.tick();                                      // a whole round later: still waiting, nothing opened after it
+  r1=await w.cycle(1);assert.equal(r1.state,'waiting_for_data','catching up never drops a round');
+  assert.equal(await w.cycle(2),undefined,'the next round waits for this one');
+  await w.setVerified(10_000);await w.tick();                                       // the data arrives: snapshot at the ORIGINAL cutoff slot
+  r1=await w.cycle(1);assert.equal(r1.state,'funded');assert.equal(Number(r1.cutoff_slot),1090);
+  assert.equal(Number(r1.due_at),T0+400+30,'payout keeps the full 30 s lead after the late snapshot');assert.equal(Number(r1.scheduled_end),T0+120,'the schedule itself never changes');
+  const pc=(await w.db.query('SELECT scheduled_end FROM reward_public_cycles WHERE mint=$1 AND cycle_number=1',[w.mint])).rows[0];assert.equal(Number(pc.scheduled_end),T0+430);
+  w.conn.setTime(T0+420,1610);await w.tick();assert.equal(w.conn.sent,0,'not paid before its new end');
+  w.conn.setTime(T0+430,1620);await w.tick(4);
+  assert.equal((await w.cycle(1)).state,'complete');
+  const r2=await w.cycle(2);assert.ok(r2,'round 2 opened when round 1 ended');
+  assert.equal(Number(r2.cycle_start),T0+430);assert.equal(Number(r2.scheduled_end),T0+550);assert.equal(Number(r2.cutoff_time),T0+520);
+ }finally{await w.done();}
+});
+
+test('a snapshot a few seconds after the cutoff keeps the schedule (no drift); a stale waiting round of a stopped token is closed',async()=>{
+ const w=await world();try{
+  await w.tick(1);w.conn.setTime(T0+95,1500);await w.tick();                        // 5 s after the cutoff: the usual processing delay
+  const r1=await w.cycle(1);assert.equal(r1.state,'funded');assert.equal(Number(r1.due_at),T0+120,'payout stays at the scheduled end');
+  w.conn.setTime(T0+120,1600);await w.tick(4);
+  const r2=await w.cycle(2);assert.equal(Number(r2.cycle_start),T0+120);assert.equal(Number(r2.cutoff_time),T0+210);
+  await w.setVerified(1100);w.conn.setTime(T0+215,1700);await w.tick();            // round 2 waits for data...
+  assert.equal((await w.cycle(2)).state,'waiting_for_data');
+  await w.db.query("UPDATE reward_coins SET status='paused' WHERE mint=$1",[w.mint]);
+  w.conn.setTime(T0+400,1800);await w.tick();                                       // ...and the token stops: closed, never paid later
+  const r2b=await w.cycle(2);assert.equal(r2b.state,'missed');assert.equal(r2b.reason,'token_inactive');
  }finally{await w.done();}
 });

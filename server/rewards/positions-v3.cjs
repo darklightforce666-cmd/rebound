@@ -60,10 +60,13 @@ async function creditsBetween(db,mint,from,to){
 async function capTime(db,coin,now=Math.floor(Date.now()/1000)){
  let cap=Number((await db.query('SELECT min(cutoff_time) m FROM reward_cycles WHERE mint=$1 AND snapshot_hash IS NULL AND state=ANY($2)',[coin.mint,OPEN])).rows[0].m||0)||null;
  const anchor=Number(coin.schedule_anchor||0),len=Number(coin.cycle_seconds||0),lead=Number(coin.cutoff_lead_seconds||0);
- if(coin.status==='active'&&anchor&&len&&now>=anchor){   // the current round before its row exists
-  const n=Math.floor((now-anchor)/len)+1;
-  for(const k of [n,n+1]){if((await db.query('SELECT 1 FROM reward_cycles WHERE mint=$1 AND cycle_number=$2',[coin.mint,k])).rows.length)continue;
-   const cut=anchor+k*len-lead;cap=cap==null?cut:Math.min(cap,cut);break;}
+ if(cap==null&&coin.status==='active'&&anchor&&len&&now>=anchor){
+  // The next round before its row exists. Rounds run one after another: it starts when the latest round
+  // actually ends (its payout time), or on the anchor grid when there is none / after an outage.
+  const last=(await db.query('SELECT scheduled_end,due_at FROM reward_cycles WHERE mint=$1 ORDER BY cycle_number DESC LIMIT 1',[coin.mint])).rows[0];
+  const end=last?Math.max(Number(last.scheduled_end),Number(last.due_at||0)):null;
+  let start;if(end!=null&&now-end<len)start=end;else{const n=Math.floor((now-anchor)/len)+1;start=anchor+(n-1)*len;}
+  cap=start+len-lead;
  }
  return cap;
 }

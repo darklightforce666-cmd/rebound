@@ -8,6 +8,11 @@
 //   scheduled → [waiting_for_data] → funded (awards reserved) → paying → complete
 //                                   ↘ dry_run (execution is dry run or the key is missing: nothing reserved)
 //                                   ↘ skipped_no_funds / skipped_no_eligible_holders / missed
+// Rounds run one after another (owner decision 2026-09-27): a round whose snapshot is still catching up with
+// the chain (history or positions behind its cutoff) is never dropped — it waits at the snapshot, the snapshot
+// is taken at its cutoff slot once the data is verified, the payout follows `cutoffLead` seconds after that,
+// and the next round starts when this one ends. Only a round whose snapshot can never be computed for its
+// cutoff (no 15-minute price yet, a mint-level parser hold) is closed after a full round, as before.
 // Guarantees:
 //  * One worker per mint (row lease); a round's awards are fixed once and never recomputed.
 //  * Every batch goes through transport-v3: execution gate + spend caps, signed bytes persisted before
@@ -21,6 +26,14 @@ const b=x=>BigInt(String(x??0).split('.')[0]);
 const BATCH=16,FEE_RESERVE=10_000_000n;
 const DONE=['complete','skipped_no_funds','skipped_no_eligible_holders','missed','expired','failed_action_required','dry_run'];
 const cycleId=(mint,n)=>`${mint}:${n}`;
+const PRE=['scheduled','snapshotting','waiting_for_data'];
+// A round ends at its payout time: the scheduled end, or later when its snapshot waited for data.
+const actualEnd=row=>Math.max(Number(row.scheduled_end),Number(row.due_at||0));
+// Waits that end on their own as the indexer and the projection catch up with the chain.
+const CATCHING_UP=new Set(['cutoff_slot_unproven','history_incomplete','history_behind_cutoff','positions_behind_cutoff']);
+// ...but never forever: a round still catching up after this long is closed (an error for the operator), so one
+// unreadable transaction or a pruned RPC cannot stop a token's rounds for good.
+const maxWait=s=>Math.max(4*s.len,3600);
 
 function schedule(coin){const p=P3.policy(coin.policy_version);return{anchor:Number(coin.schedule_anchor),len:Number(p.cycleSeconds),lead:Number(p.cutoffLeadSeconds)};}
 function cycleAt(s,t){if(!s.anchor||t<s.anchor)return null;return Math.floor((t-s.anchor)/s.len)+1;}
@@ -90,14 +103,28 @@ async function tick(ports,coin){
   const s=schedule(coin);if(!s.anchor)return{state:'not_started'};
   // A token that is not active (e.g. paused by a funding incident) still pays awards it already funded, but
   // takes no new snapshot and opens no round.
-  if(coin.status!=='active'){const pay=(await db.query("SELECT * FROM reward_cycles WHERE mint=$1 AND state IN ('funded','paying','partially_paid','retrying') ORDER BY cycle_number",[coin.mint])).rows;
+  if(coin.status!=='active'){
+   // Rounds that were waiting for their snapshot when the token stopped are closed once a round has passed:
+   // a token resuming later never pays on a stale snapshot.
+   for(const r of (await db.query('SELECT * FROM reward_cycles WHERE mint=$1 AND state=ANY($2) AND cutoff_time<=$3',[coin.mint,PRE,String(t-s.len)])).rows)
+    await setState(db,r.id,'missed',{reason:'token_inactive'},{mint:r.mint,cycle:Number(r.cycle_number),message:`Round ${r.cycle_number} closed: the token is not active; nothing was reserved`});
+   const pay=(await db.query("SELECT * FROM reward_cycles WHERE mint=$1 AND state IN ('funded','paying','partially_paid','retrying') ORDER BY cycle_number",[coin.mint])).rows;
    const results=[];for(const row of pay)results.push(await advance(ports,coin,s,row,t,renew));return{state:'inactive',now:t,results};}
   const fw=await liveWallet(db,coin.mint);
   const open=(await db.query(`SELECT * FROM reward_cycles WHERE mint=$1 AND state<>ALL($2) ORDER BY cycle_number`,[coin.mint,DONE])).rows;
   const results=[];for(const row of open)results.push(await advance(ports,coin,s,row,t,renew));
-  const n=cycleAt(s,t);
-  if(n&&!(await db.query('SELECT 1 FROM reward_cycles WHERE id=$1',[cycleId(coin.mint,n)])).rows.length){
-   const w=times(s,n);
+  // The next round opens only when the previous one has taken its snapshot and ended; it starts where the
+  // previous one ended (after a long outage: the current slot of the schedule — never retroactive rounds).
+  const last=(await db.query('SELECT * FROM reward_cycles WHERE mint=$1 ORDER BY cycle_number DESC LIMIT 1',[coin.mint])).rows[0];
+  let n=null,w=null;
+  if(!last){n=cycleAt(s,t);if(n)w=times(s,n);}
+  else if(!PRE.includes(last.state)&&t>=actualEnd(last)){
+   const prevEnd=actualEnd(last);
+   if(t-prevEnd<s.len){n=Number(last.cycle_number)+1;w={start:prevEnd,end:prevEnd+s.len,cutoff:prevEnd+s.len-s.lead};}
+   else{const g=cycleAt(s,t),gw=g?times(s,g):null;n=Number(last.cycle_number)+1;
+    // After an outage: back on the anchor grid when that slot follows the last round; otherwise a fresh round from now.
+    if(g&&g>=n&&gw.start>=prevEnd){n=g;w=gw;}else w={start:t,end:t+s.len,cutoff:t+s.len-s.lead};}}
+  if(n&&w&&!(await db.query('SELECT 1 FROM reward_cycles WHERE id=$1',[cycleId(coin.mint,n)])).rows.length){
    await db.query(`INSERT INTO reward_cycles(id,deployment,mint,cycle_number,namespace,policy_version,config_version,anchor,cycle_start,scheduled_end,cutoff_time,state,due_at,funding_mode,funding_wallet)
     VALUES($1,NULL,$2,$3,$4,$5,0,$6,$7,$8,$9,'scheduled',$8,'automatic',$10) ON CONFLICT DO NOTHING`,[cycleId(coin.mint,n),coin.mint,n,coin.namespace,coin.policy_version,String(s.anchor),String(w.start),String(w.end),String(w.cutoff),fw?.id||null]);
    await publishCycle(db,cycleId(coin.mint,n));
@@ -112,9 +139,13 @@ async function advance(ports,coin,s,row,t,renew){
  const {db}=ports,n=Number(row.cycle_number),cutoff=Number(row.cutoff_time),due=Number(row.due_at),ctx={mint:row.mint,cycle:n};
  switch(row.state){
   case'scheduled':case'snapshotting':case'waiting_for_data':{
-   if(t>=cutoff+s.len){await setState(db,row.id,'missed',{reason:'snapshot_window_closed'},{...ctx,message:`Round ${n} missed: no complete snapshot before the next round; nothing was reserved`});return{cycle:n,state:'missed'};}
+   // Only a wait that cannot end for this cutoff closes the round (after a full round); catching up never does.
+   if(t>=cutoff+s.len&&row.state==='waiting_for_data'&&row.reason&&!CATCHING_UP.has(row.reason)){
+    await setState(db,row.id,'missed',{},{...ctx,message:`Round ${n} closed without a snapshot: ${row.reason.replaceAll('_',' ')} (this cannot resolve for its cutoff); nothing was reserved`});return{cycle:n,state:'missed',reason:row.reason};}
+   if(t>=cutoff+maxWait(s)&&PRE.includes(row.state)){
+    await setState(db,row.id,'missed',{reason:'data_wait_exceeded'},{...ctx,severity:'error',message:`Round ${n} closed: its snapshot data was still not verified ${Math.round((t-cutoff)/60)} min after the cutoff (${(row.reason||'waiting').replaceAll('_',' ')}); nothing was reserved — check the indexer`});return{cycle:n,state:'missed',reason:'data_wait_exceeded'};}
    if(t<cutoff)return{cycle:n,state:row.state};
-   const slot=await ports.cutoffSlot(cutoff);if(slot==null){if(row.state!=='waiting_for_data')await setState(db,row.id,'waiting_for_data',{reason:'cutoff_slot_unproven'},{...ctx,message:null});return{cycle:n,state:'waiting_for_data'};}
+   const slot=await ports.cutoffSlot(cutoff);if(slot==null){if(row.state!=='waiting_for_data'||row.reason!=='cutoff_slot_unproven')await setState(db,row.id,'waiting_for_data',{reason:'cutoff_slot_unproven'},{...ctx,message:null});return{cycle:n,state:'waiting_for_data'};}
    // Ready-made positions are brought exactly to the cutoff slot; a round never pays on history that is not
    // verified through its cutoff — it waits (and is missed, paying nothing, if that takes a whole round).
    if(usePositions(ports,coin)){
@@ -123,14 +154,14 @@ async function advance(ports,coin,s,row,t,renew){
      if(row.state!=='waiting_for_data'||row.reason!==reason)await setState(db,row.id,'waiting_for_data',{reason},{...ctx,message:`Round ${n} waiting for data: ${reason.replaceAll('_',' ')} (verified through slot ${pr.verifiedSlot}, positions at ${pr.appliedSlot}, cutoff slot ${slot})`});
      return{cycle:n,state:'waiting_for_data',reason};}
    }
-   return snapshot(ports,coin,row,slot);
+   return snapshot(ports,coin,row,slot,t,s);
   }
   case'funded':case'paying':case'partially_paid':case'retrying':return t>=due?pay(ports,coin,row,renew):{cycle:n,state:row.state};
   default:return{cycle:n,state:row.state};
  }
 }
 
-async function snapshot(ports,coin,row,slot){
+async function snapshot(ports,coin,row,slot,t=null,s=null){
  const {db,connection}=ports,n=Number(row.cycle_number),cutoff=Number(row.cutoff_time),ctx={mint:row.mint,cycle:n};
  // Always the token's CURRENT fee wallet: a round never snapshots against a retired one.
  const fw=await liveWallet(db,row.mint);
@@ -155,6 +186,13 @@ async function snapshot(ports,coin,row,slot){
    WHERE id=$1 AND snapshot_hash IS NULL AND state IN ('scheduled','snapshotting','waiting_for_data')`,
    [row.id,slot,snap.snapshotHash,snap.price?.solUsdPico||null,snap.price?.referenceQ18||null,snap.holderReserve||'0',snap.budget||'0',snap.total||'0',snap.totalLossUsd||'0',snap.awards.length,fw?.id||null,state,reason,live?'direct':null]);
   if(!(u.rowCount??u.affectedRows))return;applied=true;
+  // A snapshot taken after its cutoff (the round waited for data) keeps the full lead before the payout:
+  // the round's end moves by the wait, and so does the start of the next round.
+  if(t!=null&&s&&t>=Number(row.scheduled_end)){const end=t+s.lead;   // only a round that waited through its whole lead
+   // The schedule itself is immutable (trigger): the round's actual end is its payout time (due_at).
+   if(end>Number(row.scheduled_end)){await tx.query('UPDATE reward_cycles SET due_at=$2 WHERE id=$1',[row.id,String(end)]);
+    await tx.query('UPDATE reward_public_cycles SET scheduled_end=$3 WHERE mint=$1 AND cycle_number=$2',[row.mint,n,String(end)]);
+    await tx.query('UPDATE reward_public_tokens SET next_cycle_at=$2 WHERE mint=$1',[row.mint,String(end)]);}}
   const pos=snap.positions.map(p=>({owner:p.owner,outcome:p.outcome,reason:p.reason,quantity_raw:p.quantity,cost_usd:p.costUsd,value_usd:p.valueUsd,credit_usd:p.creditUsd,loss_usd:p.lossUsd,unrecognized_raw:p.unrecognized,lots:p.lots}));
   await tx.query(`INSERT INTO reward_snapshot_positions(cycle_id,owner,outcome,reason,quantity_raw,cost_usd,value_usd,credit_usd,loss_usd,unrecognized_raw,lots)
    SELECT $1,owner,outcome,reason,quantity_raw,cost_usd,value_usd,credit_usd,loss_usd,unrecognized_raw,lots FROM jsonb_to_recordset($2::jsonb) AS x(owner text,outcome text,reason text,quantity_raw numeric,cost_usd numeric,value_usd numeric,credit_usd numeric,loss_usd numeric,unrecognized_raw numeric,lots jsonb) ON CONFLICT DO NOTHING`,[row.id,JSON.stringify(pos)]);
@@ -207,7 +245,7 @@ async function pay(ports,coin,row,renew=async()=>{}){
  }
  // 2. Long-deferred awards are released (their credits stop counting, the budget is freed).
  const age=Number(coin.cycle_seconds||P3.policy(coin.policy_version).cycleSeconds)*DEFER_ROUNDS;
- if(Number(await ports.now())>Number(row.scheduled_end)+age){
+ if(Number(await ports.now())>actualEnd(row)+age){
   const rel=(await db.query("UPDATE reward_awards SET state='released' WHERE cycle_id=$1 AND state='deferred_rent' RETURNING leaf_index",[row.id])).rows;
   if(rel.length)await log(db,{severity:'warn',eventType:'awards_released',mint:row.mint,cycleId:row.id,message:`Round ${n}: ${rel.length} award(s) released — the recipient account could not receive SOL for ${DEFER_ROUNDS} rounds`});
  }

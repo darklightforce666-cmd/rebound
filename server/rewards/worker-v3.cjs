@@ -78,7 +78,10 @@ async function ingest({db,rpc},coin,{maxTx=Infinity,batch=20,parallel=4,holderCh
  // Due when never done, incomplete, or a round's snapshot time passed since the last reconciliation
  // (so each snapshot has one right after it). holderCheckSeconds is a floor between checks.
  const nowS=Math.floor(Date.now()/1000),anchor=Number(coin.schedule_anchor||0),len=Number(coin.cycle_seconds||0),lead=Number(coin.cutoff_lead_seconds||0);
- let lastCutoff=0;if(anchor&&len){const n=Math.floor((nowS-anchor)/len)+1;lastCutoff=anchor+n*len-lead;if(lastCutoff>nowS)lastCutoff-=len;}
+ // The latest cutoff that has passed, from the rounds themselves (rounds run one after another, so their
+ // times follow the actual rounds rather than a fixed grid).
+ let lastCutoff=Number((await db.query('SELECT max(cutoff_time) c FROM reward_cycles WHERE mint=$1 AND cutoff_time<=$2',[mint,String(nowS)])).rows[0]?.c||0);
+ if(!lastCutoff&&anchor&&len){const n=Math.floor((nowS-anchor)/len)+1;lastCutoff=anchor+n*len-lead;if(lastCutoff>nowS)lastCutoff-=len;}
  const since=hc?Math.floor(new Date(hc.updated_at).getTime()/1000):0;
  // Also every `verifySeconds`, so the verified frontier (and the positions behind it) stays minutes fresh.
  const due=!hc||!hc.complete||(lastCutoff&&Number(hc.through_time||0)<lastCutoff&&nowS-since>=5)||(!anchor&&nowS-since>=holderCheckSeconds)||nowS-since>=verifySeconds;

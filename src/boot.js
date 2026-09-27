@@ -48,6 +48,8 @@
       if (!cy) return ns && ns.paused ? 'rounds paused' : 'no rounds yet';
       var left = Number(cy.scheduled_end) - (r.now || Math.floor(Date.now() / 1000));
       if (ns && ns.paused) return '#' + cy.cycle_number + ' · paused';
+      var now = r.now || Math.floor(Date.now() / 1000), pre = ['scheduled', 'snapshotting', 'waiting_for_data'].indexOf(cy.state) >= 0;
+      if (pre && now >= Number(cy.cutoff_time)) return '#' + Number(cy.cycle_number).toLocaleString('en-US') + ' · taking snapshot';
       return '#' + Number(cy.cycle_number).toLocaleString('en-US') + (left > 0 ? ' · ends in ' + mmss(left) : ' · settling');
     }));
     settle('payouts', get(API + 'payouts', 6000).then(function (r) {

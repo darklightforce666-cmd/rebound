@@ -13,6 +13,7 @@ function build(){
  fs.mkdirSync(path.join(dist,'assets/fonts'),{recursive:true});
  for(const [pkg,file] of [['unbounded','unbounded'],['geist','geist'],['geist-mono','geist-mono']])for(const sub of ['latin','cyrillic']){
   const name=file+'-'+sub+'-wght-normal.woff2';fs.copyFileSync(path.join(path.dirname(require.resolve('@fontsource-variable/'+pkg+'/package.json')),'files',name),path.join(dist,'assets/fonts',name));}
+ fs.copyFileSync(path.join(path.dirname(require.resolve('@fontsource/instrument-serif/package.json')),'files','instrument-serif-latin-400-italic.woff2'),path.join(dist,'assets/fonts','instrument-serif-latin-400-italic.woff2'));
  const chartPackage=path.dirname(require.resolve('lightweight-charts/package.json'));
  fs.mkdirSync(path.join(dist,'vendor'),{recursive:true});
  fs.copyFileSync(path.join(chartPackage,'dist/lightweight-charts.standalone.production.js'),path.join(dist,'vendor/lightweight-charts.js'));
