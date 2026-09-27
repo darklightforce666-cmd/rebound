@@ -63,6 +63,9 @@ function createWallet({onChange,fallback}){
  return{
   get address(){return current?.address||null;},
   async privyConfigured(){try{await config();return !!cfg.privy?.appId;}catch{return false;}},
+  // Load and mount Privy ahead of the first click (idle time), so its wallet picker opens at once and a
+  // wallet connected on an earlier visit is restored.
+  async preload(){try{await usePrivy();}catch{}},
   async connect(which){
    const p=await usePrivy().catch(()=>null);
    if(p){for(let i=0;i<50&&!p.connect;i++)await sleep(100);if(!p.connect)throw Error('The wallet connector is still loading. Try again.');
@@ -111,7 +114,9 @@ const mmss=s=>s<=0?'now':Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
 const wal=a=>'<a class="text-link live-address" href="https://solscan.io/account/'+esc(a)+'" target="_blank" rel="noopener noreferrer" title="'+esc(a)+'">'+esc(short(a))+'</a>';
 let listChannel=null,feedChannel=null,tokenChannel=null;
 const debounce=(fn,ms)=>{let t=null;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms);};};
-async function realtime(name,tables,cb){await config();if(!supabase)return null;let ch=supabase.channel(name);for(const t of tables)ch=ch.on('postgres_changes',{event:t.event||'*',schema:'rebound',table:t.table,...(t.filter?{filter:t.filter}:{})},p=>cb(t.table,p));return ch.subscribe();}
+// Supabase Realtime (websocket): every open page follows inserts and updates of the public tables live.
+// onStatus receives SUBSCRIBED / CHANNEL_ERROR / TIMED_OUT / CLOSED so a page can fall back to polling.
+async function realtime(name,tables,cb,onStatus){await config();if(!supabase){onStatus?.('UNAVAILABLE');return null;}let ch=supabase.channel(name);for(const t of tables)ch=ch.on('postgres_changes',{event:t.event||'*',schema:'rebound',table:t.table,...(t.filter?{filter:t.filter}:{})},p=>cb(t.table,p));return ch.subscribe(s=>onStatus?.(s));}
 function tile(t){
  // Homepage tiles show who got paid — no history progress, no round details (those live on the token page).
  const stats='<div class="tile-stats"><span><b>'+sv(t.paid_lamports)+'</b> SOL paid</span><span><b>'+esc(t.paid_recipients||0)+'</b> holders paid</span><span><b>'+esc(t.payouts||0)+'</b> payouts</span></div>';
@@ -185,8 +190,12 @@ async function mountToken(host,mint,signal){
 }
 
 // ---------------- public: a wallet's awards ----------------
+let walletChannel=null,walletChannelFor=null;
 async function mountWalletRewards(host,signal){
  if(!wallet?.address){host.innerHTML='';return;}
+ // Live: a payout to this wallet re-reads its awards at once.
+ if(walletChannelFor!==wallet.address){try{walletChannel?.unsubscribe();}catch{}walletChannelFor=wallet.address;walletChannel=null;
+  try{walletChannel=await realtime('wallet-'+wallet.address,[{table:'reward_public_payouts',event:'INSERT',filter:'owner=eq.'+wallet.address}],debounce(()=>{const h=document.querySelector('#wallet-rewards');if(h)mountWalletRewards(h);},500));}catch{}}
  try{const r=await api('wallet-rewards',{query:{wallet:wallet.address},signal});if(!host.isConnected)return;
   host.innerHTML='<h2>Your REBOUND awards</h2>'+(r.awards.length?'<div class="table-container"><table class="token-table"><thead><tr><th>Token</th><th>Round</th><th>Award</th><th>Status</th><th>Due</th><th>Evidence</th></tr></thead><tbody>'+r.awards.map(a=>'<tr><td><a href="#token/'+esc(a.mint)+'">'+esc(short(a.mint))+'</a></td><td>'+esc(a.cycle_number)+'</td><td>'+sol(a.amount_lamports)+'</td><td>'+esc({planned:'Planned',reserved:'Reserved — paid at round end',paid:'Paid',deferred_rent:'Owed — waiting for account rent',released:'Cancelled (round not funded)'}[a.state]||a.state)+'</td><td>'+when(Number(a.scheduled_end))+'</td><td>'+tx(a.settlement_signature)+'</td></tr>').join('')+'</tbody></table></div>':'<p>No awards for this wallet yet. Awards are fixed at each round\'s snapshot for holders who are still underwater.</p>');
  }catch(e){if(host.isConnected)host.innerHTML='<h2>Your REBOUND awards</h2><p>'+esc(e.message)+'</p>';}
@@ -195,24 +204,28 @@ async function mountWalletRewards(host,signal){
 // ---------------- launch journey ----------------
 let mintKey=null,launchBusy=false;
 const attemptKey=()=>'rebound-launch-v3:'+(wallet?.address||'');
+let launchAsked=false;
 async function mountLaunch(host,toast,signal){
  await config().catch(()=>null);
- const enabled=!!cfg?.features?.launches;
  const saved=wallet?.address?localStorage.getItem(attemptKey()):null;
- host.innerHTML='<h2>Launch a token with REBOUND rewards</h2><p>Your wallet creates a regular Pump.fun coin. From its very first trade, all creator fees go to that coin\'s own REBOUND creator wallet — not to your wallet. Collected fees are split once: 85 % to underwater holders every 30 minutes, 15 % to buy and burn the REBOUND token. Holders who sell or transfer are excluded for good; a purchase counts after 15 minutes of holding.</p>'+
-  (enabled?(cfg.launchNamespace==='mainnet_test'?'<p class="notice live-notice">Private mainnet test: only allowlisted wallets can launch; launches are labelled TEST.</p>':''):'<p class="notice live-notice">Launches are not open yet. They open after the reward program is deployed and verified.</p>')+
+ const how='<div class="launch-how"><div><b>You sign one transaction.</b><span>Your wallet creates a regular Pump.fun coin and pays the creation cost. You never paste a secret key and never hand over access to your wallet.</span></div><div><b>Fees go to the coin’s own fee wallet.</b><span>REBOUND gives every coin a fresh creator wallet. It sweeps the creator fees, pays 85% to holders who are underwater every 30 minutes and uses 15% to buy and burn REBOUND.</span></div><div><b>Everything is on chain.</b><span>Every sweep, payout and burn links to its transaction on the coin’s page.</span></div></div>';
+ host.innerHTML='<h2>How it works</h2>'+how+
+  (wallet?.address?'':'<p class="launch-connect"><button type="button" class="ink" data-action="wallet">Connect wallet to launch</button><span class="muted">Connecting does not request a transaction.</span></p>')+
   (saved?'<p><button class="btn outline" id="launch-resume">Resume my launch</button></p>':'')+
-  '<form id="launch-form"><label>Token name<input name="name" required maxlength="32" autocomplete="off"></label><label>Ticker<input name="symbol" required maxlength="10" pattern="[A-Za-z0-9$._-]+" autocomplete="off"></label><label>Description<textarea name="description" maxlength="2000"></textarea></label><label>Image (PNG or JPEG, under 2 MB)<input name="image" type="file" accept="image/png,image/jpeg" required></label><label>Website (optional)<input name="website" type="url" placeholder="https://"></label><label>X / Twitter (optional)<input name="twitter" type="url" placeholder="https://x.com/…"></label><label>Telegram (optional)<input name="telegram" type="url" placeholder="https://t.me/…"></label><label>Pair<select name="quote" id="launch-quote"><option value="">SOL</option></select><small class="field-hint">Like pump.fun: SOL, or an asset pump.fun admits (tokenized stocks, wrapped BTC/ETH…). Other tokens cannot be paired.</small></label><label>Initial buy in SOL (optional, SOL pair only)<input name="buy" inputmode="decimal" value="0"></label><button class="btn" '+(enabled?'':'disabled')+'>Review launch</button></form><div id="launch-flow" role="status" aria-live="polite"></div>';
+  '<form id="launch-form"><label>Token name<input name="name" required maxlength="32" autocomplete="off"></label><label>Ticker<input name="symbol" required maxlength="10" pattern="[A-Za-z0-9$._-]+" autocomplete="off"></label><label>Description<textarea name="description" maxlength="2000"></textarea></label><label>Image (PNG or JPEG, under 2 MB)<input name="image" type="file" accept="image/png,image/jpeg" required></label><label>Website (optional)<input name="website" type="url" placeholder="https://"></label><label>X / Twitter (optional)<input name="twitter" type="url" placeholder="https://x.com/…"></label><label>Telegram (optional)<input name="telegram" type="url" placeholder="https://t.me/…"></label><label>Pair<select name="quote" id="launch-quote"><option value="">SOL</option></select><small class="field-hint">Like pump.fun: SOL, or an asset pump.fun admits (tokenized stocks, wrapped BTC/ETH…). Other tokens cannot be paired.</small></label><label>Initial buy in SOL (optional, SOL pair only)<input name="buy" inputmode="decimal" value="0"></label><button class="btn">Review launch</button></form><div id="launch-flow" role="status" aria-live="polite"></div>';
+ // Arriving without a wallet opens the wallet picker once per visit.
+ if(!wallet?.address&&!launchAsked){launchAsked=true;setTimeout(()=>{if(host.isConnected&&!wallet?.address)window.ReboundConnect?.();},300);}
  const flow=host.querySelector('#launch-flow');
  host.querySelector('#launch-resume')?.addEventListener('click',()=>run(()=>follow(flow,saved,toast)));
  host.querySelector('#launch-form').onsubmit=e=>{e.preventDefault();run(()=>start(flow,new FormData(e.target),toast));};
  // Pair assets come from pump.fun's own on-chain list; nothing else can be selected.
- if(enabled)api('launch-quotes',{signal}).then(r=>{const sel=host.querySelector('#launch-quote');if(!sel)return;
+ api('launch-quotes',{signal}).then(r=>{const sel=host.querySelector('#launch-quote');if(!sel)return;
   sel.innerHTML=r.quotes.map(q=>'<option value="'+(q.sol?'':esc(q.mint))+'">'+esc(q.symbol||short(q.mint))+(q.name&&!q.sol?' · '+esc(q.name):'')+'</option>').join('');}).catch(()=>{});
  async function run(fn){if(launchBusy)return;launchBusy=true;try{await fn();}catch(err){flow.innerHTML='<p class="notice live-notice">'+esc(err.message)+'</p>';toast(err.message);}finally{launchBusy=false;}}
 }
 async function start(flow,form,toast){
- if(!wallet?.address)throw Error('Connect your wallet first.');
+ if(!wallet?.address){window.ReboundConnect?.();throw Error('Connect your wallet first.');}
+ if(!cfg?.features?.launches)throw Error('Launches open together with the REBOUND token. Nothing was signed; your details stay in the form.');
  const file=form.get('image');if(!file||file.size>2000000)throw Error('Choose a PNG or JPEG image smaller than 2 MB.');
  const initialBuyLamports=lamportsOf(form.get('buy'));
  flow.innerHTML='<p>Step 1 of 4 · Sign in and approve the token details (a message signature — no transaction, no SOL moves).</p>';
@@ -414,7 +427,7 @@ async function readChain(action,address,signal){
 async function mount({route,mint,toast,signal}){
  const q=s=>document.querySelector(s);
  if(q('#rewards-summary'))mountSummary(q('#rewards-summary'),signal);
- if(route==='explore'&&q('#home'))mountHome(q('#home'),{api,realtime,esc,signal,primary:mint});
+ if(route==='explore'&&q('#home'))mountHome(q('#home'),{api,realtime,esc,signal,isAddress:a=>window.ReboundData.isAddress(a)});
  if(route==='check'&&q('#check'))mountCheck(q('#check'),{api,esc,signal,connected:!!wallet?.address,isAddress:a=>window.ReboundData.isAddress(a),chain:readChain});
  if(route==='explore'&&q('#token-list'))mountTokenList(q('#token-list'),signal);
  if(route==='explore'&&q('#payout-feed'))mountPayoutFeed(q('#payout-feed'),signal);

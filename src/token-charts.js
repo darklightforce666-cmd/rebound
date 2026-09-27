@@ -10,8 +10,8 @@ function mount({signal}){
   const interval=host.querySelector('[data-chart-interval]'),currency=host.querySelector('[data-chart-currency]');
   if(!window.LightweightCharts){status.textContent='The chart library could not load. Refresh this page to retry.';continue;}
   const {createChart,CandlestickSeries,HistogramSeries,ColorType}=window.LightweightCharts;
-  const chart=createChart(canvas,{autoSize:true,layout:{background:{type:ColorType.Solid,color:'transparent'},textColor:'#A9C2B6',attributionLogo:true},grid:{vertLines:{color:'rgba(244,239,227,.10)'},horzLines:{color:'rgba(244,239,227,.10)'}},rightPriceScale:{borderColor:'rgba(244,239,227,.07)',scaleMargins:{top:0.12,bottom:0.25}},timeScale:{timeVisible:true,secondsVisible:false,borderColor:'rgba(244,239,227,.07)'},localization:{locale:'en-US'}});
-  const candles=chart.addSeries(CandlestickSeries,{upColor:'#D4F46A',downColor:'#FF7A45',wickUpColor:'#D4F46A',wickDownColor:'#FF7A45',borderVisible:false});
+  const chart=createChart(canvas,{autoSize:true,layout:{background:{type:ColorType.Solid,color:'transparent'},textColor:'#6B716D',attributionLogo:true},grid:{vertLines:{color:'rgba(13,19,16,.08)'},horzLines:{color:'rgba(13,19,16,.08)'}},rightPriceScale:{borderColor:'rgba(13,19,16,.10)',scaleMargins:{top:0.12,bottom:0.25}},timeScale:{timeVisible:true,secondsVisible:false,borderColor:'rgba(13,19,16,.10)'},localization:{locale:'en-US'}});
+  const candles=chart.addSeries(CandlestickSeries,{upColor:'#0F9D63',downColor:'#C2461B',wickUpColor:'#0F9D63',wickDownColor:'#C2461B',borderVisible:false});
   const volume=chart.addSeries(HistogramSeries,{priceFormat:{type:'volume'},priceScaleId:''});volume.priceScale().applyOptions({scaleMargins:{top:0.83,bottom:0}});
   let request=null,timer=null,generation=0,seriesKey=null,disposed=false,hasData=false;
   function clear(){candles.setData([]);volume.setData([]);hasData=false;}
@@ -33,7 +33,7 @@ function mount({signal}){
     candles.applyOptions({priceFormat:{type:'custom',minMove:10**-precision,formatter:price=>price.toFixed(precision)}});
     // Bounded 500-bar refresh also reconciles provider revisions to old candles.
     candles.setData(data.candles.map(({time,open,high,low,close})=>({time,open,high,low,close})));
-    volume.setData(data.candles.map(c=>({time:c.time,value:c.volume,color:c.close>=c.open?'rgba(212,244,106,.25)':'rgba(255,122,69,.25)'})));hasData=true;
+    volume.setData(data.candles.map(c=>({time:c.time,value:c.volume,color:c.close>=c.open?'rgba(15,157,99,.25)':'rgba(194,70,27,.25)'})));hasData=true;
     if(fit)chart.timeScale().fitContent();
     market.innerHTML=esc((data.symbol||'Token')+' / '+data.currency+' · '+data.pool.dex)+' · <a class="text-link" href="'+esc(data.pool.url)+'" target="_blank" rel="noopener noreferrer">View source market ↗</a>';
     status.textContent='Last trade candle: '+new Date(data.lastTradeBucket*1000).toLocaleString('en-GB',{timeZone:'UTC'})+' UTC · Checked '+new Date(data.checkedAt).toLocaleTimeString()+'. '+data.message;

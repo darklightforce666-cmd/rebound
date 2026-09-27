@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#06231B"><meta name="description" content="rebound - Pump.fun launches whose creator fees compensate underwater holders every 30 minutes and buy and burn REBOUND.">
+<meta name="theme-color" content="#F7F7F4"><meta name="description" content="rebound - Pump.fun launches whose creator fees compensate underwater holders every 30 minutes and buy and burn REBOUND.">
 <title>rebound</title>
 <meta name="application-name" content="rebound">
 <meta name="apple-mobile-web-app-title" content="rebound">
@@ -15,10 +15,8 @@
 <link rel="icon" type="image/png" href="https://reboundpad.fun/assets/rebound-logo.png">
 <link rel="apple-touch-icon" href="https://reboundpad.fun/assets/rebound-logo.png">
 <script>try{if(localStorage.getItem('rebound.seen'))document.documentElement.classList.add('boot-quick')}catch(e){}</script>
-<link rel="preload" href="assets/fonts/unbounded-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="assets/fonts/geist-mono-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="assets/contours.svg" as="image">
-<link rel="stylesheet" href="src/fonts.css"><link rel="stylesheet" href="src/styles.css"><link rel="stylesheet" href="src/solana.css"><link rel="stylesheet" href="src/motion.css"><link rel="stylesheet" href="src/live.css"><link rel="stylesheet" href="src/rebound.css">
+<link rel="preload" href="assets/fonts/schibsted-grotesk-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="src/fonts.css"><link rel="stylesheet" href="src/styles.css"><link rel="stylesheet" href="src/solana.css"><link rel="stylesheet" href="src/motion.css"><link rel="stylesheet" href="src/live.css"><link rel="stylesheet" href="src/rebound.css"><link rel="stylesheet" href="src/bounce.css">
 
 <!-- Simple client-side entry screen; this is not server-side authentication. -->
 <style id="rebound-entry-style">
@@ -29,20 +27,17 @@ body.rebound-unlocked #rebound-entry{display:none}
 </style>
 </head>
 <body>
-<div id="rebound-loader" class="loader" role="status" aria-live="polite" aria-label="Loading rebound">
-<div class="loader-glow" aria-hidden="true"></div>
-<div class="loader-stage">
-<div class="loader-mark" aria-hidden="true">
-<svg viewBox="0 0 300 230"><rect x="0" y="100" width="300" height="130" fill="rgba(127,216,230,.07)" opacity=".5"/><line x1="0" y1="100" x2="300" y2="100" stroke="#7FD8E6" stroke-width="1.2" stroke-dasharray="5 6" opacity=".8"/><path class="ld-line" d="M4 28 L24 44 L36 36 L58 64 L72 56 L96 80 Q109 88 109 100 V146 A63 63 0 0 0 235 146 V62" pathLength="1" fill="none" stroke="#E4F0E8" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/><path class="ld-arrow" d="M193 97 L235 55 L270 97" pathLength="1" fill="none" stroke="#D4F46A" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/></svg>
-<span class="loader-tip"></span><span class="loader-wl">WATERLINE</span>
-</div>
-<div class="loader-word" aria-label="rebound"><span>r</span><span>e</span><span>b</span><span>o</span><span>u</span><span>n</span><span>d</span></div>
-<ol class="loader-checks"><li data-check="chain"><span class="lc-icon"><span class="lc-spin"></span><svg class="lc-ok" viewBox="0 0 24 24" fill="none" stroke="#D4F46A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg><svg class="lc-miss" viewBox="0 0 24 24" fill="none" stroke="#8FAD9F" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 12h12"/></svg></span><span class="lc-label">Connecting to Solana mainnet</span><span class="lc-val"></span></li><li data-check="tokens"><span class="lc-icon"><span class="lc-spin"></span><svg class="lc-ok" viewBox="0 0 24 24" fill="none" stroke="#D4F46A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg><svg class="lc-miss" viewBox="0 0 24 24" fill="none" stroke="#8FAD9F" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 12h12"/></svg></span><span class="lc-label">Reading verified tokens</span><span class="lc-val"></span></li><li data-check="round"><span class="lc-icon"><span class="lc-spin"></span><svg class="lc-ok" viewBox="0 0 24 24" fill="none" stroke="#D4F46A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg><svg class="lc-miss" viewBox="0 0 24 24" fill="none" stroke="#8FAD9F" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 12h12"/></svg></span><span class="lc-label">Syncing round engine</span><span class="lc-val"></span></li><li data-check="payouts"><span class="lc-icon"><span class="lc-spin"></span><svg class="lc-ok" viewBox="0 0 24 24" fill="none" stroke="#D4F46A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg><svg class="lc-miss" viewBox="0 0 24 24" fill="none" stroke="#8FAD9F" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 12h12"/></svg></span><span class="lc-label">Loading latest payouts</span><span class="lc-val"></span></li></ol>
+<div id="rebound-loader" class="loader" role="status" aria-label="Loading rebound">
+<div class="ld-stage" aria-hidden="true">
+<div class="ld-mark"><div class="ld-squash"><svg viewBox="0 0 440 360"><path class="ld-arrow" d="M84 108 V216 A108 108 0 0 0 300 216 V72" pathLength="1"/><g class="ld-headg"><path class="ld-head" d="M228 132 L300 60 L360 132" pathLength="1"/></g></svg></div>
+<span class="ld-shadow"></span><span class="ld-ball"></span><span class="ld-rider"></span>
+<span class="cf c0"></span><span class="cf c1"></span><span class="cf c2"></span><svg class="cf c3" viewBox="0 0 10 10"><path d="M5 .6 9.6 9.2H.4Z"/></svg><span class="cf c4"></span><span class="cf c5"></span><svg class="cf c6" viewBox="0 0 10 10"><path d="M5 .6 9.6 9.2H.4Z"/></svg><span class="cf c7"></span><span class="cf c8"></span></div>
+<div class="ld-word"><span>r</span><span>e</span><span>b</span><span>o</span><span>u</span><span>n</span><span>d</span></div>
 </div>
 </div>
 <section id="rebound-entry" aria-labelledby="entry-heading" hidden>
 <form class="entry-card" id="rebound-entry-form">
-<p class="entry-brand"><svg viewBox="0 0 34 34" aria-hidden="true"><rect width="34" height="34" rx="9" fill="#1E7A56"/><g transform="translate(-1 1)"><path d="M7 9v9a9 9 0 0 0 18 0V6M19 11l6-6 5 6" fill="none" stroke="#E4F0E8" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"/></g></svg><span>rebound</span></p>
+<p class="entry-brand"><svg viewBox="0 0 34 34" aria-hidden="true"><rect width="34" height="34" rx="9" fill="#0F9D63"/><g transform="translate(-1 1)"><path d="M7 9v9a9 9 0 0 0 18 0V6M19 11l6-6 5 6" fill="none" stroke="#FFFFFF" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"/></g></svg><span>rebound</span></p>
 <h1 id="entry-heading">Private preview</h1>
 <p class="entry-copy">Enter the password to explore REBOUND.</p>
 <label for="rebound-entry-password">Password</label>
@@ -56,25 +51,24 @@ body.rebound-unlocked #rebound-entry{display:none}
 
 <a href="#main" class="skip">Skip to content</a>
 <div class="workspace">
-<div class="ambient" aria-hidden="true"><i></i><i></i></div>
 <header class="topbar"><div class="topbar-inner">
-<a class="topbar-brand" href="#explore" aria-label="rebound home"><svg viewBox="0 0 34 34" aria-hidden="true"><rect width="34" height="34" rx="9" fill="#1E7A56"/><g transform="translate(-1 1)"><path d="M7 9v9a9 9 0 0 0 18 0V6M19 11l6-6 5 6" fill="none" stroke="#E4F0E8" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"/></g></svg><span>rebound</span></a>
-<nav class="topnav" aria-label="Main navigation"><a href="#explore" data-nav="explore">Discover</a><a href="#launch" data-nav="launch">Launch</a><a href="#portfolio" data-nav="portfolio">Portfolio</a><a href="#analytics" data-nav="analytics">Analytics</a><a href="#docs" data-nav="docs">Docs</a><a href="#admin" data-nav="admin" hidden>Admin</a></nav>
-<button class="btn-primary wallet-button" data-action="wallet">Connect wallet</button>
+<a class="topbar-brand" href="#explore" aria-label="rebound home"><svg viewBox="0 0 34 34" aria-hidden="true"><rect width="34" height="34" rx="9" fill="#0F9D63"/><g transform="translate(-1 1)"><path d="M7 9v9a9 9 0 0 0 18 0V6M19 11l6-6 5 6" fill="none" stroke="#FFFFFF" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"/></g></svg><span>rebound</span></a>
+<nav class="topnav" aria-label="Main navigation"><a href="#coins" data-nav="coins">Coins</a><a href="#payouts" data-nav="payouts">Payouts</a><a href="#launch" data-nav="launch">Launch a coin</a><a href="#docs" data-nav="docs">Docs</a><a href="#portfolio" data-nav="portfolio" data-needs-wallet hidden>Portfolio</a><a href="#admin" data-nav="admin" hidden>Admin</a></nav>
+<div class="topbar-actions"><button type="button" class="ca" id="top-ca" data-action="copy-ca" data-copy="" hidden aria-label="Copy the REBOUND contract address"><b id="top-ca-name">$REBOUND</b><span class="ca-addr" id="top-ca-addr"></span><svg class="ca-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg><span class="ca-done" role="status">copied</span></button>
+<button type="button" class="ink wallet-button" data-action="wallet">Connect wallet</button><button type="button" class="menu-button" data-action="menu" aria-label="Open navigation menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 8h16M4 16h16"/></svg></button></div>
 </div></header>
 <main id="main" tabindex="-1"></main>
-<footer class="site-footer"><div class="footer-top"><a class="topbar-brand small" href="#explore"><svg viewBox="0 0 34 34" aria-hidden="true"><rect width="34" height="34" rx="9" fill="#1E7A56"/><g transform="translate(-1 1)"><path d="M7 9v9a9 9 0 0 0 18 0V6M19 11l6-6 5 6" fill="none" stroke="#E4F0E8" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"/></g></svg><span>rebound</span></a><div><a href="#docs">How it works</a><a href="#docs">Risk &amp; transparency</a></div></div><div class="footer-bottom"><span>© 2026 REBOUND</span><span>No returns are guaranteed. Compensation is limited to collected fees.</span></div></footer>
+<footer class="site-footer"><span>No returns are guaranteed. Holders are only paid from fees a coin actually collected.</span><span class="footer-links"><a href="#docs">Docs</a><a href="#analytics">Status</a></span></footer>
 </div>
-<nav class="mobile-bottom-nav" aria-label="Mobile navigation"><a href="#explore" data-nav="explore"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m16 8-2.6 5.4L8 16l2.6-5.4L16 8Z"/></svg><span>Discover</span></a><a href="#launch" data-nav="launch"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>Launch</span></a><a href="#check" data-nav="check"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6l-8-3Z"/><path d="m9 12 2 2 4-4"/></svg><span>Check</span></a><a href="#portfolio" data-nav="portfolio"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 7H5a2 2 0 0 1 0-4h13v4M5 7a2 2 0 0 1-2-2v13a2 2 0 0 0 2 2h16V7h-2Z"/><path d="M21 11h-6v5h6"/></svg><span>Portfolio</span></a><button class="nav-toggle" data-action="menu" aria-label="Open navigation menu"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg><span>More</span></button></nav>
 <dialog id="dialog" aria-label="Rebound dialog"><div id="dialog-body"></div></dialog>
 <div id="toasts" role="status" aria-live="polite"></div>
 <script src="src/mainnet-config.js?v=mainnet-20260915"></script>
 <script src="src/live-data.js?v=mainnet-20260915"></script>
 <script src="src/wallet.js?v=mainnet-20260915"></script>
-<script src="src/rewards.js?v=proof-in-motion-1"></script>
+<script src="src/rewards.js?v=bounce-1"></script>
 <script src="vendor/lightweight-charts.js?v=5.2.1"></script>
 <script src="src/token-charts.js?v=token-charts-1"></script>
-<script src="src/app.js?v=proof-in-motion-1"></script>
+<script src="src/app.js?v=bounce-1"></script>
 <script src="src/motion.js"></script>
 
 

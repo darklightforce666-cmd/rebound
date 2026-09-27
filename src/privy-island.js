@@ -22,7 +22,9 @@ export function mountPrivy(appId){
  const el=document.createElement('div');el.id='privy-island';document.body.append(el);
  bridge.root=createRoot(el);
  bridge.root.render(h(PrivyProvider,{appId,config:{
-  appearance:{walletChainType:'solana-only',theme:'dark',accentColor:'#c5f36b',showWalletLoginFirst:true},
+  appearance:{walletChainType:'solana-only',theme:'light',accentColor:'#0F9D63',showWalletLoginFirst:true,
+   // Solana wallets only: the ones installed in this browser first, then the common ones and WalletConnect.
+   walletList:['detected_solana_wallets','phantom','solflare','backpack','jupiter','okx_wallet','wallet_connect_qr_solana']},
   loginMethods:['wallet'],
   externalWallets:{solana:{connectors:toSolanaWalletConnectors()}},
   embeddedWallets:{solana:{createOnLogin:'off'},ethereum:{createOnLogin:'off'}},

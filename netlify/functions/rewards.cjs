@@ -82,6 +82,46 @@ async function tokens(db,q){
  return{tokens:page,next:rows.length>limit&&last?`${last.launch_time||0}:${last.mint}`:null,namespace,featured};
 }
 const HOLDER_SORT={loss:'loss_lamports DESC',paid:'paid_lamports DESC',cost:'cost_lamports DESC',value:'value_lamports DESC'};
+// Home page in one read: every listed coin with its holders, its current round and totals, the headline
+// round (the REBOUND token's, else the next one to pay) and the latest settled rounds across all coins.
+const PAID_STATES=['complete','partially_paid','skipped_no_eligible_holders'];
+async function homeData(db){
+ const featured=(await db.query('SELECT primary_mint FROM reward_site WHERE id=1')).rows[0]?.primary_mint||null;
+ const coins=(await db.query(`SELECT t.mint,t.name,t.symbol,t.image_uri,t.kind,t.launch_time,t.reward_status,t.paid_lamports::text,t.paid_recipients,t.payouts,t.burned_raw::text,t.burns,t.decimals,
+  t.history_complete,t.history_fetched,t.history_total,t.positions_time,t.quote_symbol,(t.mint IS NOT DISTINCT FROM $1) AS featured
+  FROM reward_public_tokens t WHERE t.namespace='production' OR t.mint=$1 ORDER BY (t.mint IS NOT DISTINCT FROM $1) DESC, t.pinned DESC, COALESCE(t.launch_time,0) DESC, t.mint DESC LIMIT 200`,[featured])).rows;
+ const mints=coins.map(c=>c.mint);
+ if(!mints.length)return{coins:[],headline:null,rounds:[],featured,now:Math.floor(Date.now()/1000)};
+ const holders=Object.fromEntries((await db.query(`SELECT mint,count(*) FILTER (WHERE outcome<>'sold')::int holders,count(*) FILTER (WHERE loss_lamports>0 AND outcome<>'sold')::int underwater
+  FROM reward_public_holders WHERE mint=ANY($1) GROUP BY mint`,[mints])).rows.map(r=>[r.mint,r]));
+ const current=Object.fromEntries((await db.query(`SELECT DISTINCT ON (mint) mint,cycle_number,state,reason,mode,cutoff_time,scheduled_end,available_lamports::text,holders_underwater,paid_lamports::text,paid_recipients
+  FROM reward_public_cycles WHERE mint=ANY($1) ORDER BY mint,cycle_number DESC`,[mints])).rows.map(r=>[r.mint,r]));
+ for(const c of coins){c.holders=holders[c.mint]?.holders??0;c.underwater=holders[c.mint]?.underwater??0;c.round=current[c.mint]||null;}
+ // Headline: the REBOUND token's round, else the live round that pays out next.
+ const now=Math.floor(Date.now()/1000);
+ const pick=coins.find(c=>c.featured&&c.round)||coins.filter(c=>c.round&&Number(c.round.scheduled_end)>now-600).sort((a,b)=>Number(a.round.scheduled_end)-Number(b.round.scheduled_end))[0]||null;
+ const headline=pick?{mint:pick.mint,symbol:pick.symbol,name:pick.name,history_complete:pick.history_complete,history_fetched:pick.history_fetched,history_total:pick.history_total,positions_time:pick.positions_time,
+  cycles:(await db.query('SELECT cycle_number,state,reason,mode,cutoff_time,scheduled_end,available_lamports::text,paid_lamports::text,paid_recipients FROM reward_public_cycles WHERE mint=$1 ORDER BY cycle_number DESC LIMIT 8',[pick.mint])).rows}:null;
+ const rounds=(await db.query(`SELECT c.mint,c.cycle_number,c.state,c.available_lamports::text,c.paid_lamports::text,c.paid_recipients,c.scheduled_end,
+  (SELECT count(DISTINCT p.signature)::int FROM reward_public_payouts p WHERE p.mint=c.mint AND p.cycle_number=c.cycle_number) AS txs,
+  (SELECT p.signature FROM reward_public_payouts p WHERE p.mint=c.mint AND p.cycle_number=c.cycle_number ORDER BY p.id LIMIT 1) AS signature
+  FROM reward_public_cycles c WHERE c.mint=ANY($1) AND (c.paid_lamports>0 OR c.state=ANY($2)) ORDER BY c.scheduled_end DESC, c.mint LIMIT 6`,[mints,PAID_STATES])).rows;
+ return{coins,headline,rounds,featured,now};
+}
+// One wallet across every REBOUND coin: its position at the latest snapshot, its share of the current
+// round's budget (when the budget is fixed) and everything already paid to it. Read-only, public data.
+async function walletCheck(db,q){
+ const wallet=(()=>{try{W.pk(q.wallet);return q.wallet;}catch{fail(400,'WALLET_INVALID','That isn’t a Solana address.');}})();
+ const rows=(await db.query(`SELECT h.mint,t.name,t.symbol,h.cost_lamports::text,h.value_lamports::text,h.compensated_lamports::text,h.loss_lamports::text,h.paid_lamports::text,h.payouts,h.outcome,
+  (SELECT COALESCE(sum(x.loss_lamports),0)::text FROM reward_public_holders x WHERE x.mint=h.mint AND x.outcome<>'sold') AS total_loss,
+  (SELECT row_to_json(c) FROM (SELECT cycle_number,state,cutoff_time,scheduled_end,available_lamports::text FROM reward_public_cycles WHERE mint=h.mint ORDER BY cycle_number DESC LIMIT 1) c) AS round
+  FROM reward_public_holders h JOIN reward_public_tokens t USING(mint) WHERE h.owner=$1 ORDER BY h.loss_lamports DESC LIMIT 50`,[wallet])).rows;
+ const paid=(await db.query('SELECT COALESCE(sum(amount_lamports),0)::text lamports,count(*)::int payouts FROM reward_public_payouts WHERE owner=$1',[wallet])).rows[0];
+ for(const r of rows){const total=BigInt(r.total_loss||0),mine=BigInt(r.loss_lamports||0),budget=r.round?.available_lamports!=null?BigInt(r.round.available_lamports):null;
+  r.share_bps=total>0n&&mine>0n?Number(mine*10000n/total):0;
+  r.estimate_lamports=budget!=null&&total>0n&&mine>0n?String((b=>b>mine?mine:b)(budget*mine/total)):null;}
+ return{wallet,positions:rows,paid,now:Math.floor(Date.now()/1000)};
+}
 
 async function body(event){
  if(event.isBase64Encoded||Buffer.byteLength(event.body||'')>MAX_BODY)fail(413,'PAYLOAD_TOO_LARGE','Request too large');
@@ -101,6 +141,8 @@ const handlers={
     executionModes:Object.fromEntries(platform.map(p=>[p.namespace,p.execution_mode])),worker:worker?{status:worker.status,heartbeatAt:worker.heartbeat_at}:null,policy:(await publicConfig(null)).policy};
   },
   async tokens({db,q}){return tokens(db,q);},
+  async home({db}){return homeData(db);},
+  async 'wallet-check'({db,q}){return walletCheck(db,q);},
   async token({db,q}){
    try{W.pk(q.mint);}catch{fail(400,'MINT_INVALID','Invalid mint address');}
    const token=(await db.query('SELECT * FROM reward_public_tokens WHERE mint=$1',[q.mint])).rows[0];if(!token)fail(404,'NOT_FOUND','This token is not a verified REBOUND launch.');

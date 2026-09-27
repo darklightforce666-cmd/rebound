@@ -21,10 +21,8 @@
   "packageManager": "pnpm@11.19.0",
   "dependencies": {
     "@coral-xyz/anchor": "0.31.1",
-    "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
-    "@fontsource-variable/unbounded": "^5.3.0",
-    "@fontsource/instrument-serif": "^5.3.0",
+    "@fontsource-variable/schibsted-grotesk": "5.3.0",
     "@netlify/blobs": "11.1.0",
     "@noble/curves": "1.9.7",
     "@privy-io/react-auth": "3.45.0",
