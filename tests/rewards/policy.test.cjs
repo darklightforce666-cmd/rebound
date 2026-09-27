@@ -69,3 +69,9 @@ test('Merkle sum proofs bind deployment/mint/round/recipient/amount and preserve
  const c={program:pub(),deployment:pub(),mint:pub(),policy:P.POLICY_HASH,round:1};const awards=[1,2,3].map((n,index)=>({wallet:pub(),amount:BigInt(n),index}));const t=W.tree(c,awards);assert.equal(t.root.sum,6n);for(const a of t.allocations)assert.ok(W.verifyProof(c,a,t.root));
  for(const override of [{mint:pub()},{program:pub()},{deployment:pub()},{round:2}])assert.equal(W.verifyProof({...c,...override},t.allocations[0],t.root),false);assert.equal(W.verifyProof(c,{...t.allocations[0],amount:2n},t.root),false);
 });
+
+test('bn.js numbers are decimal strings even when a bundler renamed the BN class',()=>{
+ const {BN}=require('@coral-xyz/anchor');class Renamed extends BN{}Object.defineProperty(Renamed,'name',{value:'a'});
+ const {stable}=require('../../server/rewards/policy.cjs');
+ assert.equal(JSON.parse(stable({x:new Renamed('12345678901234567890')})).x,'12345678901234567890');
+});

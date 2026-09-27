@@ -1,5 +1,8 @@
 [build]
   command = "node scripts/build.cjs"
+  # Skip the site build when a push only touches the hosted worker, tests, docs or contracts (they never reach
+  # the site or its functions). Exit code 0 = nothing relevant changed.
+  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- . ':(exclude)supabase' ':(exclude)tests' ':(exclude)docs' ':(exclude)contracts' ':(exclude)README.md'"
   publish = "dist"
   functions = "netlify/functions"
 

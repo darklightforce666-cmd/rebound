@@ -8,7 +8,7 @@ function stable(x){
  const normalize=v=>{
   if(typeof v==='bigint')return v.toString();
   if(v&&typeof v.toBase58==='function')return v.toBase58();
-  if(v?.constructor?.name==='BN')return v.toString(10);
+  if(v&&typeof v==='object'&&Array.isArray(v.words)&&typeof v.negative==='number'&&typeof v.toArrayLike==='function')return v.toString(10);   // bn.js (class name is minified in bundles)
   if(v&&typeof v.toJSON==='function')return normalize(v.toJSON());
   if(Array.isArray(v))return v.map(normalize);
   if(v&&typeof v==='object')return Object.fromEntries(Object.keys(v).sort().filter(k=>v[k]!==undefined).map(k=>[k,normalize(v[k])]));

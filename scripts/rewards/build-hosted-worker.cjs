@@ -14,7 +14,7 @@ const banner=MODS.map(m=>`import * as ${id(m)} from 'node:${m}';`).join('')+
  // is a private, writable copy (module-scoped, so it shadows the global for every bundled module).
  `const __realProcess=globalThis.process;const __env=(()=>{try{return typeof Deno!=='undefined'?Deno.env.toObject():{...__realProcess.env};}catch{return {};}})();`+
  `const process=new Proxy(__realProcess,{get(t,k){if(k==='env')return __env;const v=Reflect.get(t,k);return typeof v==='function'?v.bind(t):v;}});`;
-require('esbuild').buildSync({entryPoints:[path.join(dir,'entry.mjs')],bundle:true,platform:'node',format:'esm',target:'es2022',minify:true,legalComments:'none',
+require('esbuild').buildSync({entryPoints:[path.join(dir,'entry.mjs')],bundle:true,platform:'node',format:'esm',target:'es2022',minify:true,keepNames:true,legalComments:'none',
  outfile:path.join(dir,'worker-bundle.mjs'),external:['pg-native'],banner:{js:banner},footer:{js:''},logLevel:'warning',define:{'process.env.NODE_ENV':'"production"'}});
 const out=path.join(dir,'worker-bundle.mjs');
 console.log('hosted worker bundle:',(fs.statSync(out).size/1024|0)+' KB');

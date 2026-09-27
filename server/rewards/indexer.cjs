@@ -2,12 +2,14 @@
 const {PublicKey,Connection}=require('@solana/web3.js');
 const bs58=require('bs58');
 const P=require('./pump.cjs'),W=require('./wire.cjs'),Policy=require('./policy.cjs'),DB=require('./db.cjs');
-const PARSER='rebound-execution-v3.0';
+const PARSER='rebound-execution-v3.1';   // v3.1: bn.js numbers decoded by shape (minified hosted bundle)
 const TOKEN=new Set(['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA','TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb']);
 const PUMP=P.SDK.PUMP_PROGRAM_ID.toBase58(),AMM=P.SDK.PUMP_AMM_PROGRAM_ID.toBase58();
 const EVENT_CPI=Buffer.from('e445a52e51cb9a1d','hex');
 const stringify=Policy.stable;
-function plain(v){if(v&&typeof v==='object'){if(typeof v.toBase58==='function')return v.toBase58();if(v.constructor?.name==='BN')return v.toString(10);if(Array.isArray(v))return v.map(plain);return Object.fromEntries(Object.entries(v).map(([k,x])=>[k,plain(x)]));}return v;}
+// A bn.js number, recognized by shape: a minified bundle renames the BN class, so its name cannot be trusted.
+const isBN=v=>v&&typeof v==='object'&&Array.isArray(v.words)&&typeof v.negative==='number'&&typeof v.toString==='function'&&typeof v.toArrayLike==='function';
+function plain(v){if(v&&typeof v==='object'){if(typeof v.toBase58==='function')return v.toBase58();if(isBN(v))return v.toString(10);if(Array.isArray(v))return v.map(plain);return Object.fromEntries(Object.entries(v).map(([k,x])=>[k,plain(x)]));}return v;}
 function eventDecoder(program,data){
  if(data.length<16||!data.subarray(0,8).equals(EVENT_CPI))return null;
  const disc=data.subarray(8,16),body=data.subarray(16);
