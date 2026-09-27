@@ -445,3 +445,14 @@ h1,h2,h3,.display{font-family:var(--font-display);letter-spacing:-.03em}
  .odo-col>span{transition:none}
  .proof[data-proof]::after{transition:none}
 }
+
+/* ---------- transaction lifecycle (launch): Signed → Sent → Finalized ---------- */
+.tx-steps{display:flex;flex-direction:column;align-items:flex-start;gap:14px;padding:12px 0}
+.tx-track{display:flex;align-items:center;width:240px}
+.tx-dot{width:14px;height:14px;border-radius:50%;background:var(--line);flex-shrink:0;transition:background-color .3s}
+.tx-dot.on{background:var(--mint);animation:rb-pop .3s var(--ease-spring)}
+.tx-seg{flex:1;height:3px;background:var(--line);position:relative;overflow:hidden}
+.tx-seg::after{content:"";position:absolute;inset:0;background:var(--mint);transform:scaleX(0);transform-origin:left;transition:transform .9s var(--ease-out)}
+.tx-seg.on::after{transform:scaleX(1)}
+.tx-label{font-size:14px;color:var(--muted)}
+@media (prefers-reduced-motion:reduce){.tx-dot.on{animation:none}.tx-seg::after{transition:none}}

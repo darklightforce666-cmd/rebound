@@ -231,14 +231,19 @@ async function review(flow,attemptId,toast){
  flow.querySelector('#launch-sign').onclick=async()=>{try{
   flow.querySelector('#launch-sign').disabled=true;
   const s=await api('launch-submit',{body:{attemptId,index:0,signedTransaction:await signB64(p.transactions[0],[mintKey])},auth:true});
-  flow.innerHTML='<p>Creation submitted. '+tx(s.signature)+' Waiting for finality (usually under a minute)…</p>';
+  flow.innerHTML=txSteps(2,s.signature,'Waiting for finality (usually under a minute)…');
   const st=await waitFor(attemptId,a=>a.state!=='creation_submitted');
+  if(st.state!=='draft')flow.innerHTML=txSteps(3,s.signature,'');
   if(st.state==='draft'){flow.innerHTML='<p class="notice live-notice">The creation did not land; no token exists. Review again to retry with a fresh mint.</p><button class="btn" id="launch-again">Review again</button>';flow.querySelector('#launch-again').onclick=()=>review(flow,attemptId,toast).catch(e=>toast(e.message));return;}
   if(p.transactions[1]){flow.innerHTML='<p>Token created. Approve your initial buy.</p>';await api('launch-submit',{body:{attemptId,index:1,signedTransaction:await signB64(p.transactions[1])},auth:true});}
   if(p.settlement==='direct'){const a=await waitFor(attemptId,x=>x.state==='active'||x.state==='failed_action_required',120000);mintKey=null;return directDone(flow,a);}
   mintKey=null;await activation(flow,attemptId,toast);
  }catch(e){flow.querySelector('#launch-sign')&&(flow.querySelector('#launch-sign').disabled=false);toast(e.message);}};
 }
+// Transaction lifecycle (Motion kit): Signed → Sent → Finalized, driven only by real states.
+function txSteps(reached,sig,note){const L=['Signed','Sent','Finalized'];
+ return '<div class="tx-steps" data-reached="'+reached+'"><div class="tx-track">'+L.map((l,i)=>(i?'<span class="tx-seg'+(i<reached?' on':'')+'"></span>':'')+'<span class="tx-dot'+(i<reached?' on':'')+'"></span>').join('')+'</div>'+
+  '<div class="tx-label mono">'+(reached>=3?'<span class="mint">Finalized · '+tx(sig,'tx')+'</span>':reached===2?'Sent · '+tx(sig,'tx')+' · waiting for finality':'Signed · sending…')+'</div>'+(note?'<p class="live-caption">'+esc(note)+'</p>':'')+'</div>';}
 async function waitFor(attemptId,done,ms=180000){const until=Date.now()+ms;let st;while(Date.now()<until){st=await api('launch-status',{query:{id:attemptId},auth:true});if(done(st))return st;await sleep(4000);}return st;}
 async function activation(flow,attemptId,toast){
  const st=await api('launch-status',{query:{id:attemptId},auth:true});
