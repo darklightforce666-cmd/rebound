@@ -1,7 +1,7 @@
 /* Boot: the loading screen ("the bounce": a ball falls, rides the arrow, the word hops in, everything
    launches up), then the private-preview gate. It never touches wallet or reward state. The page renders
-   underneath while it plays; a click or a key skips it. First visit ≈4.8 s; a repeat visit only fades
-   (0.25 s); with reduced motion the final frame shows briefly, nothing moves. */
+   underneath while it plays; a click or a key skips it. It plays on every page load (≈4.8 s); with
+   reduced motion the final frame shows briefly and nothing moves. */
 (function () {
   'use strict';
   var html = document.documentElement, loader = document.getElementById('rebound-loader');
@@ -12,7 +12,6 @@
   var started = Date.now(), EXIT_AT = quick ? 150 : reduced ? 700 : 4300;
   var API = '/.netlify/functions/rewards?action=';
   var gate = null; // 'open' | 'closed'
-  try { localStorage.setItem('rebound.seen', '1'); } catch (e) {}
 
   function get(url, ms) {
     var ctl = new AbortController(), t = setTimeout(function () { ctl.abort(); }, ms || 6000);

@@ -49,6 +49,9 @@ body.scrolled .topbar{border-bottom-color:var(--line)}
 .ca.copied .ca-icon{display:none}.ca.copied .ca-done{display:inline;animation:bn-copied .25s ease-out both}
 @keyframes bn-copied{0%{transform:scale(.6);opacity:0}100%{transform:none;opacity:1}}
 .wallet-button{min-width:0}
+.x-link{display:flex;align-items:center;gap:8px;height:40px;padding:0 12px;border-radius:10px;background:var(--chip);color:var(--ink);text-decoration:none;font-size:14px;font-weight:500;transition:background-color .15s,transform .12s}
+.x-link:hover{background:var(--chip-hover)}.x-link:active{transform:scale(.97)}
+.x-link svg{width:16px;height:16px}
 .menu-button{display:none;width:44px;height:44px;border:0;border-radius:10px;background:var(--chip);color:var(--ink);align-items:center;justify-content:center}
 .menu-button svg{width:20px;height:20px}
 #main{flex:1;width:100%;max-width:1440px;margin:0 auto;padding:0 64px 40px;box-sizing:border-box}
@@ -282,6 +285,7 @@ dialog::backdrop{background:rgba(13,19,16,.25);backdrop-filter:none;-webkit-back
 @media (max-width:760px){
  .topbar-inner{height:60px;padding:0 16px;gap:10px}.topbar-brand{font-size:20px}.topbar-brand svg{width:26px;height:26px}
  .topbar .ca{display:none}
+ .x-link{width:44px;height:44px;padding:0;justify-content:center}.x-link span{display:none}
  .wallet-button{height:44px;padding:0 14px;font-size:14px}
  #main{padding:0 16px 32px}
  .site-footer{margin-top:28px;padding:20px 16px 32px;flex-direction:column;font-size:13px}.site-footer:after{left:16px;right:16px}

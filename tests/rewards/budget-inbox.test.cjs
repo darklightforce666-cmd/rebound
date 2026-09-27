@@ -22,7 +22,7 @@ test('sealed box: opens only with the worker key and the exact binding',async()=
 });
 
 test('launch (private test, budget): allowlist + any holder + caps from the budget; payouts stay off unless asked',async()=>{
- const db=await supabaseDb();const api=f=>as(db,'rebound_api')(f);const admin=key(),mint=key(),dev=key();
+ const db=await supabaseDb();const api=f=>as(db,'rebound_api')(f),sch=f=>as(db,'rebound_scheduler')(f);const admin=key(),mint=key(),dev=key();
  try{
   await db.query("INSERT INTO reward_admin_wallets(wallet,label,added_by) VALUES($1,'owner','test')",[admin]);
   await assert.rejects(api(A.launch)(db,'admin (password)',{},{mint,feeWallet:admin,namespace:'mainnet_test'},{connection:conn(1)}),e=>/different wallet/.test(e.message));
@@ -53,11 +53,17 @@ test('launch (private test, budget): allowlist + any holder + caps from the budg
   assert.equal(ok.mode,'mainnet_test');
   await db.query('BEGIN');await assert.rejects(X.authorize(db,{namespace:'mainnet_test',mint:key(),recipients:[stranger],lamports:'0',fees:'5000'},{env:{REWARDS_MAX_EXECUTION_MODE:'mainnet_test'}}),e=>e.code==='TEST_MINT_NOT_ALLOWED');await db.query('ROLLBACK');
   await db.query('BEGIN');await assert.rejects(X.authorize(db,{namespace:'mainnet_test',mint,recipients:[],lamports:'5000000000',fees:'5000'},{env:{REWARDS_MAX_EXECUTION_MODE:'mainnet_test'}}),e=>e.code==='SPEND_CAP_ACTION');await db.query('ROLLBACK');
-  // Income model: only fees from now on (opening credit 0 requested for the scheduler).
+  // Income model: the balance at launch counts too (the scheduler measures it: everything but the 0.01 SOL reserve).
   const mint2=key(),dev2=key();
   await db.query("UPDATE reward_platform SET settlement='program' WHERE namespace='production'");   // income funding needs the program
   await api(A.launch)(db,'admin (password)',{},{mint:mint2,feeWallet:dev2,namespace:'production',fundingModel:'income'},{connection:conn(5)});
-  const intent=(await db.query("SELECT body FROM reward_intents WHERE job=$1",['opening:'+mint2])).rows[0];assert.equal(intent.body.credit,'0');
+  const intent=(await db.query("SELECT body FROM reward_intents WHERE job=$1",['opening:'+mint2])).rows[0];assert.equal(intent.body.credit,'all');
+  // The scheduler applies it once against the finalized balance: 2 SOL − 0.01 SOL reserve, split 85/15 once.
+  const c2={...conn(2_000_000_000),getBlockTime:async()=>1_800_000_000};
+  assert.deepEqual(await sch(A.applyOpeningRequests)(db,c2),[{mint:mint2,state:'recorded'}]);
+  const acc=(await db.query('SELECT credited,holder_awaiting_transfer,other_settled FROM reward_funding_accounts WHERE mint=$1',[mint2])).rows[0];
+  assert.equal(BigInt(acc.credited),1_990_000_000n);assert.equal(BigInt(acc.holder_awaiting_transfer),1_691_500_000n,'85 % of the balance to holders');assert.equal(BigInt(acc.other_settled),298_500_000n);
+  assert.deepEqual(await sch(A.applyOpeningRequests)(db,c2),[],'applied once');
  }finally{await db.close();}
 });
 

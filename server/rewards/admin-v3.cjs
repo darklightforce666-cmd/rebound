@@ -176,7 +176,9 @@ async function launch(db,actor,session,{mint,feeWallet,namespace='production',fu
   else budgetAction='kept';
  }else{
   if(fw.funding_model==='balance_budget'||fw.budget_requested_at)fail('MODEL_SWITCH','This fee wallet was used with a budget. To fund holders from 85 % of new fees, launch with a different fee wallet.',409);
-  if(fw.opening_slot==null)await openingCredit(db,actor,{mint,requestedCreditLamports:'0',operationalReserveLamports:String(INCOME_RESERVE)});   // only fees arriving from now on count
+  // Owner decision (2026-09-28): the wallet's balance at launch counts as funding too — split 85/15 once like
+  // every later fee — so holders are paid from the first round. Only a 0.01 SOL fee reserve is kept out.
+  if(fw.opening_slot==null)await openingCredit(db,actor,{mint,requestedCreditLamports:'all',operationalReserveLamports:String(INCOME_RESERVE)});
  }
  let balance=null;if(connection)try{balance=BigInt(await connection.getBalance(new PublicKey(feeWallet),'confirmed'));}catch{}
  const estimate=budgetAction==='new'&&balance!=null?balance*BigInt(bps)/10000n:null;   // caps move only with a new budget
@@ -199,7 +201,7 @@ async function launch(db,actor,session,{mint,feeWallet,namespace='production',fu
  const meta=connection?await tokenMeta(connection,mint):{exists:null};
  await db.query('UPDATE reward_site SET primary_mint=$1,primary_name=$2,primary_symbol=$3,fee_wallet=$4,namespace=$5,updated_by=$6,updated_at=now() WHERE id=1',[mint,meta.name||null,meta.symbol||null,feeWallet,namespace,actor]);
  await db.query('UPDATE reward_coins SET name=COALESCE($2,name),symbol=COALESCE($3,symbol),updated_at=now() WHERE mint=$1',[mint,meta.name||null,meta.symbol||null]).catch(()=>{});
- const how=fundingModel==='balance_budget'?(budgetAction==='new'?`NEW budget ${bps/100}% of the current fee-wallet balance`+(estimate!=null?` (≈${estimate} lamports)`:''):budgetAction==='lowered'?`budget lowered to ${bps/100}%`:`budget kept (${bps/100}%)`):'85% of new creator fees';
+ const how=fundingModel==='balance_budget'?(budgetAction==='new'?`NEW budget ${bps/100}% of the current fee-wallet balance`+(estimate!=null?` (≈${estimate} lamports)`:''):budgetAction==='lowered'?`budget lowered to ${bps/100}%`:`budget kept (${bps/100}%)`):'85% of the current balance and of every new creator fee';
  await audit(db,actor,'admin_launch',{namespace,mint,feeWallet,fundingModel,budgetBps:bps,budgetAction,test});
  await Logs.log(db,{severity:'warn',component:'admin',eventType:'site_token_changed',namespace,mint,message:`Site token set to ${meta.name||mint} (${mint}); fee wallet ${feeWallet}; funding: ${how}`+(test?`; private test: any holder, mode ${test.mode}`:'')+(meta.exists===false?' — no mint exists at this address yet':'')});
  return{...r,settlement,fundingMode:fw.mode,fundingModel,budgetBps:bps,budgetAction,balance:balance==null?null:String(balance),budgetEstimate:estimate==null?null:String(estimate),test,exists:meta.exists,name:meta.name||null,symbol:meta.symbol||null,
@@ -230,10 +232,11 @@ async function primaryChainStatus(connection,program,mint,feeWallet){
 async function openingCredit(db,actor,{mint,requestedCreditLamports,operationalReserveLamports}){
  mint=address(mint,'mint');const fw=(await db.query("SELECT * FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired'",[mint])).rows[0];if(!fw)fail('NOT_FOUND','Register the primary and its dev wallet first',404);
  if(fw.opening_slot!=null)fail('ALREADY_RECORDED','The opening credit was already recorded for this wallet',409);
- const credit=lamports(requestedCreditLamports,'opening credit'),reserve=lamports(operationalReserveLamports,'operational reserve');
+ // 'all': the whole finalized balance less the reserve, measured by the scheduler when it applies the request.
+ const credit=requestedCreditLamports==='all'?'all':lamports(requestedCreditLamports,'opening credit'),reserve=lamports(operationalReserveLamports,'operational reserve');
  const body={mint,wallet:fw.address,credit:String(credit),reserve:String(reserve),requestedBy:actor};
  await db.query("INSERT INTO reward_intents(id,kind,mint,job,namespace,body,body_hash,amount_lamports,signer_role,state) VALUES($1,'setup',$2,$3,$4,$5,$6,$7,'admin','prepared') ON CONFLICT(kind,job) DO UPDATE SET body=EXCLUDED.body,body_hash=EXCLUDED.body_hash,state='prepared',updated_at=now()",
-  [crypto.randomUUID(),mint,`opening:${mint}`,fw.namespace,stable(body),P3.canonicalHash(body),String(credit)]);
+  [crypto.randomUUID(),mint,`opening:${mint}`,fw.namespace,stable(body),P3.canonicalHash(body),credit==='all'?'0':String(credit)]);
  await audit(db,actor,'admin_opening_credit_requested',body);
  return{...body,state:'requested'};
 }
@@ -242,10 +245,11 @@ async function applyOpeningRequests(db,connection){
  const rows=(await db.query("SELECT * FROM reward_intents WHERE kind='setup' AND job LIKE 'opening:%' AND state='prepared'")).rows;const out=[];
  for(const r of rows){const b=r.body;
   try{const bal=await connection.getBalanceAndContext(new PublicKey(b.wallet),'finalized');const time=await connection.getBlockTime(bal.context.slot);
-   if(BigInt(b.credit)+BigInt(b.reserve)>BigInt(bal.value))throw Object.assign(Error(`The dev wallet holds ${bal.value} lamports`),{code:'INSUFFICIENT_BALANCE'});
-   await FS.recordOpening(db,{mint:b.mint,wallet:b.wallet,balance:BigInt(bal.value),requestedCredit:BigInt(b.credit),operationalReserve:BigInt(b.reserve),slot:bal.context.slot,time});
+   const all=BigInt(bal.value)-BigInt(b.reserve),credit=b.credit==='all'?(all>0n?all:0n):BigInt(b.credit);
+   if(credit+BigInt(b.reserve)>BigInt(bal.value)&&b.credit!=='all')throw Object.assign(Error(`The dev wallet holds ${bal.value} lamports`),{code:'INSUFFICIENT_BALANCE'});
+   await FS.recordOpening(db,{mint:b.mint,wallet:b.wallet,balance:BigInt(bal.value),requestedCredit:credit,operationalReserve:credit>0n?BigInt(b.reserve):0n,slot:bal.context.slot,time});
    await db.query("UPDATE reward_intents SET state='finalized',updated_at=now() WHERE id=$1",[r.id]);
-   await Logs.log(db,{component:'scheduler',eventType:'opening_credit_recorded',mint:b.mint,message:`Opening credit ${b.credit} lamports (reserve ${b.reserve}) recorded at finalized slot ${bal.context.slot}; split once`});out.push({mint:b.mint,state:'recorded'});}
+   await Logs.log(db,{component:'scheduler',eventType:'opening_credit_recorded',mint:b.mint,message:`Opening credit ${credit} lamports`+(b.credit==='all'?' (the whole balance)':'')+` (reserve ${b.reserve}) recorded at finalized slot ${bal.context.slot}; split 85/15 once`});out.push({mint:b.mint,state:'recorded'});}
   catch(e){await db.query("UPDATE reward_intents SET state='failed',updated_at=now() WHERE id=$1",[r.id]);await Logs.log(db,{severity:'warn',component:'scheduler',eventType:'opening_credit_refused',mint:b.mint,message:e.message,errorCode:e.code||'OPENING_REFUSED'});out.push({mint:b.mint,state:'failed',reason:e.message});}
  }
  return out;

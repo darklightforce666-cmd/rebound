@@ -10,11 +10,12 @@
 <meta property="og:site_name" content="rebound">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://rebound.wtf/">
-<meta property="og:image" content="https://reboundpad.fun/assets/rebound-logo.png">
+<meta property="og:image" content="https://rebound.wtf/assets/rebound-logo.png">
 <meta property="og:image:alt" content="rebound logo">
-<link rel="icon" type="image/png" href="https://reboundpad.fun/assets/rebound-logo.png">
-<link rel="apple-touch-icon" href="https://reboundpad.fun/assets/rebound-logo.png">
-<script>try{if(localStorage.getItem('rebound.seen'))document.documentElement.classList.add('boot-quick')}catch(e){}</script>
+<link rel="icon" type="image/png" sizes="48x48" href="assets/favicon-48.png">
+<link rel="icon" type="image/png" sizes="512x512" href="assets/rebound-logo.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<meta name="twitter:card" content="summary"><meta name="twitter:site" content="@reboundwtf">
 <link rel="preload" href="assets/fonts/schibsted-grotesk-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="src/fonts.css"><link rel="stylesheet" href="src/styles.css"><link rel="stylesheet" href="src/solana.css"><link rel="stylesheet" href="src/motion.css"><link rel="stylesheet" href="src/live.css"><link rel="stylesheet" href="src/rebound.css"><link rel="stylesheet" href="src/bounce.css">
 
@@ -54,11 +55,11 @@ body.rebound-unlocked #rebound-entry{display:none}
 <header class="topbar"><div class="topbar-inner">
 <a class="topbar-brand" href="#explore" aria-label="rebound home"><svg viewBox="0 0 34 34" aria-hidden="true"><rect width="34" height="34" rx="9" fill="#0F9D63"/><g transform="translate(-1 1)"><path d="M7 9v9a9 9 0 0 0 18 0V6M19 11l6-6 5 6" fill="none" stroke="#FFFFFF" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"/></g></svg><span>rebound</span></a>
 <nav class="topnav" aria-label="Main navigation"><a href="#coins" data-nav="coins">Coins</a><a href="#payouts" data-nav="payouts">Payouts</a><a href="#launch" data-nav="launch">Launch a coin</a><a href="#docs" data-nav="docs">Docs</a><a href="#portfolio" data-nav="portfolio" data-needs-wallet hidden>Portfolio</a><a href="#admin" data-nav="admin" hidden>Admin</a></nav>
-<div class="topbar-actions"><button type="button" class="ca" id="top-ca" data-action="copy-ca" data-copy="" hidden aria-label="Copy the REBOUND contract address"><b id="top-ca-name">$REBOUND</b><span class="ca-addr" id="top-ca-addr"></span><svg class="ca-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg><span class="ca-done" role="status">copied</span></button>
+<div class="topbar-actions"><a class="x-link" href="https://x.com/reboundwtf" target="_blank" rel="noopener noreferrer" aria-label="rebound on X (Twitter)"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M17.75 3h3.07l-6.7 7.66L22 21h-6.17l-4.83-6.32L5.47 21H2.4l7.17-8.2L2 3h6.33l4.37 5.78L17.75 3Zm-1.08 16.2h1.7L7.4 4.73H5.58L16.67 19.2Z"/></svg><span>@reboundwtf</span></a><button type="button" class="ca" id="top-ca" data-action="copy-ca" data-copy="" hidden aria-label="Copy the REBOUND contract address"><b id="top-ca-name">$REBOUND</b><span class="ca-addr" id="top-ca-addr"></span><svg class="ca-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg><span class="ca-done" role="status">copied</span></button>
 <button type="button" class="ink wallet-button" data-action="wallet">Connect wallet</button><button type="button" class="menu-button" data-action="menu" aria-label="Open navigation menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 8h16M4 16h16"/></svg></button></div>
 </div></header>
 <main id="main" tabindex="-1"></main>
-<footer class="site-footer"><span>No returns are guaranteed. Holders are only paid from fees a coin actually collected.</span><span class="footer-links"><a href="#docs">Docs</a><a href="#analytics">Status</a></span></footer>
+<footer class="site-footer"><span>No returns are guaranteed. Holders are only paid from fees a coin actually collected.</span><span class="footer-links"><a href="#docs">Docs</a><a href="#analytics">Status</a><a href="https://x.com/reboundwtf" target="_blank" rel="noopener noreferrer">X</a></span></footer>
 </div>
 <dialog id="dialog" aria-label="Rebound dialog"><div id="dialog-body"></div></dialog>
 <div id="toasts" role="status" aria-live="polite"></div>

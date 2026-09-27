@@ -50,7 +50,7 @@ export async function mountHome(host,{api,realtime,esc,signal,isAddress}){
  };
 
  function lede(){const p=st.cfg?.policy||{},h=(p.holdersBps??8500)/100,mins=p.cycleSeconds?Math.round(p.cycleSeconds/60):30;
-  const el=q('#home-lede');if(el)el.textContent=h+'% of every rebound coin’s creator fees goes to holders who are underwater. The deeper you are, the bigger your share. Paid in SOL every '+mins+' minutes, nothing to claim.';}
+  const el=q('#home-lede');if(el)el.textContent=h+'% of every rebound coin’s creator fees goes to holders who are underwater. The deeper you are, the bigger your share. Paid in SOL every '+mins+' minutes.';}
  function renderError(){const msg='Live data is unavailable right now. Nothing is estimated in its place.';
   const t=q('#coin-table');if(t)t.innerHTML='<p class="muted">'+esc(msg)+'</p>';const p=q('#payout-rows');if(p)p.innerHTML='<p class="muted">'+esc(msg)+'</p>';
   renderStats(true);setupClock();}
