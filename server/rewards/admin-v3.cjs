@@ -155,6 +155,10 @@ async function launch(db,actor,session,{mint,feeWallet,namespace='production',fu
  const bps=fundingModel==='balance_budget'?budgetBps(budgetPercent):null;
  const admins=(await db.query('SELECT wallet FROM reward_admin_wallets WHERE revoked_at IS NULL')).rows.map(r=>r.wallet);
  if(admins.includes(feeWallet))fail('INVALID_BODY','The fee wallet must be a different wallet from the administrator wallet',409);
+ // Only pump.fun tokens can be measured: purchases are read from the bonding curve or the canonical
+ // PumpSwap pool. A token that trades elsewhere would never show a purchase, so nobody could be paid.
+ if(connection){const meta0=await tokenMeta(connection,mint);
+  if(meta0.exists===true&&await pumpMarket(connection,mint)===null)fail('UNSUPPORTED_TOKEN','This is not a pump.fun token (no pump.fun bonding curve or PumpSwap pool). REBOUND can only measure purchases made on pump.fun markets.',409);}
  const r=await registerPrimary(db,actor,session,{namespace,mint,fundingWallet:feeWallet});
  const fw=(await db.query("SELECT * FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired'",[mint])).rows[0];
  // A key already imported on the worker for this wallet keeps deposits automatic after a token switch.
@@ -201,6 +205,12 @@ async function launch(db,actor,session,{mint,feeWallet,namespace='production',fu
  await Logs.log(db,{severity:'warn',component:'admin',eventType:'site_token_changed',namespace,mint,message:`Site token set to ${meta.name||mint} (${mint}); fee wallet ${feeWallet}; funding: ${how}`+(test?`; private test: any holder, mode ${test.mode}`:'')+(meta.exists===false?' — no mint exists at this address yet':'')});
  return{...r,settlement,fundingMode:fw.mode,fundingModel,budgetBps:bps,budgetAction,balance:balance==null?null:String(balance),budgetEstimate:estimate==null?null:String(estimate),test,exists:meta.exists,name:meta.name||null,symbol:meta.symbol||null,
   onChain:settlement==='program'&&program&&connection?await primaryChainStatus(connection,program,mint,feeWallet):null,site:await site(db)};
+}
+/** 'curve' | 'pool' | null — where this mint trades on pump.fun (null also when the RPC cannot tell). */
+async function pumpMarket(connection,mint){
+ try{const H=require('./history-v3.cjs'),m=H.marketAddresses(mint);
+  const [c,p]=await connection.getMultipleAccountsInfo([new PublicKey(m.curve),new PublicKey(m.pool)],'confirmed');
+  return c?'curve':p?'pool':null;}catch{return undefined;}
 }
 /** What the admin wallet still has to sign on chain for this primary (register → start, or fix the fee wallet). */
 async function primaryChainStatus(connection,program,mint,feeWallet){
@@ -320,4 +330,4 @@ async function revokeAdmin(db,actor,{wallet}){wallet=address(wallet,'wallet');if
  const left=(await db.query('SELECT count(*)::int n FROM reward_admin_wallets WHERE revoked_at IS NULL AND wallet<>$1',[wallet])).rows[0].n;if(!left)fail('FORBIDDEN','At least one admin must remain',409);
  await db.query('UPDATE reward_admin_wallets SET revoked_at=now(),revoked_by=$2 WHERE wallet=$1',[wallet,actor]);await audit(db,actor,'admin_revoke',{wallet});return{wallet,revoked:true};}
 
-module.exports={primaryChainStatus,budgetBps,setAdminWallet,overview,setMode,testConfig,pause,registerPrimary,site,setSite,launch,tokenMeta,openingCredit,applyOpeningRequests,syncPrimary,chainPrepare,chainSubmit,addAdmin,revokeAdmin,CHAIN_ACTIONS};
+module.exports={pumpMarket,primaryChainStatus,budgetBps,setAdminWallet,overview,setMode,testConfig,pause,registerPrimary,site,setSite,launch,tokenMeta,openingCredit,applyOpeningRequests,syncPrimary,chainPrepare,chainSubmit,addAdmin,revokeAdmin,CHAIN_ACTIONS};
