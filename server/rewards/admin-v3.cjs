@@ -149,8 +149,16 @@ async function tokenMeta(connection,mint){
  */
 const FEE_MARGIN=10_000_000n,CYCLE_FEE_MARGIN=50_000_000n,TOTAL_FEE_MARGIN=250_000_000n,INCOME_RESERVE=10_000_000n;
 function budgetBps(pct){const n=Number(pct);if(!Number.isFinite(n)||n<=0||n>100)fail('INVALID_BODY','Budget must be between 0.01 and 100 percent');const bps=Math.round(n*100);if(bps<1)fail('INVALID_BODY','Budget must be at least 0.01 percent');return bps;}
-async function launch(db,actor,session,{mint,feeWallet,namespace='production',fundingModel='balance_budget',budgetPercent=50,startTest=false,newBudget=false},{connection=null,program=null}={}){
+async function launch(db,actor,session,{mint,feeWallet,namespace='production',fundingModel='balance_budget',budgetPercent=50,startTest=false,newBudget=false,goLive=false},{connection=null,program=null}={}){
  mint=address(mint,'token contract');feeWallet=address(feeWallet,'fee wallet');namespace=NS(namespace);
+ // Production go-live (owner decision 2026-09-28): the dashboard's one launch switches the production namespace
+ // to real payouts. Only the vault model, only with the host's production lock open, only for a real mint.
+ if(goLive){
+  if(namespace!=='production')fail('INVALID_BODY','Go-live applies to the production namespace only');
+  if(fundingModel!=='income')fail('INVALID_BODY','Production uses the vault funding model (85 % / 20 % per round / 15 % kept)');
+  if(process.env.REWARDS_ALLOW_PRODUCTION!=='true'||require('./execution.cjs').ceiling()!=='production')fail('PRODUCTION_LOCKED','Production is locked on this site host: set REWARDS_ALLOW_PRODUCTION=true and REWARDS_MAX_EXECUTION_MODE=production in the Netlify environment, redeploy, then launch again. Nothing was changed.',409);
+  if(connection){const m=await tokenMeta(connection,mint);if(m.exists!==true)fail('TOKEN_NOT_FOUND','No token mint exists at this address on Solana mainnet. Nothing was changed.',409);}
+ }
  if(!['balance_budget','income'].includes(fundingModel))fail('INVALID_BODY','Unknown funding model');
  const bps=fundingModel==='balance_budget'?budgetBps(budgetPercent):null;
  const admins=(await db.query('SELECT wallet FROM reward_admin_wallets WHERE revoked_at IS NULL')).rows.map(r=>r.wallet);
@@ -201,10 +209,12 @@ async function launch(db,actor,session,{mint,feeWallet,namespace='production',fu
  const meta=connection?await tokenMeta(connection,mint):{exists:null};
  await db.query('UPDATE reward_site SET primary_mint=$1,primary_name=$2,primary_symbol=$3,fee_wallet=$4,namespace=$5,updated_by=$6,updated_at=now() WHERE id=1',[mint,meta.name||null,meta.symbol||null,feeWallet,namespace,actor]);
  await db.query('UPDATE reward_coins SET name=COALESCE($2,name),symbol=COALESCE($3,symbol),updated_at=now() WHERE mint=$1',[mint,meta.name||null,meta.symbol||null]).catch(()=>{});
+ if(goLive){await db.query("UPDATE reward_platform SET execution_mode='production',paused=false,pause_reason=NULL,config_version=config_version+1,updated_at=now() WHERE namespace='production'");
+  await Logs.log(db,{severity:'warn',component:'admin',eventType:'execution_mode_changed',namespace,mint,message:`Production is live: real payouts from ${feeWallet} (vault model), started by ${actor}`});}
  const how=fundingModel==='balance_budget'?(budgetAction==='new'?`NEW budget ${bps/100}% of the current fee-wallet balance`+(estimate!=null?` (≈${estimate} lamports)`:''):budgetAction==='lowered'?`budget lowered to ${bps/100}%`:`budget kept (${bps/100}%)`):'vault: 85% of the current balance and of every new fee, at most 20% of the vault per round';
- await audit(db,actor,'admin_launch',{namespace,mint,feeWallet,fundingModel,budgetBps:bps,budgetAction,test});
+ await audit(db,actor,'admin_launch',{namespace,mint,feeWallet,fundingModel,budgetBps:bps,budgetAction,test,goLive:!!goLive});
  await Logs.log(db,{severity:'warn',component:'admin',eventType:'site_token_changed',namespace,mint,message:`Site token set to ${meta.name||mint} (${mint}); fee wallet ${feeWallet}; funding: ${how}`+(test?`; private test: any holder, mode ${test.mode}`:'')+(meta.exists===false?' — no mint exists at this address yet':'')});
- return{...r,settlement,fundingMode:fw.mode,fundingModel,budgetBps:bps,budgetAction,balance:balance==null?null:String(balance),budgetEstimate:estimate==null?null:String(estimate),test,exists:meta.exists,name:meta.name||null,symbol:meta.symbol||null,
+ return{...r,live:!!goLive,settlement,fundingMode:fw.mode,fundingModel,budgetBps:bps,budgetAction,balance:balance==null?null:String(balance),budgetEstimate:estimate==null?null:String(estimate),test,exists:meta.exists,name:meta.name||null,symbol:meta.symbol||null,
   onChain:settlement==='program'&&program&&connection?await primaryChainStatus(connection,program,mint,feeWallet):null,site:await site(db)};
 }
 /**

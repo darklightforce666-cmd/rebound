@@ -66,3 +66,6 @@ tr.sev-warn td{color:#A83C16}tr.sev-error td,tr.sev-critical td{color:#993614}
 .token-inline-img{width:28px;height:28px;border-radius:50%;object-fit:cover;vertical-align:-6px;margin-right:10px}
 .live-logo{object-fit:cover;border-radius:50%}
 .field-hint{display:block;margin-top:4px;color:#727874;font-size:.8rem}
+.adm-launch .adm-fixed{display:grid;gap:8px;margin:4px 0 14px}.adm-launch .adm-fixed div{padding:10px 14px;border-radius:10px;background:#EFF6F1;border:1px solid #D5E8DC}
+.adm-launch .adm-fixed span{display:block;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#0B7A4C}.adm-launch .adm-fixed b{display:block;margin-top:4px;font-size:14px;font-weight:600;color:#1A201D}
+.adm-launch .adm-actions{display:flex;flex-wrap:wrap;gap:10px}

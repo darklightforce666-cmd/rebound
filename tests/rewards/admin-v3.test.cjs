@@ -86,6 +86,26 @@ test('site settings and launch: open/close the site, Privy App ID, token + fee w
  }finally{await db.close();}
 });
 
+test('production go-live: locked without the host switches, then one launch turns on real payouts (vault only)',async()=>{
+ const {db,api}=await setup();const admin=key(),dev=key(),mint=key();const env={...process.env};try{
+  const connection={async getParsedAccountInfo(){return{value:{data:{parsed:{type:'mint',info:{decimals:6}}}}};},async getMultipleAccountsInfo(){return[{data:Buffer.alloc(0)},null];},async getBalance(){return 2_000_000_000;},async getSlot(){return 100;}};
+  const go={mint,feeWallet:dev,namespace:'production',fundingModel:'income',goLive:true};
+  await assert.rejects(api.launch(db,admin,{reboundWallets:[]},go,{connection}),e=>e.code==='PRODUCTION_LOCKED');
+  assert.equal((await db.query("SELECT execution_mode FROM reward_platform WHERE namespace='production'")).rows[0].execution_mode,'dry_run','nothing changed');
+  process.env.REWARDS_ALLOW_PRODUCTION='true';process.env.REWARDS_MAX_EXECUTION_MODE='production';
+  await assert.rejects(api.launch(db,admin,{reboundWallets:[]},{...go,fundingModel:'balance_budget'},{connection}),e=>e.code==='INVALID_BODY');
+  await assert.rejects(api.launch(db,admin,{reboundWallets:[]},{...go,namespace:'mainnet_test'},{connection}),e=>e.code==='INVALID_BODY');
+  await assert.rejects(api.launch(db,admin,{reboundWallets:[]},go,{connection:{...connection,async getParsedAccountInfo(){return{value:null};}}}),e=>e.code==='TOKEN_NOT_FOUND');
+  await db.query("UPDATE reward_platform SET paused=true,pause_reason='stopped' WHERE namespace='production'");
+  const r=await api.launch(db,admin,{reboundWallets:[]},go,{connection});
+  assert.equal(r.live,true);
+  const p=(await db.query("SELECT execution_mode,paused FROM reward_platform WHERE namespace='production'")).rows[0];assert.equal(p.execution_mode,'production');assert.equal(p.paused,false);
+  assert.equal((await db.query('SELECT status FROM reward_coins WHERE mint=$1',[mint])).rows[0].status,'active');
+  assert.equal(r.site.namespace,'production');
+ }finally{process.env.REWARDS_ALLOW_PRODUCTION=env.REWARDS_ALLOW_PRODUCTION;process.env.REWARDS_MAX_EXECUTION_MODE=env.REWARDS_MAX_EXECUTION_MODE;
+  for(const k of ['REWARDS_ALLOW_PRODUCTION','REWARDS_MAX_EXECUTION_MODE'])if(env[k]===undefined)delete process.env[k];await db.close();}
+});
+
 test('program governance actions: exact unsigned transaction for the admin wallet, simulated first, verified before broadcast',async(t)=>{
  const fs=require('node:fs'),path=require('node:path');if(!fs.existsSync(path.join(__dirname,'../../contracts/v3/target/deploy/rebound_rewards_v3.so')))return t.skip('SBF build missing');
  const {SvmConnection}=require('./svm-connection.cjs'),{Transaction}=require('@solana/web3.js'),W3=require('../../server/rewards/wire-v3.cjs');
