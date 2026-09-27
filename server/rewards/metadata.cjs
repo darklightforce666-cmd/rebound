@@ -17,8 +17,12 @@ function link(value,hosts){
  if(u.protocol!=='https:'||u.username||u.password||(hosts&&!hosts.some(h=>u.hostname===h||u.hostname.endsWith('.'+h))))throw Error('Invalid social link');
  return u.toString();
 }
+// The website of every coin launched on REBOUND is its own page on the site; the creator does not enter one.
+const SITE='https://rebound.wtf';
+const tokenPage=mint=>SITE+'/#token/'+mint;
+const MINT_RE=/^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 // Validate and normalize the creator's input. Throws a user-safe message on failure.
-function validate({name,symbol,description='',imageBase64,twitter,telegram,website}){
+function validate({name,symbol,description='',imageBase64,twitter,telegram,mint}){
  if(typeof name!=='string'||!name.trim()||Buffer.byteLength(name.trim())>LIMITS.nameBytes)throw Error('Name must be 1–32 bytes.');
  if(typeof symbol!=='string'||!/^[A-Za-z0-9$._-]+$/.test(symbol.trim())||Buffer.byteLength(symbol.trim())>LIMITS.symbolBytes)throw Error('Ticker must be 1–10 letters or digits.');
  if(typeof description!=='string'||description.length>LIMITS.descriptionChars)throw Error('Description must be at most 2000 characters.');
@@ -26,7 +30,7 @@ function validate({name,symbol,description='',imageBase64,twitter,telegram,websi
  if(bytes.length<16||bytes.length>LIMITS.imageBytes)throw Error('Choose a PNG or JPEG image smaller than 2 MB.');
  const type=sniff(bytes);if(!type)throw Error('PNG and JPEG images only.');
  return{name:name.trim(),symbol:symbol.trim(),description,bytes,type,
-  links:{twitter:link(twitter,['x.com','twitter.com']),telegram:link(telegram,['t.me','telegram.me']),website:link(website)}};
+  links:{twitter:link(twitter,['x.com','twitter.com']),telegram:link(telegram,['t.me','telegram.me']),website:mint==null?undefined:(()=>{if(typeof mint!=='string'||!MINT_RE.test(mint))throw Error('Invalid mint address');return tokenPage(mint);})()}};
 }
 async function upload(db,{cfg=S.storageConfig(),createdBy,origin,...input},fetchImpl=fetch){
  const v=validate(input);
@@ -55,4 +59,4 @@ async function readLegacy(hash){
  if(!/^[a-f0-9]{64}$/.test(hash||''))throw Error('Invalid content hash');
  const {getStore}=require('@netlify/blobs');return getStore({name:'rebound-token-metadata',consistency:'strong'}).getWithMetadata(hash,{type:'arrayBuffer'});
 }
-module.exports={LIMITS,sniff,validate,upload,readMetadata,readLegacy,read:readLegacy};
+module.exports={LIMITS,sniff,validate,upload,readMetadata,readLegacy,read:readLegacy,tokenPage,SITE};

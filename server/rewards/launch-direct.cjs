@@ -21,6 +21,14 @@ const OPERATING_LAMPORTS=10_000_000n;
 const SOL_KEY=NATIVE_MINT.toBase58();
 
 let quoteCache={at:0,list:null};
+// Groups for the pair picker: stablecoins, tokenized stocks, wrapped / bridged coins, and everything else.
+function quoteCategory({symbol,name}){
+ const s=String(symbol||''),n=String(name||'').toLowerCase();
+ if(/^(usdc|usdt|usd1|pyusd|usdg|usds|usde|fdusd|eurc|dai|usdh|usdy|ausd)$/i.test(s)||/\b(usd|dollar|stable|euro)\b/.test(n))return 'stable';
+ if(/xstock|tokenized|\bstock\b|\bshares?\b|\betf\b|\bequity\b|\binc\.?\b|\bcorp\b|ondo/.test(n)||/^[A-Z]{1,5}x$/.test(s))return 'stock';
+ if(/^(w|cb|z|t|so|x)?(btc|eth|bnb|sui|xrp|doge|ltc|avax|trx|ada|hype)$/i.test(s)||/wrapped|bridged|wormhole|portal|bitcoin|ether/.test(n))return 'wrapped';
+ return 'other';
+}
 /** Quote assets pump.fun admits right now (SOL first), with display names. Cached for 10 minutes. */
 async function quoteMints(connection){
  if(quoteCache.list&&Date.now()-quoteCache.at<600000)return quoteCache.list;
@@ -34,9 +42,13 @@ async function quoteMints(connection){
   unique.slice(i,i+100).forEach((m,j)=>{const md=(infos.value?.[j]?.data?.parsed?.info?.extensions||[]).find(e=>e.extension==='tokenMetadata')?.state;
    named.push({mint:m,symbol:md?.symbol?String(md.symbol).slice(0,16):null,name:md?.name?String(md.name).slice(0,48):null});});
  }
- for(const q of named.filter(x=>!x.symbol))try{const m=await Meta.onchain(connection,q.mint);if(m){q.symbol=m.symbol.slice(0,16)||null;q.name=m.name.slice(0,48)||null;}}catch{}
- const list=[{mint:SOL_KEY,symbol:'SOL',name:'Solana',sol:true},...named.sort((a,b)=>String(a.symbol||'~').localeCompare(String(b.symbol||'~')))];
- quoteCache={at:Date.now(),list};return list;
+ // Name, ticker and logo from each asset's own metadata (display only), a few at a time.
+ const until=Date.now()+6000;   // the function has ~10 s; logos that are slower come on the next refresh
+ for(let i=0;i<named.length&&Date.now()<until;i+=8)await Promise.all(named.slice(i,i+8).map(async q=>{try{const m=await Meta.resolve(connection,q.mint,{timeoutMs:3000});if(m){q.symbol=q.symbol||m.symbol||null;q.name=q.name||m.name||null;q.image=m.image||null;}}catch{}}));
+ for(const q of named)q.category=quoteCategory(q);
+ const list=[{mint:SOL_KEY,symbol:'SOL',name:'Solana',sol:true,category:'sol'},...named.sort((a,b)=>String(a.symbol||'~').localeCompare(String(b.symbol||'~')))];
+ // Logos still missing (slow metadata hosts): keep this list one minute only, then try again.
+ quoteCache={at:Date.now()<until?Date.now():Date.now()-540000,list};return list;
 }
 
 /** 1. Draft: the shared draft plus the pair. The pair is fixed once the launch has been prepared (the prepared
@@ -62,6 +74,9 @@ async function prepare(ports,{session,attemptId,mint}){
  if(!['draft','awaiting_creation_signature'].includes(a.state))fail('LAUNCH_STATE',`Launch is ${a.state}`,409);
  try{mint=new PublicKey(mint).toBase58();}catch{fail('MINT_INVALID','Invalid mint public key');}
  if(await connection.getAccountInfo(new PublicKey(mint)))fail('MINT_EXISTS','That mint address is already in use; generate a new one');
+ // The metadata's website is this coin's page on rebound.wtf, fixed for the mint chosen before the upload.
+ const md=ports.readMetadata?await ports.readMetadata(a.metadata_hash).catch(()=>null):null;
+ if(md?.data?.website&&md.data.website!==require('./metadata.cjs').tokenPage(mint))fail('METADATA_MINT_MISMATCH','The token details were prepared for a different mint address. Start the launch again.',409);
  await L.launchAllowed(db,a.namespace,a.wallet);
  const live=(await db.query(`SELECT * FROM reward_chain_attempts WHERE job LIKE $1 AND state IN ${T.LIVE}`,[`launch:${a.id}:%`])).rows[0];
  if(live){const r=await T.reconcile(db,connection,live,async sig=>settled(connection,sig));if(r.state!=='expired'&&r.state!=='failed')fail('LAUNCH_PENDING','The signed creation may still land; wait for it',409);}
@@ -182,4 +197,4 @@ async function register(ports,a,signature){
   ?`Token created on pump.fun (pair ${quoteMint}) with its REBOUND creator wallet ${creatorWallet}; rounds start once pair-asset accounting is enabled (fees stay in the creator vault until then)`
   :`Token created on pump.fun with its REBOUND creator wallet ${creatorWallet}; rewards are active (85 % holders, 15 % REBOUND buy & burn)`});
 }
-module.exports={draft,prepare,submit,status,quoteMints,OPERATING_LAMPORTS,register};
+module.exports={draft,prepare,submit,status,quoteMints,quoteCategory,OPERATING_LAMPORTS,register};

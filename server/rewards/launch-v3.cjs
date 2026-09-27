@@ -45,11 +45,14 @@ async function draft(ports,{session,wallet,idempotencyKey,metadataHash,name,symb
  const asset=(await db.query("SELECT * FROM reward_assets WHERE hash=$1 AND kind='metadata'",[metadataHash])).rows[0];if(!asset)fail('METADATA_MISSING','Upload the token image and details first');
  const meta=ports.readMetadata?await ports.readMetadata(metadataHash):null;
  if(meta&&(meta.data?.name!==name||meta.data?.symbol!==symbol))fail('METADATA_MISMATCH','Name/ticker differ from the uploaded metadata');
+ // REBOUND is the token whose contract address the admin set (admin → Launch → Token contract); the
+ // 15 % of every launched coin buys and burns that token.
  const plat=(await db.query('SELECT policy_version,primary_mint FROM reward_platform WHERE namespace=$1',[namespace])).rows[0];
- if(!plat.primary_mint)fail('SETUP_REQUIRED','The REBOUND primary token is not configured yet; launches are closed',503);
+ const primary=(await db.query('SELECT primary_mint FROM reward_site WHERE id=1')).rows[0]?.primary_mint||plat.primary_mint;
+ if(!primary)fail('SETUP_REQUIRED','The REBOUND token is not set in the admin dashboard yet; launches are closed',503);
  const id=crypto.randomUUID(),request=P3.canonicalHash({wallet,metadataHash,name,symbol,buy:String(buy),namespace,idempotencyKey});
  await db.query(`INSERT INTO reward_launch_attempts(id,wallet,state,request_hash,metadata_uri,metadata_hash,user_id,idempotency_key,namespace,name,symbol,image_uri,initial_buy_lamports,primary_target_mint,policy_version)
-  VALUES($1,$2,'draft',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,[id,wallet,request,asset.public_url,metadataHash,session.userId,idempotencyKey,namespace,name,symbol,meta?.data?.image||null,String(buy),plat.primary_mint,plat.policy_version]);
+  VALUES($1,$2,'draft',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,[id,wallet,request,asset.public_url,metadataHash,session.userId,idempotencyKey,namespace,name,symbol,meta?.data?.image||null,String(buy),primary,plat.policy_version]);
  return(await db.query('SELECT * FROM reward_launch_attempts WHERE id=$1',[id])).rows[0];
 }
 

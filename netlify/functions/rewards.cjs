@@ -36,7 +36,7 @@ async function publicConfig(db){
   privy:{appId:process.env.PRIVY_APP_ID||s?.privy_app_id||null},
   policy:{version:P3.POLICY.version,hash:P3.POLICY_HASH,holdersBps:P3.POLICY.holdersBps,otherBps:P3.POLICY.otherBps,cycleSeconds:P3.POLICY.cycleSeconds,cutoffLeadSeconds:P3.POLICY.cutoffLeadSeconds,lossUnit:P3.POLICY.lossUnit,asset:P3.POLICY.asset,referencePrice:P3.POLICY.referencePrice,priceWindowSeconds:P3.POLICY.priceWindowSeconds},
   namespaces:platform.map(p=>({namespace:p.namespace,executionMode:effective(p.execution_mode),policyVersion:p.policy_version,primaryMint:p.primary_mint,paused:p.paused})),
-  ...(()=>{const by=Object.fromEntries(platform.map(p=>[p.namespace,p]));const ok=(ns,mode)=>by[ns]&&!by[ns].paused&&effective(by[ns].execution_mode)===mode&&by[ns].primary_mint;
+  ...(()=>{const by=Object.fromEntries(platform.map(p=>[p.namespace,p]));const ok=(ns,mode)=>by[ns]&&!by[ns].paused&&effective(by[ns].execution_mode)===mode&&(s?.primary_mint||by[ns].primary_mint);
    const launchNamespace=ok('production','production')?'production':ok('mainnet_test','mainnet_test')?'mainnet_test':null;
    return{launchNamespace,primaryMint:s?.primary_mint||by.production?.primary_mint||by.mainnet_test?.primary_mint||null,
     features:{launches:!!launchNamespace,rewards:platform.some(p=>effective(p.execution_mode)!=='dry_run'),buyback:!!launchNamespace,privateTest:launchNamespace==='mainnet_test'}};})(),

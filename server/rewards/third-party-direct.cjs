@@ -83,7 +83,11 @@ async function collectFees({db,connection,env},coin,fw){
  * everything already spent on burns; never more than the wallet holds above the holders' share and a float.
  */
 async function burn({db,connection,env},coin,fw){
- if(coin.quote_mint||!coin.primary_target_mint)return{state:'skipped'};
+ // The burn target is REBOUND as set in the admin dashboard right now (Token contract); the mint stored at
+ // launch is only the fallback. A coin never buys itself.
+ const site=(await db.query('SELECT primary_mint FROM reward_site WHERE id=1')).rows[0]?.primary_mint||null;
+ const targetMint=site||coin.primary_target_mint;
+ if(coin.quote_mint||!targetMint||targetMint===coin.mint)return{state:'skipped'};
  // One burn at a time: a buy that may still land blocks the next.
  const open=(await db.query("SELECT * FROM reward_burns WHERE mint=$1 AND state='buying' ORDER BY created_at DESC LIMIT 1",[coin.mint])).rows[0];
  if(open){const at=(await db.query("SELECT * FROM reward_chain_attempts WHERE job=$1 ORDER BY created_at DESC LIMIT 1",[`burn:${open.id}`])).rows[0];
@@ -96,7 +100,7 @@ async function burn({db,connection,env},coin,fw){
  const bal=b(await connection.getBalance(new PublicKey(fw.address),'confirmed'));
  let amount=b(acc.other_settled)-spent;const room=bal-WALLET_FLOAT-b(acc.holder_awaiting_transfer);if(room<amount)amount=room;
  if(amount<MIN_BURN)return{state:'waiting',amount:String(amount>0n?amount:0n)};
- const kp=await signerOf(db,coin,fw,env),target=new PublicKey(coin.primary_target_mint);
+ const kp=await signerOf(db,coin,fw,env),target=new PublicKey(targetMint);
  const state=await PV.marketState(connection,target);
  const m=await PV.buybackMarket({connection,payer:kp.publicKey,buyer:kp.publicKey,targetMint:target,lamports:amount,slippageBps:BURN_SLIPPAGE_BPS,maxImpactBps:BURN_MAX_IMPACT_BPS,state});
  const ata=getAssociatedTokenAddressSync(target,kp.publicKey,true,state.tokenProgram);

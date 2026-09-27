@@ -153,15 +153,16 @@ test('metadata uploads are validated, content-addressed and never overwrite a di
    if(init.method==='POST'){const p=url.split('/storage/v1/object/')[1];if(store.has(p))return{ok:false,status:409};store.set(p,Buffer.from(init.body));return{ok:true,status:200};}
    const p=url.split('/storage/v1/object/public/')[1];return store.has(p)?{ok:true,status:200,arrayBuffer:async()=>store.get(p)}:{ok:false,status:404};};
   const png=Buffer.concat([Buffer.from('89504e470d0a1a0a','hex'),crypto.randomBytes(64)]).toString('base64');
-  const input={name:'Rebound Test',symbol:'RBT',description:'test',imageBase64:png,website:'https://rebound.wtf',twitter:'https://x.com/rebound'};
+  const input={name:'Rebound Test',symbol:'RBT',description:'test',imageBase64:png,mint:'So11111111111111111111111111111111111111112',website:'https://attacker.example',twitter:'https://x.com/rebound'};
   const a=await Metadata.upload(db,{...input,cfg},fetchImpl),b=await Metadata.upload(db,{...input,cfg},fetchImpl);
   assert.equal(a.uri,b.uri);assert.match(a.uri,/^https:\/\/abcdefghijklmnop\.supabase\.co\/storage\/v1\/object\/public\/rebound-token-assets\/metadata\/[a-f0-9]{64}\.json$/);
   assert.ok(a.uri.length<=200);assert.ok(calls.filter(c=>c[0]==='POST').every(c=>c[2]==='false'));
   assert.equal(a.data.image.split('/').at(-1).length,64+4);
+  assert.equal(a.data.website,'https://rebound.wtf/#token/So11111111111111111111111111111111111111112','the website is the coin’s page; a typed one is ignored');
   assert.equal((await db.query("SELECT count(*)::int n FROM reward_assets")).rows[0].n,2);
   store.set('rebound-token-assets/'+a.uri.split('/rebound-token-assets/')[1],Buffer.from('{"tampered":true}'));
   await assert.rejects(Metadata.upload(db,{...input,cfg},fetchImpl),/conflict/);
-  for(const bad of [{name:''},{name:'x'.repeat(33)},{symbol:'TOOLONGTICKER'},{imageBase64:Buffer.from('GIF89a'+'x'.repeat(40)).toString('base64')},{website:'http://insecure.example'},{twitter:'https://evil.example/x.com'}])
+  for(const bad of [{name:''},{name:'x'.repeat(33)},{symbol:'TOOLONGTICKER'},{imageBase64:Buffer.from('GIF89a'+'x'.repeat(40)).toString('base64')},{mint:'not-a-mint'},{twitter:'https://evil.example/x.com'}])
    assert.throws(()=>Metadata.validate({...input,...bad}));
   await assert.rejects(Metadata.upload(db,{...input,cfg:{...cfg,configured:false}},fetchImpl),/not configured/);
  }finally{await db.close();}
