@@ -35,7 +35,7 @@ body,body *{font-variant-numeric:normal!important}
 body.scrolled .topbar{border-bottom-color:var(--line)}
 .topbar-inner{max-width:1440px;margin:0 auto;height:72px;padding:0 64px;display:flex;align-items:center;justify-content:space-between;gap:24px}
 .topbar-brand{display:flex;align-items:center;gap:10px;color:var(--ink);text-decoration:none;font:800 22px/1 var(--font-display);letter-spacing:-.04em;flex-shrink:0}
-.topbar-brand svg{width:30px;height:30px}
+.topbar-brand .brand-mark{width:30px;height:30px;border-radius:8px;display:block}
 .topbar-inner>.topbar-brand{margin-right:24px}
 .topnav{display:flex;gap:28px;font-size:15px;flex:1}
 .topnav a{color:var(--muted);text-decoration:none;transition:color .15s;padding:6px 0}
@@ -283,7 +283,7 @@ dialog::backdrop{background:rgba(13,19,16,.25);backdrop-filter:none;-webkit-back
  .launch-how{grid-template-columns:1fr}
 }
 @media (max-width:760px){
- .topbar-inner{height:60px;padding:0 16px;gap:10px}.topbar-brand{font-size:20px}.topbar-brand svg{width:26px;height:26px}
+ .topbar-inner{height:60px;padding:0 16px;gap:10px}.topbar-brand{font-size:20px}.topbar-brand .brand-mark{width:26px;height:26px;border-radius:7px}
  .topbar .ca{display:none}
  .x-link{width:44px;height:44px;padding:0;justify-content:center}.x-link span{display:none}
  .wallet-button{height:44px;padding:0 14px;font-size:14px}

@@ -14,7 +14,7 @@ h1,h2,h3,.display{font-family:var(--font-display);letter-spacing:-.03em}
 #rebound-entry::before{content:"";position:absolute;left:50%;top:30%;width:420px;height:420px;margin:-210px 0 0 -210px;border-radius:50%;background:#0B7A4C;filter:blur(130px);opacity:.08;pointer-events:none;z-index:0}
 #rebound-entry .entry-card{position:relative;z-index:1;width:100%;max-width:420px;padding:36px;border:1px solid var(--line);border-radius:26px;background:var(--surface);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);box-shadow:0 40px 80px -40px #00000047;animation:rb-rise .5s var(--ease-out) both}
 #rebound-entry .entry-brand{display:flex;align-items:center;gap:12px;margin:0 0 28px;font:700 22px/1 var(--font-display);letter-spacing:-.03em}
-#rebound-entry .entry-brand svg{width:36px;height:36px;flex-shrink:0}
+#rebound-entry .entry-brand .brand-mark{width:36px;height:36px;border-radius:10px;flex-shrink:0}
 #rebound-entry h1{margin:0 0 8px;font:600 26px/1.15 var(--font-display);letter-spacing:-.03em}
 #rebound-entry .entry-copy{margin:0 0 24px;color:var(--muted)}
 #rebound-entry label{display:block;margin-bottom:8px;font-size:14px;font-weight:500}

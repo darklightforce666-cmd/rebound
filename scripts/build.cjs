@@ -9,6 +9,7 @@ function build(){
   const target=path.join(dist,file);fs.mkdirSync(path.dirname(target),{recursive:true});fs.copyFileSync(path.join(root,file),target);
  }
  fs.cpSync(path.join(root,'assets'),path.join(dist,'assets'),{recursive:true});
+ fs.copyFileSync(path.join(root,'assets/favicon.ico'),path.join(dist,'favicon.ico'));
  // Self-hosted fonts (OFL): Schibsted Grotesk (latin + latin-ext) and Geist Mono (latin) for addresses.
  fs.mkdirSync(path.join(dist,'assets/fonts'),{recursive:true});
  const fontDir=pkg=>path.join(path.dirname(require.resolve(pkg+'/package.json')),'files');
