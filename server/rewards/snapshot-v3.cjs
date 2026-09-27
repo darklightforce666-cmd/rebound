@@ -25,7 +25,7 @@ function build(a){
  if(Number(a.coverage.throughSlot)<Number(a.cutoffSlot))return wait('history_behind_cutoff',{coverage:a.coverage});
  const sol=policy.lossUnit==='SOL';   // v3.1+: losses in SOL, no external price feed
  const fx=sol?(t=>({time:Number(t),price:P3.LAMPORTS,conf:0n,source:'sol-unit'})):a.fx;
- const r=L.replay(a.events,{excluded:a.excluded,fx,credits:a.credits||[],throughSlot:a.cutoffSlot,parserHolds:a.parserHolds||[]});
+ const r=L.replay(a.events,{excluded:a.excluded,fx,credits:a.credits||[],throughSlot:a.cutoffSlot,parserHolds:a.parserHolds||[],exitOnOutflow:!!policy.permanentExitOnSale});
  return finish(a,policy,base,wait,r);
 }
 /**
@@ -53,7 +53,7 @@ function finish(a,policy,base,wait,r){
  for(const o of token)if(o.market?.startsWith('pump-amm')&&grad.some(t=>t<=o.time))o.continuityVerified=true;
  const price=P3.referencePrice({token,sol:sol?P3.unitSeries(a.cutoff,policy.priceWindowSeconds):(a.solSeries||[]),cutoff:Number(a.cutoff),coverage:{complete:true,throughTime:Number(a.cutoff),impliedHeartbeats:true},policy});
  if(price.outcome!=='pass')return wait(price.reason);
- const positions=[...r.owners.entries()].sort(([x],[y])=>x<y?-1:x>y?1:0).map(([owner,b])=>({owner,...P3.position(b.lots,{priceQ18:price.q18,holds:b.holds}),lotsDetail:b.lots}));
+ const positions=[...r.owners.entries()].sort(([x],[y])=>x<y?-1:x>y?1:0).map(([owner,b])=>({owner,...P3.position(b.lots,{priceQ18:price.q18,holds:b.holds,exited:b.exited||null,cutoff:a.cutoff,maturitySeconds:policy.maturitySeconds||0}),lotsDetail:b.lots}));
  const round=P3.allocateRound(positions,{holderReserve:a.holderReserve,solUsdPico:price.solUsd});
  const awards=round.awards.map(aw=>{const p=positions.find(x=>x.owner===aw.owner);return{index:aw.index,owner:aw.owner,lamports:aw.amount,creditUsd:aw.credit,lossUsd:aw.loss,lotCredits:P3.attributeCredit(aw.credit,p.lots)};});
  const eligible=positions.filter(p=>p.outcome==='eligible').length;

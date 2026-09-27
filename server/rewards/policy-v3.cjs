@@ -33,23 +33,41 @@ const TEST_POLICY_USD=Object.freeze({...BASE,version:'rebound-v3.0-test',kind:'t
 // token's SOL reference price; awards capped at the remaining SOL loss. No external price feed is needed, so
 // every holder with a recorded purchase is included, on any token and any history length.
 const SOL_BASE=Object.freeze({...BASE,lossUnit:'SOL',solUsd:{...BASE.solUsd,usedFor:'display_only'}});
-const POLICY=Object.freeze({...SOL_BASE,version:'rebound-v3.1',kind:'production',cycleSeconds:1800,cutoffLeadSeconds:60});
-const TEST_POLICY=Object.freeze({...SOL_BASE,version:'rebound-v3.1-test',kind:'test',cycleSeconds:120,cutoffLeadSeconds:30});
+const POLICY_V31=Object.freeze({...SOL_BASE,version:'rebound-v3.1',kind:'production',cycleSeconds:1800,cutoffLeadSeconds:60});
+const TEST_POLICY_V31=Object.freeze({...SOL_BASE,version:'rebound-v3.1-test',kind:'test',cycleSeconds:120,cutoffLeadSeconds:30});
+// v3.2 (owner decision 2026-09-27):
+//  * any sale or transfer of the token to another wallet excludes the sender from every later round of that
+//    token for good — buying again does not restore it; awards already funded (reserved) are still paid;
+//  * tokens received by transfer have no purchase cost (unchanged);
+//  * compensation already received reduces the loss (unchanged);
+//  * a purchase counts only after 15 minutes of holding;
+//  * reference price = max(spot, 15-minute TWAP);
+//  * 30-minute rounds; 85 % of fees to holders, 15 % stays on the dev wallet (primary) or buys and burns the
+//    primary token (third-party tokens).
+// The test policy has the same rules with 2-minute rounds.
+const SOL_V32=Object.freeze({...SOL_BASE,permanentExitOnSale:true,maturitySeconds:900,priceWindowSeconds:900});
+const POLICY=Object.freeze({...SOL_V32,version:'rebound-v3.2',kind:'production',cycleSeconds:1800,cutoffLeadSeconds:60});
+const TEST_POLICY=Object.freeze({...SOL_V32,version:'rebound-v3.2-test',kind:'test',cycleSeconds:120,cutoffLeadSeconds:30});
 const hashOf=p=>W.hash(stable(p)).toString('hex');
 const POLICY_HASH=hashOf(POLICY),TEST_POLICY_HASH=hashOf(TEST_POLICY);
-const POLICIES=Object.freeze({[POLICY.version]:POLICY,[TEST_POLICY.version]:TEST_POLICY,[POLICY_USD.version]:POLICY_USD,[TEST_POLICY_USD.version]:TEST_POLICY_USD});
+const ALL=[POLICY,TEST_POLICY,POLICY_V31,TEST_POLICY_V31,POLICY_USD,TEST_POLICY_USD];
+const POLICIES=Object.freeze(Object.fromEntries(ALL.map(p=>[p.version,p])));
 function policy(version){const p=POLICIES[version];if(!p)throw Error('Unknown policy version');return p;}
 
 // Persist both policy versions (immutable rows) and the platform namespaces. Idempotent.
 async function seed(db){
- for(const p of [POLICY,TEST_POLICY,POLICY_USD,TEST_POLICY_USD])await db.query('INSERT INTO reward_policies(version,hash,canonical,kind) VALUES($1,$2,$3,$4) ON CONFLICT(version) DO NOTHING',[p.version,hashOf(p),stable(p),p.kind]);
- for(const p of [POLICY,TEST_POLICY,POLICY_USD,TEST_POLICY_USD]){const row=(await db.query('SELECT hash FROM reward_policies WHERE version=$1',[p.version])).rows[0];if(row.hash!==hashOf(p))throw Error('Stored policy '+p.version+' differs from code; create a new policy version');}
+ for(const p of ALL)await db.query('INSERT INTO reward_policies(version,hash,canonical,kind) VALUES($1,$2,$3,$4) ON CONFLICT(version) DO NOTHING',[p.version,hashOf(p),stable(p),p.kind]);
+ for(const p of ALL){const row=(await db.query('SELECT hash FROM reward_policies WHERE version=$1',[p.version])).rows[0];if(row.hash!==hashOf(p))throw Error('Stored policy '+p.version+' differs from code; create a new policy version');}
  await db.query("INSERT INTO reward_platform(namespace,policy_version) VALUES('production',$1),('mainnet_test',$2) ON CONFLICT DO NOTHING",[POLICY.version,TEST_POLICY.version]);
- // Move a namespace that never ran a cycle from the USD policy (v3.0) to the SOL policy (v3.1).
+ // Move a namespace that never ran a cycle from the USD policy (v3.0) to the current policy.
  for(const [ns,from,to] of [['production',POLICY_USD.version,POLICY.version],['mainnet_test',TEST_POLICY_USD.version,TEST_POLICY.version]])
   await db.query('UPDATE reward_platform p SET policy_version=$3,config_version=config_version+1,updated_at=now() WHERE p.namespace=$1 AND p.policy_version=$2 AND NOT EXISTS(SELECT 1 FROM reward_cycles c WHERE c.namespace=$1)',[ns,from,to]);
+ // v3.1 → v3.2: the platform policy only decides what NEW tokens are registered with (direct settlement binds
+ // nothing on chain); every registered token keeps the policy it was launched with.
+ for(const [ns,from,to] of [['production',POLICY_V31.version,POLICY.version],['mainnet_test',TEST_POLICY_V31.version,TEST_POLICY.version]])
+  await db.query('UPDATE reward_platform p SET policy_version=$3,config_version=config_version+1,updated_at=now() WHERE p.namespace=$1 AND p.policy_version=$2',[ns,from,to]);
 }
-module.exports={POLICY,TEST_POLICY,POLICY_HASH,TEST_POLICY_HASH,POLICIES,policy,hashOf,seed,POLICY_USD,TEST_POLICY_USD};
+module.exports={POLICY,TEST_POLICY,POLICY_HASH,TEST_POLICY_HASH,POLICIES,policy,hashOf,seed,POLICY_USD,TEST_POLICY_USD,POLICY_V31,TEST_POLICY_V31};
 
 // =====================================================================================
 // V3 formulas (spec §7, §8, §9). Integers only (BigInt). Units:
@@ -100,10 +118,18 @@ const unitSeries=(cutoff,window,step=10)=>{const T=Number(cutoff),start=T-Number
 
 // §7.3 position of one wallet at the cutoff. lots: that wallet's lots (FIFO order).
 // holds: wallet-level evidence problems (never zero-filled).
-function position(lots,{priceQ18,holds=[]}){
+// v3.2: `exited` (a sale or transfer happened) excludes the wallet for good; a purchase lot counts only once
+// `maturitySeconds` have passed between its purchase and the cutoff.
+function position(lots,{priceQ18,holds=[],exited=null,cutoff=null,maturitySeconds=0}){
+ const open=lots.filter(l=>l.kind==='purchase'&&big(l.remainingQuantity)>0n);
+ if(exited){const Q=sumOf(open.map(l=>l.remainingQuantity)),C=sumOf(open.map(l=>l.remainingCost));
+  return{outcome:'exited',reason:exited.reason||'sold_or_transferred',exit:exited,quantity:Q,cost:C,value:priceQ18==null?0n:valueUsd(Q,priceQ18),credit:0n,loss:0n,unrecognized:0n,lots:[]};}
  if(holds.length)return HOLD(holds[0].reason,{holds});
  if(priceQ18==null)return HOLD('price_unavailable');
- const recognized=lots.filter(l=>l.kind==='purchase'&&big(l.remainingQuantity)>0n);
+ const mature=l=>!maturitySeconds||cutoff==null||Number(l.acquiredAt)+Number(maturitySeconds)<=Number(cutoff);
+ const recognized=open.filter(mature);
+ if(!recognized.length&&open.length){const Q=sumOf(open.map(l=>l.remainingQuantity)),C=sumOf(open.map(l=>l.remainingCost));
+  return{outcome:'maturing',quantity:Q,cost:C,value:valueUsd(Q,priceQ18),credit:sumOf(open.map(l=>big(l.paidCredit)+big(l.reservedCredit))),loss:0n,unrecognized:sumOf(lots.filter(l=>l.kind!=='purchase').map(l=>l.remainingQuantity)),lots:[]};}
  const unrecognized=sumOf(lots.filter(l=>l.kind!=='purchase').map(l=>l.remainingQuantity));
  if(lots.some(l=>l.kind==='purchase'&&l.basisPending))return HOLD('basis_pending',{unrecognized});
  const Q=sumOf(recognized.map(l=>l.remainingQuantity)),C=sumOf(recognized.map(l=>l.remainingCost));

@@ -175,7 +175,6 @@ async function launch(db,actor,session,{mint,feeWallet,namespace='production',fu
    await db.query('UPDATE reward_funding_wallets SET budget_bps=$2 WHERE id=$1',[fw.id,bps]);budgetAction='lowered';}
   else budgetAction='kept';
  }else{
-  if(((await db.query('SELECT settlement FROM reward_platform WHERE namespace=$1',[namespace])).rows[0]?.settlement||'direct')==='direct')fail('INVALID_BODY','Without the on-chain program, funding is a budget from the fee wallet balance (85 % of new fees comes with the next step).',409);
   if(fw.funding_model==='balance_budget'||fw.budget_requested_at)fail('MODEL_SWITCH','This fee wallet was used with a budget. To fund holders from 85 % of new fees, launch with a different fee wallet.',409);
   if(fw.opening_slot==null)await openingCredit(db,actor,{mint,requestedCreditLamports:'0',operationalReserveLamports:String(INCOME_RESERVE)});   // only fees arriving from now on count
  }

@@ -25,6 +25,9 @@ const cycleId=(mint,n)=>`${mint}:${n}`;
 function schedule(coin){const p=P3.policy(coin.policy_version);return{anchor:Number(coin.schedule_anchor),len:Number(p.cycleSeconds),lead:Number(p.cutoffLeadSeconds)};}
 function cycleAt(s,t){if(!s.anchor||t<s.anchor)return null;return Math.floor((t-s.anchor)/s.len)+1;}
 function times(s,n){const start=s.anchor+(n-1)*s.len,end=start+s.len;return{start,end,cutoff:end-s.lead};}
+// Rounds use the stored positions for SOL-unit policies. A USD-unit policy (v3.0, kept for history) prices
+// each purchase with SOL/USD that may be backfilled later, so its rounds keep replaying the history.
+const usePositions=(ports,coin)=>!!ports.positions&&P3.policy(coin.policy_version).lossUnit==='SOL';
 async function log(db,e){try{await Logs.log(db,{component:'scheduler',...e});}catch{}}
 async function liveWallet(db,mint){return(await db.query("SELECT * FROM reward_funding_wallets WHERE mint=$1 AND status<>'retired'",[mint])).rows[0]||null;}
 
@@ -33,7 +36,8 @@ async function liveWallet(db,mint){return(await db.query("SELECT * FROM reward_f
  * the wallet holds after already-reserved unpaid awards and a 0.01 SOL fee reserve.
  */
 async function available(db,connection,fw){
- if(!fw||fw.funding_model!=='balance_budget'||!fw.budget_set_at||fw.budget_lamports==null)return{lamports:0n,reason:!fw?'no_fee_wallet':fw.funding_model!=='balance_budget'?'income_model_not_supported_in_direct_mode':'budget_not_measured_yet'};
+ if(fw&&fw.funding_model==='income')return incomeAvailable(db,connection,fw);
+ if(!fw||!fw.budget_set_at||fw.budget_lamports==null)return{lamports:0n,reason:!fw?'no_fee_wallet':'budget_not_measured_yet'};
  if(fw.budget_requested_at&&new Date(fw.budget_set_at)<new Date(fw.budget_requested_at))return{lamports:0n,reason:'budget_not_measured_yet'};
  const lowered=b(fw.budget_balance_lamports)*BigInt(fw.budget_bps)/10000n,budget=lowered<b(fw.budget_lamports)?lowered:b(fw.budget_lamports);
  const q=(await db.query(`SELECT COALESCE(sum(a.amount_lamports) FILTER (WHERE a.reserved_at>=$2),0) used, COALESCE(sum(a.amount_lamports) FILTER (WHERE a.state IN ('reserved','deferred_rent')),0) unpaid
@@ -42,6 +46,19 @@ async function available(db,connection,fw){
  const v=left<bal?left:bal;return{lamports:v>0n?v:0n,budget,used:b(q.used),unpaid:b(q.unpaid),reason:v>0n?null:left<=0n?'budget_used_up':'wallet_balance_low'};
 }
 
+/**
+ * Income model (policy 85/15): 85 % of every lamport that reached the dev wallet after launch belongs to
+ * holders (the scheduler's per-transaction reconciliation splits it once; 15 % stays on the wallet). A round
+ * may reserve what of that holder share no award has taken yet — never more than the wallet can pay.
+ */
+async function incomeAvailable(db,connection,fw){
+ if(fw.opening_slot==null)return{lamports:0n,reason:'income_ledger_not_opened_yet'};
+ const share=b((await db.query('SELECT COALESCE(sum(holder_lamports),0) s FROM reward_funding_credits WHERE mint=$1 AND slot>=$2',[fw.mint,fw.opening_slot])).rows[0].s);
+ const q=(await db.query(`SELECT COALESCE(sum(a.amount_lamports),0) used, COALESCE(sum(a.amount_lamports) FILTER (WHERE a.state IN ('reserved','deferred_rent')),0) unpaid
+  FROM reward_awards a JOIN reward_cycles c ON c.id=a.cycle_id WHERE c.funding_wallet=$1 AND a.state IN ('reserved','paid','deferred_rent')`,[fw.id])).rows[0];
+ const left=share-b(q.used),bal=b(await connection.getBalance(new PublicKey(fw.address),'confirmed'))-FEE_RESERVE-b(q.unpaid);
+ const v=left<bal?left:bal;return{lamports:v>0n?v:0n,budget:share,used:b(q.used),unpaid:b(q.unpaid),reason:v>0n?null:left<=0n?'no_new_fees':'wallet_balance_low'};
+}
 // Reserved-but-unpaid awards of a fee wallet (lamports still owed from its balance).
 async function unpaidOf(db,fwId){return b((await db.query("SELECT COALESCE(sum(a.amount_lamports),0) s FROM reward_awards a JOIN reward_cycles c ON c.id=a.cycle_id WHERE c.funding_wallet=$1 AND a.state IN ('reserved','deferred_rent')",[fwId])).rows[0].s);}
 async function publishCycle(db,id,extra={}){
@@ -65,7 +82,7 @@ async function tick(ports,coin){
  return DB.withLease(db,'coin:'+coin.mint,ports.worker||'worker',async({renew})=>{
   // Newly verified events → positions (never past a round still waiting for its snapshot).
   const t=await ports.now();
-  if(ports.positions)await ports.positions.project(coin,{deadline:ports.deadline,now:t}).catch(e=>log(db,{severity:'error',eventType:'positions_failed',mint:coin.mint,message:e.message,errorCode:e.code||'POSITIONS_FAILED'}));
+  if(ports.positions)await ports.positions.project(coin,{deadline:Date.now()+(ports.displayBudgetMs||20000),now:t}).catch(e=>log(db,{severity:'error',eventType:'positions_failed',mint:coin.mint,message:e.message,errorCode:e.code||'POSITIONS_FAILED'}));
   const s=schedule(coin);if(!s.anchor)return{state:'not_started'};
   const fw=await liveWallet(db,coin.mint);
   const open=(await db.query(`SELECT * FROM reward_cycles WHERE mint=$1 AND state<>ALL($2) ORDER BY cycle_number`,[coin.mint,DONE])).rows;
@@ -92,7 +109,7 @@ async function advance(ports,coin,s,row,t,renew){
    const slot=await ports.cutoffSlot(cutoff);if(slot==null){if(row.state!=='waiting_for_data')await setState(db,row.id,'waiting_for_data',{reason:'cutoff_slot_unproven'},{...ctx,message:null});return{cycle:n,state:'waiting_for_data'};}
    // Ready-made positions are brought exactly to the cutoff slot; a round never pays on history that is not
    // verified through its cutoff — it waits (and is missed, paying nothing, if that takes a whole round).
-   if(ports.positions){
+   if(usePositions(ports,coin)){
     const pr=await ports.positions.project(coin,{target:slot});
     if(!pr.ready){const reason=pr.verifiedSlot<slot?'history_behind_cutoff':'positions_behind_cutoff';
      if(row.state!=='waiting_for_data'||row.reason!==reason)await setState(db,row.id,'waiting_for_data',{reason},{...ctx,message:`Round ${n} waiting for data: ${reason.replaceAll('_',' ')} (verified through slot ${pr.verifiedSlot}, positions at ${pr.appliedSlot}, cutoff slot ${slot})`});
@@ -113,8 +130,9 @@ async function snapshot(ports,coin,row,slot){
  const keyReady=!!(fw&&fw.mode==='automatic'&&fw.signer);
  const why=mode.paused?'paused':mode.mode==='dry_run'?'dry_run':!keyReady?'fee_wallet_key_missing':null;
  const avail=await available(db,connection,fw);
- const inputs=ports.positions?await ports.positions.inputsAt(coin,cutoff,slot):await ports.inputs(coin,n,cutoff,slot);
- const snap=(ports.positions?S.fromPositions:S.build)({...inputs,mint:row.mint,cycle:n,cutoff,cutoffSlot:slot,holderReserve:avail.lamports,policy:P3.policy(coin.policy_version)});
+ const fromPos=usePositions(ports,coin);
+ const inputs=fromPos?await ports.positions.inputsAt(coin,cutoff,slot):await ports.inputs(coin,n,cutoff,slot);
+ const snap=(fromPos?S.fromPositions:S.build)({...inputs,mint:row.mint,cycle:n,cutoff,cutoffSlot:slot,holderReserve:avail.lamports,policy:P3.policy(coin.policy_version)});
  if(snap.state==='waiting_for_data'){if(row.state!=='waiting_for_data'||row.reason!==snap.reason)await setState(db,row.id,'waiting_for_data',{reason:snap.reason},{...ctx,message:`Round ${n} waiting for data: ${snap.reason.replaceAll('_',' ')}`});return{cycle:n,state:'waiting_for_data',reason:snap.reason};}
  const underwater=snap.positions.filter(p=>p.outcome==='eligible'),counted=snap.positions.filter(p=>P3.big(p.quantity)>0n).length;
  const totalLoss=underwater.reduce((a,p)=>a+P3.big(p.lossUsd),0n),total=sumOf(snap.awards.map(a=>a.lamports));
@@ -138,7 +156,7 @@ async function snapshot(ports,coin,row,slot){
   if(live){
    const credits=snap.awards.flatMap(a=>a.lotCredits.filter(c=>P3.big(c.creditUsd)>0n).map(c=>({leaf_index:a.index,lot_id:c.lotId,credit_usd:c.creditUsd})));
    if(credits.length)await tx.query(`INSERT INTO reward_lot_credits(cycle_id,leaf_index,lot_id,credit_usd) SELECT $1,leaf_index,lot_id,credit_usd FROM jsonb_to_recordset($2::jsonb) AS x(leaf_index int,lot_id text,credit_usd numeric)`,[row.id,JSON.stringify(credits)]);
-   if(ports.positions)await ports.positions.applyCredits(tx,coin,slot,inputs.owners,snap.awards);   // positions stand at this slot
+   if(fromPos)await ports.positions.applyCredits(tx,coin,slot,inputs.owners,snap.awards);   // positions stand at this slot
   }
   const hol=snap.positions.filter(p=>P3.big(p.quantity)>0n||p.outcome==='hold').map(p=>({owner:p.owner,quantity_raw:p.quantity,cost_lamports:p.costUsd,value_lamports:p.valueUsd,compensated_lamports:p.creditUsd,loss_lamports:p.lossUsd,outcome:p.outcome==='hold'?'hold:'+(p.reason||''):p.outcome}));
   await tx.query(`INSERT INTO reward_public_holders(mint,owner,quantity_raw,cost_lamports,value_lamports,compensated_lamports,loss_lamports,outcome,cycle_number,updated_at)

@@ -20,7 +20,7 @@ const P3=require('./policy-v3.cjs'),L=require('./lots-v3.cjs'),H=require('./hist
 const FX=require('./sol-usd.cjs'),Logs=require('./logs.cjs');
 const b=x=>BigInt(String(x??0).split('.')[0]);
 const BIG=['quantity','remainingQuantity','cost','remainingCost','costLamports','paidCredit','reservedCredit'];
-const OPEN=['scheduled','snapshotting','waiting_for_data'];
+const OPEN=['scheduled','snapshotting','waiting_for_data'],WINDOW_SLOTS=20000;
 
 const lotOut=l=>{const o={...l};for(const k of BIG)if(o[k]!=null)o[k]=String(o[k]);return o;};
 const lotIn=l=>{const o={...l};for(const k of BIG)if(o[k]!=null)o[k]=BigInt(o[k]);return o;};
@@ -33,7 +33,8 @@ function totals(lots,holds){
  return{recognized:Q,cost:C,credit:K,unrecognized:U,pending,holds:holds.length};
 }
 // Public outcome of a live position at a price (same words as a round's snapshot).
-function outcomeAt(t,holds,s18){
+function outcomeAt(t,holds,s18,exited=null){
+ if(exited)return{outcome:'exited',value:0n,loss:0n};
  if(holds.length)return{outcome:'hold:'+String(holds[0].reason||'').slice(0,50),value:0n,loss:0n};
  if(t.recognized===0n)return{outcome:t.unrecognized>0n?'no_recognized_quantity':'sold',value:0n,loss:0n};
  if(s18==null)return{outcome:'price_unavailable',value:0n,loss:0n};
@@ -48,7 +49,7 @@ async function creditCount(db,mint,through){
 async function creditsBetween(db,mint,from,to){
  return(await db.query(`SELECT lc.lot_id,lc.credit_usd,a.state,c.cutoff_slot,a.cycle_id,a.leaf_index,a.recipient FROM reward_lot_credits lc JOIN reward_awards a USING(cycle_id,leaf_index) JOIN reward_cycles c ON c.id=a.cycle_id
   WHERE a.mint=$1 AND a.state IN ('reserved','paid','deferred_rent') AND c.cutoff_slot>$2 AND c.cutoff_slot<=$3`,[mint,from,to])).rows
-  .map(r=>({slot:Number(r.cutoff_slot),lotId:r.lot_id,credit:b(r.credit_usd),state:r.state==='paid'?'paid':'reserved',award:r.cycle_id+':'+r.leaf_index,owner:r.recipient}));
+  .map(r=>({slot:Number(r.cutoff_slot),lotId:r.lot_id,credit:b(r.credit_usd),state:'reserved',award:r.cycle_id+':'+r.leaf_index,owner:r.recipient}));   // one bucket: see applyCredits
 }
 // Earliest cutoff (unix s) of a round that still waits for its snapshot: events after it wait too.
 async function capTime(db,coin,now=Math.floor(Date.now()/1000)){
@@ -108,7 +109,7 @@ async function project({db},coin,{target=null,maxEvents=20000,deadline=Infinity,
   }else if(cap!=null&&(verifiedTime==null||limit!==verified||verifiedTime>cap)){through=events.length?events.at(-1).slot:applied;stop=true;}
   else{through=limit;throughTime=limit===verified?verifiedTime:null;}
   // Never past a round that still waits for its snapshot.
-  if(cap!=null){const i=events.findIndex(e=>e.time>cap);if(i>=0){through=events[i].slot-1;events=events.slice(0,i);throughTime=null;stop=true;}}
+  if(cap!=null){const i=events.findIndex(e=>e.time>cap);if(i>=0){through=i>0?events[i-1].slot:applied;events=events.slice(0,i);throughTime=null;stop=true;}}
   if(through<=applied){break;}
   if(events.length&&throughTime==null)throughTime=events.at(-1).time;
   await applyBatch(db,coin,st,{events,from:applied,through,throughTime,policy,excluded});
@@ -123,7 +124,10 @@ async function applyBatch(db,coin,st,{events,from,through,throughTime,policy,exc
  const mint=coin.mint;
  const credits=await creditsBetween(db,mint,from,through);
  const sigs=[...new Set(events.map(e=>e.signature))];
- const parserHolds=sigs.length?(await db.query("SELECT evidence FROM reward_audit WHERE kind='parser_hold' AND mint=$1 AND evidence->>'signature'=ANY($2::text[])",[mint,sigs])).rows.flatMap(r=>r.evidence.holds||[]):[];
+ // Parser holds of this slot range — also for transactions that produced no event at all (their slot comes
+ // from the history queue).
+ const parserHolds=(await db.query(`SELECT a.evidence FROM reward_audit a WHERE a.kind='parser_hold' AND a.mint=$1 AND (a.evidence->>'signature'=ANY($2::text[])
+   OR EXISTS(SELECT 1 FROM reward_history_queue q WHERE q.mint=a.mint AND q.signature=a.evidence->>'signature' AND q.slot>$3 AND q.slot<=$4))`,[mint,sigs,from,through])).rows.flatMap(r=>r.evidence.holds||[]);
  // Everything the batch can touch: owners named by events, parser holds and credits, and every token
  // account of those owners (a holding is proven against the sum of the owner's accounts).
  const owners=new Set(),keys=new Set();
@@ -132,24 +136,33 @@ async function applyBatch(db,coin,st,{events,from,through,throughTime,policy,exc
  for(const h of parserHolds)if(h.wallet)owners.add(h.wallet);
  for(const c of credits)if(c.owner)owners.add(c.owner);
  const accRows=(await db.query('SELECT account,owner,amount FROM reward_holder_accounts WHERE mint=$1 AND (account=ANY($2::text[]) OR owner=ANY($3::text[]))',[mint,[...keys],[...owners]])).rows;
- const posRows=(await db.query('SELECT owner,lots,holds FROM reward_holder_positions WHERE mint=$1 AND owner=ANY($2::text[])',[mint,[...owners]])).rows;
- const s={owners:new Map(posRows.map(r=>[r.owner,{lots:(r.lots||[]).map(lotIn),holds:r.holds||[]}])),accounts:new Map(accRows.map(r=>[r.account,{owner:r.owner,amount:b(r.amount)}])),seq:Number(st.lot_seq)};
+ const posRows=(await db.query('SELECT owner,lots,holds,exited FROM reward_holder_positions WHERE mint=$1 AND owner=ANY($2::text[])',[mint,[...owners]])).rows;
+ const s={owners:new Map(posRows.map(r=>[r.owner,{lots:(r.lots||[]).map(lotIn),holds:r.holds||[],...(r.exited?{exited:r.exited}:{})}])),accounts:new Map(accRows.map(r=>[r.account,{owner:r.owner,amount:b(r.amount)}])),seq:Number(st.lot_seq)};
  let fx=()=>null;
  if(policy.lossUnit==='SOL')fx=t=>({time:Number(t),price:P3.LAMPORTS,conf:0n,source:'sol-unit'});
  else{const ts=events.filter(e=>e.kind==='purchase_candidate').map(e=>e.time);if(ts.length)fx=FX.lookup(await FX.load(db,Math.min(...ts)-60,Math.max(...ts)));}
- const r=L.replay(events,{excluded,fx,credits,throughSlot:through,parserHolds,state:s});
+ // A credit whose lot was fully consumed in an earlier batch (possible after a late outflow rebuilt the
+ // positions) is absorbed by that closed lot in a full replay; stored positions drop closed lots, so such a
+ // credit is recognized by its lot's source event (already applied) and skipped — never a token-wide hold.
+ const open=new Set();for(const bk of s.owners.values())for(const l of bk.lots)open.add(l.id);
+ const missing=credits.filter(c=>!open.has(c.lotId));
+ let closed=new Set();
+ if(missing.length){const src=missing.map(c=>String(c.lotId).replace(/:(u|to)$/,''));
+  const found=new Set((await db.query('SELECT id FROM reward_events WHERE mint=$1 AND id=ANY($2::text[]) AND slot<=$3',[mint,src,from])).rows.map(r=>r.id));
+  closed=new Set(missing.filter(c=>found.has(String(c.lotId).replace(/:(u|to)$/,''))).map(c=>c.lotId));}
+ const r=L.replay(events,{excluded,fx,credits:credits.filter(c=>!closed.has(c.lotId)),throughSlot:through,parserHolds,state:s,exitOnOutflow:!!policy.permanentExitOnSale});
  const holdKey=h=>h.reason+':'+(h.signature||h.lotId||'');
  const mintHolds=[...(st.mint_holds||[])];for(const h of r.mintHolds)if(!mintHolds.some(x=>holdKey(x)===holdKey(h)))mintHolds.push(h);
  const pos=[...r.owners.entries()].map(([owner,bk])=>{const lots=bk.lots.filter(l=>b(l.remainingQuantity)>0n),t=totals(lots,bk.holds);
-  return{owner,lots:lots.map(lotOut),holds:bk.holds,recognized_raw:String(t.recognized),unrecognized_raw:String(t.unrecognized),cost_lamports:String(t.cost),credit_lamports:String(t.credit),basis_pending:t.pending};});
+  return{owner,lots:lots.map(lotOut),holds:bk.holds,exited:bk.exited||null,recognized_raw:String(t.recognized),unrecognized_raw:String(t.unrecognized),cost_lamports:String(t.cost),credit_lamports:String(t.credit),basis_pending:t.pending};});
  const acc=[...r.accounts.entries()].map(([account,a])=>({account,owner:a.owner||null,amount:String(a.amount)}));
  await DB.transaction(db,async tx=>{
   const u=await tx.query(`UPDATE reward_projection_state SET applied_slot=$3,applied_time=COALESCE($4,applied_time),events_applied=events_applied+$5,credits_applied=credits_applied+$6,lot_seq=$7,mint_holds=$8,parser_version=$9,updated_at=now()
    WHERE mint=$1 AND applied_slot=$2`,[mint,from,through,throughTime,events.length,credits.length,r.seq,JSON.stringify(mintHolds),I.PARSER]);
   if(!(u.rowCount??u.affectedRows))throw Object.assign(Error('Positions changed underneath this batch'),{code:'POSITIONS_RACE'});
-  if(pos.length)await tx.query(`INSERT INTO reward_holder_positions(mint,owner,lots,holds,recognized_raw,unrecognized_raw,cost_lamports,credit_lamports,basis_pending,updated_slot,updated_at)
-   SELECT $1,owner,lots,holds,recognized_raw,unrecognized_raw,cost_lamports,credit_lamports,basis_pending,$2,now() FROM jsonb_to_recordset($3::jsonb) AS x(owner text,lots jsonb,holds jsonb,recognized_raw numeric,unrecognized_raw numeric,cost_lamports numeric,credit_lamports numeric,basis_pending boolean)
-   ON CONFLICT(mint,owner) DO UPDATE SET lots=EXCLUDED.lots,holds=EXCLUDED.holds,recognized_raw=EXCLUDED.recognized_raw,unrecognized_raw=EXCLUDED.unrecognized_raw,cost_lamports=EXCLUDED.cost_lamports,credit_lamports=EXCLUDED.credit_lamports,basis_pending=EXCLUDED.basis_pending,updated_slot=EXCLUDED.updated_slot,updated_at=now()`,
+  if(pos.length)await tx.query(`INSERT INTO reward_holder_positions(mint,owner,lots,holds,exited,recognized_raw,unrecognized_raw,cost_lamports,credit_lamports,basis_pending,updated_slot,updated_at)
+   SELECT $1,owner,lots,holds,exited,recognized_raw,unrecognized_raw,cost_lamports,credit_lamports,basis_pending,$2,now() FROM jsonb_to_recordset($3::jsonb) AS x(owner text,lots jsonb,holds jsonb,exited jsonb,recognized_raw numeric,unrecognized_raw numeric,cost_lamports numeric,credit_lamports numeric,basis_pending boolean)
+   ON CONFLICT(mint,owner) DO UPDATE SET lots=EXCLUDED.lots,holds=EXCLUDED.holds,exited=EXCLUDED.exited,recognized_raw=EXCLUDED.recognized_raw,unrecognized_raw=EXCLUDED.unrecognized_raw,cost_lamports=EXCLUDED.cost_lamports,credit_lamports=EXCLUDED.credit_lamports,basis_pending=EXCLUDED.basis_pending,updated_slot=EXCLUDED.updated_slot,updated_at=now()`,
    [mint,through,JSON.stringify(pos)]);
   if(acc.length)await tx.query(`INSERT INTO reward_holder_accounts(mint,account,owner,amount,updated_slot) SELECT $1,account,owner,amount,$2 FROM jsonb_to_recordset($3::jsonb) AS x(account text,owner text,amount numeric)
    ON CONFLICT(mint,account) DO UPDATE SET owner=EXCLUDED.owner,amount=EXCLUDED.amount,updated_slot=EXCLUDED.updated_slot`,[mint,through,JSON.stringify(acc)]);
@@ -162,19 +175,28 @@ async function applyBatch(db,coin,st,{events,from,through,throughTime,policy,exc
 async function inputsAt(db,coin,cutoff,cutoffSlot){
  const mint=coin.mint,policy=P3.policy(coin.policy_version),st=await state(db,mint);
  const vc=(await db.query('SELECT through_slot FROM reward_checkpoints WHERE name=$1',['verified:'+mint])).rows[0];
- const rows=(await db.query("SELECT owner,lots,holds FROM reward_holder_positions WHERE mint=$1 AND (jsonb_array_length(lots)>0 OR jsonb_array_length(holds)>0)",[mint])).rows;
- const owners=new Map(rows.sort((x,y)=>x.owner<y.owner?-1:x.owner>y.owner?1:0).map(r=>[r.owner,{lots:(r.lots||[]).map(lotIn),holds:r.holds||[]}]));
+ const rows=(await db.query("SELECT owner,lots,holds,exited FROM reward_holder_positions WHERE mint=$1 AND (jsonb_array_length(lots)>0 OR jsonb_array_length(holds)>0)",[mint])).rows;
+ const owners=new Map(rows.sort((x,y)=>x.owner<y.owner?-1:x.owner>y.owner?1:0).map(r=>[r.owner,{lots:(r.lots||[]).map(lotIn),holds:r.holds||[],...(r.exited?{exited:r.exited}:{})}]));
  // Market states: every sample inside the price window, the last one before it, and all graduations and
  // invalidations — exactly what the reference price reads from a full replay.
  const start=Number(cutoff)-Number(policy.priceWindowSeconds);
- const win=(await db.query(`SELECT * FROM reward_events WHERE mint=$1 AND slot<=$2 AND kind=ANY($3::text[]) AND ((data->>'time')::bigint>$4 OR kind IN ('graduation','market_invalidation'))`,[mint,cutoffSlot,L.MARKET_KINDS,start])).rows.map(eventOf);
- const before=(await db.query(`SELECT * FROM reward_events WHERE mint=$1 AND slot<=$2 AND kind IN ('purchase_candidate','sale','pool_balances') AND (data->>'time')::bigint<=$3 ORDER BY slot DESC,transaction_index DESC,execution_order DESC,event_index DESC LIMIT 200`,[mint,cutoffSlot,start])).rows.map(eventOf);
+ // The window is ~60 s (~150 slots); WINDOW_SLOTS bounds the index range generously.
+ const win=[...(await db.query(`SELECT * FROM reward_events WHERE mint=$1 AND slot<=$2 AND slot>$2-$5 AND kind=ANY($3::text[]) AND (data->>'time')::bigint>$4`,[mint,cutoffSlot,L.MARKET_KINDS,start,WINDOW_SLOTS])).rows,
+  ...(await db.query(`SELECT * FROM reward_events WHERE mint=$1 AND slot<=$2 AND kind IN ('graduation','market_invalidation')`,[mint,cutoffSlot])).rows].map(eventOf);
+ const seen=new Set();for(let i=win.length-1;i>=0;i--){if(seen.has(win[i].id))win.splice(i,1);else seen.add(win[i].id);}
+ const before=(await db.query(`SELECT * FROM reward_events WHERE mint=$1 AND slot<=$2 AND kind IN ('purchase_candidate','sale','pool_balances') AND (data->>'time')::bigint<=$3 ORDER BY slot DESC,transaction_index DESC,execution_order DESC,event_index DESC LIMIT 500`,[mint,cutoffSlot,start])).rows.map(eventOf);
  const lastBefore=before.map(L.observationFrom).filter(Boolean)[0];
  const observations=[...(lastBefore?[lastBefore]:[]),...win.sort(L.chainOrder).map(L.marketObservation).filter(Boolean)];
- const heartbeats=(await db.query('SELECT observed_at,quote_model,base_reserve,real_quote,virtual_quote,market FROM reward_price_observations WHERE mint=$1 AND heartbeat AND observed_at BETWEEN $2 AND $3',[mint,cutoff-120,cutoff])).rows
+ const heartbeats=(await db.query('SELECT observed_at,quote_model,base_reserve,real_quote,virtual_quote,market FROM reward_price_observations WHERE mint=$1 AND heartbeat AND observed_at BETWEEN $2 AND $3',[mint,start-60,cutoff])).rows
   .map(r=>({time:Number(r.observed_at),market:r.quote_model==='curve'?'pump-curve':'pump-amm:'+r.market,s18:r.quote_model==='curve'?P3.curveS18({virtualSolReserves:r.virtual_quote,virtualTokenReserves:r.base_reserve}):P3.ammS18({quoteReserve:r.real_quote,baseReserve:r.base_reserve})}));
  const solSeries=policy.lossUnit==='SOL'?[]:await FX.load(db,start-120,cutoff);
- return{owners,mintHolds:st.mint_holds||[],appliedSlot:Number(st.applied_slot),coverage:{complete:!!vc,throughSlot:vc?Number(vc.through_slot):0},observations,heartbeats,solSeries};
+ const mintHolds=[...(st.mint_holds||[])];
+ for(const h of (await db.query("SELECT evidence FROM reward_audit WHERE kind='parser_hold' AND mint=$1",[mint])).rows.flatMap(r=>r.evidence.holds||[])){
+  if(!h.wallet){mintHolds.push(h);continue;}
+  if(!owners.has(h.wallet))owners.set(h.wallet,{lots:[],holds:[]});const bk=owners.get(h.wallet);
+  if(!bk.holds.some(x=>x.reason===h.reason))bk.holds.push({reason:h.reason,signature:h.signature||null,slot:null});
+ }
+ return{owners,mintHolds,appliedSlot:Number(st.applied_slot),coverage:{complete:!!vc,throughSlot:vc?Number(vc.through_slot):0},observations,heartbeats,solSeries};
 }
 /**
  * Inside a round's reservation transaction: add the awards' lot credits to the positions (they stand at
@@ -201,8 +223,8 @@ async function latestPrice(db,mint){
 // Touched owners → public holders table (value and loss at the latest known price).
 async function publishHolders(db,coin,pos){
  if(!pos.length)return;const p=await latestPrice(db,coin.mint);
- const rows=pos.map(x=>{const t={recognized:b(x.recognized_raw),unrecognized:b(x.unrecognized_raw),cost:b(x.cost_lamports),credit:b(x.credit_lamports)},o=outcomeAt(t,x.holds,p?.s18);
-  return{owner:x.owner,keep:t.recognized>0n||x.holds.length>0,quantity_raw:String(t.recognized),cost_lamports:String(t.cost),value_lamports:String(o.value),compensated_lamports:String(t.credit),loss_lamports:String(o.loss),outcome:o.outcome};});
+ const rows=pos.map(x=>{const t={recognized:b(x.recognized_raw),unrecognized:b(x.unrecognized_raw),cost:b(x.cost_lamports),credit:b(x.credit_lamports)},o=outcomeAt(t,x.holds,p?.s18,x.exited);
+  return{owner:x.owner,keep:t.recognized>0n||x.holds.length>0||!!x.exited,quantity_raw:String(t.recognized),cost_lamports:String(t.cost),value_lamports:String(o.value),compensated_lamports:String(t.credit),loss_lamports:String(o.loss),outcome:o.outcome};});
  const keep=rows.filter(r=>r.keep),gone=rows.filter(r=>!r.keep).map(r=>r.owner);
  if(keep.length)await db.query(`INSERT INTO reward_public_holders(mint,owner,quantity_raw,cost_lamports,value_lamports,compensated_lamports,loss_lamports,outcome,cycle_number,updated_at)
   SELECT $1,owner,quantity_raw,cost_lamports,value_lamports,compensated_lamports,loss_lamports,left(outcome,60),0,now() FROM jsonb_to_recordset($2::jsonb) AS x(owner text,quantity_raw numeric,cost_lamports numeric,value_lamports numeric,compensated_lamports numeric,loss_lamports numeric,outcome text)

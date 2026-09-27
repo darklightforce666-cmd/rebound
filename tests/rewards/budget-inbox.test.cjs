@@ -41,7 +41,7 @@ test('launch (private test, budget): allowlist + any holder + caps from the budg
   assert.equal((await db.query("SELECT budget_requested_at::text t FROM reward_funding_wallets WHERE mint=$1",[mint])).rows[0].t,(await db.query("SELECT budget_requested_at::text t FROM reward_funding_wallets WHERE mint=$1",[mint])).rows[0].t);
   await assert.rejects(api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',budgetPercent:60},{connection:conn(1)}),e=>e.code==='BUDGET_RAISE');
   assert.equal((await api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',budgetPercent:40},{connection:conn(1)})).budgetAction,'lowered');
-  await assert.rejects(api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',fundingModel:'income'},{connection:conn(1)}),e=>e.code==='INVALID_BODY');   // direct settlement: budget only
+  await assert.rejects(api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',fundingModel:'income'},{connection:conn(1)}),e=>e.code==='MODEL_SWITCH');   // direct settlement: income is allowed, but not on a wallet that ran a budget
   await db.query("UPDATE reward_platform SET settlement='program' WHERE namespace='mainnet_test'");
   await assert.rejects(api(A.launch)(db,'admin (password)',{},{mint,feeWallet:dev,namespace:'mainnet_test',fundingModel:'income'},{connection:conn(1)}),e=>e.code==='MODEL_SWITCH');
   await db.query("UPDATE reward_platform SET settlement='direct' WHERE namespace='mainnet_test'");

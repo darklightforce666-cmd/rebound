@@ -8,13 +8,24 @@ const lot=(id,order,{qty,cost,paid=0n,reserved=0n,kind='purchase'})=>({id,order,
 // price Q18 so that `tokens` raw units are worth `dollars`
 const priceFor=(dollars,tokens)=>usd(dollars)*P.E18/BigInt(tokens);
 
-test('policy constants: 85/15, 1800/60 production, 120/30 isolated test policy, SOL loss (v3.1; USD v3.0 kept), no exit bans',()=>{
+test('policy constants: 85/15, 1800/60 production, 120/30 isolated test policy, SOL loss; v3.2 exits, 15-min maturity and TWAP (v3.1, USD v3.0 kept)',()=>{
  assert.equal(P.POLICY.holdersBps+P.POLICY.otherBps,10000);assert.equal(P.POLICY.holdersBps,8500);
  assert.equal(P.POLICY.cycleSeconds,1800);assert.equal(P.POLICY.cutoffLeadSeconds,60);
  assert.equal(P.TEST_POLICY.cycleSeconds,120);assert.equal(P.TEST_POLICY.cutoffLeadSeconds,30);
- assert.equal(P.POLICY.lossUnit,'SOL');assert.equal(P.TEST_POLICY.lossUnit,'SOL');assert.equal(P.POLICY_USD.lossUnit,'USD');assert.equal(P.POLICY.version,'rebound-v3.1');assert.equal(P.TEST_POLICY.version,'rebound-v3.1-test');assert.equal(P.policy('rebound-v3.0').lossUnit,'USD');assert.equal(P.POLICY.maturitySeconds,0);
- assert.equal(P.POLICY.permanentExitOnSale,false);assert.equal(P.POLICY.walletLinkExclusion,false);assert.equal(P.POLICY.pumpHolderRewardMode,false);
+ assert.equal(P.POLICY.lossUnit,'SOL');assert.equal(P.TEST_POLICY.lossUnit,'SOL');assert.equal(P.POLICY_USD.lossUnit,'USD');assert.equal(P.POLICY.version,'rebound-v3.2');assert.equal(P.TEST_POLICY.version,'rebound-v3.2-test');assert.equal(P.policy('rebound-v3.0').lossUnit,'USD');
+ for(const p of [P.POLICY,P.TEST_POLICY]){assert.equal(p.permanentExitOnSale,true);assert.equal(p.maturitySeconds,900);assert.equal(p.priceWindowSeconds,900);assert.equal(p.referencePrice,'max(spot,twap)');assert.equal(p.transferBasis,'none_for_unproven_incoming');assert.equal(p.laterActivity,'funded_award_survives');}
+ assert.equal(P.policy('rebound-v3.1').maturitySeconds,0);assert.equal(P.policy('rebound-v3.1').permanentExitOnSale,false);assert.equal(P.policy('rebound-v3.1-test').priceWindowSeconds,60);
+ assert.equal(P.POLICY.walletLinkExclusion,false);assert.equal(P.POLICY.pumpHolderRewardMode,false);
  assert.notEqual(P.POLICY_HASH,P.TEST_POLICY_HASH);assert.match(P.POLICY_HASH,/^[a-f0-9]{64}$/);
+});
+
+test('v3.2 position: a sale or transfer excludes the wallet for good; a purchase counts after 15 minutes',()=>{
+ const q18=10n**18n/1000n,lot=(id,t,q,c)=>({id,kind:'purchase',remainingQuantity:q,remainingCost:c,paidCredit:0n,reservedCredit:0n,acquiredAt:t,order:0});
+ const T=10_000,o={priceQ18:q18,cutoff:T,maturitySeconds:900};
+ assert.equal(P.position([lot('a',T-900,1000n,10n)],o).outcome,'eligible');
+ const young=P.position([lot('a',T-899,1000n,10n)],o);assert.equal(young.outcome,'maturing');assert.equal(young.loss,0n);
+ const mixed=P.position([lot('a',T-2000,1000n,10n),lot('b',T-10,1000n,50n)],o);assert.equal(mixed.outcome,'eligible');assert.equal(mixed.quantity,1000n);assert.equal(mixed.cost,10n);
+ const out=P.position([lot('a',T-2000,1000n,10n)],{...o,exited:{reason:'sold',slot:5}});assert.equal(out.outcome,'exited');assert.equal(out.loss,0n);
 });
 
 test('$100:$50:$20 losses at $100/SOL split a 0.85 SOL pool into 0.50/0.25/0.10 SOL; next round sees $50/$25/$10',()=>{
@@ -132,26 +143,26 @@ test('reference price = max(spot, complete 60 s TWAP); stale, gapped, incomplete
  const T=1_000_000,S=x=>BigInt(x)*10n**15n,sol=[{time:T-70,price:usd(100),conf:usd(0.1)},{time:T-40,price:usd(100),conf:usd(0.1)},{time:T-10,price:usd(100),conf:usd(0.1)}];
  const token=[{time:T-65,s18:S(10),market:'curve'},{time:T-30,s18:S(20),market:'curve'}];
  const cov={complete:true,throughTime:T,impliedHeartbeats:true};
- const r=P.referencePrice({token,sol,cutoff:T,coverage:cov});
+ const r=P.referencePrice({policy:P.POLICY_V31,token,sol,cutoff:T,coverage:cov});
  assert.equal(r.outcome,'pass');assert.equal(r.spot,S(20)*usd(100)/P.LAMPORTS);
  assert.equal(r.twap,(S(10)*30n+S(20)*30n)*usd(100)/(60n*P.LAMPORTS));assert.equal(r.q18,r.spot);   // max
- const falling=[{time:T-65,s18:S(20),market:'curve'},{time:T-5,s18:S(19),market:'curve'}];assert.equal(P.referencePrice({token:falling,sol,cutoff:T,coverage:cov}).q18>S(19)*usd(100)/P.LAMPORTS,true);
- assert.equal(P.referencePrice({token,sol,cutoff:T,coverage:{...cov,complete:false}}).reason,'history_incomplete');
- assert.equal(P.referencePrice({token,sol,cutoff:T,coverage:{...cov,throughTime:T-1}}).reason,'history_incomplete');
- assert.equal(P.referencePrice({token:[{time:T-30,s18:S(1),market:'curve'}],sol,cutoff:T,coverage:cov}).reason,'price_window_incomplete');
- assert.equal(P.referencePrice({token,sol:sol.slice(0,2),cutoff:T,coverage:cov}).reason,'sol_usd_stale');
- assert.equal(P.referencePrice({token,sol:[sol[0],sol[2]],cutoff:T,coverage:cov}).reason,'sol_usd_gap');
- assert.equal(P.referencePrice({token,sol:sol.map(s=>({...s,conf:usd(2)})),cutoff:T,coverage:cov}).reason,'sol_usd_confidence');
- assert.equal(P.referencePrice({token:[token[0],{time:T-30,s18:S(20),market:'pool'}],sol,cutoff:T,coverage:cov}).reason,'price_continuity_unverified');
- assert.equal(P.referencePrice({token:[token[0],{time:T-30,s18:S(20),market:'pool',continuityVerified:true}],sol,cutoff:T,coverage:cov}).outcome,'pass');
+ const falling=[{time:T-65,s18:S(20),market:'curve'},{time:T-5,s18:S(19),market:'curve'}];assert.equal(P.referencePrice({policy:P.POLICY_V31,token:falling,sol,cutoff:T,coverage:cov}).q18>S(19)*usd(100)/P.LAMPORTS,true);
+ assert.equal(P.referencePrice({policy:P.POLICY_V31,token,sol,cutoff:T,coverage:{...cov,complete:false}}).reason,'history_incomplete');
+ assert.equal(P.referencePrice({policy:P.POLICY_V31,token,sol,cutoff:T,coverage:{...cov,throughTime:T-1}}).reason,'history_incomplete');
+ assert.equal(P.referencePrice({policy:P.POLICY_V31,token:[{time:T-30,s18:S(1),market:'curve'}],sol,cutoff:T,coverage:cov}).reason,'price_window_incomplete');
+ assert.equal(P.referencePrice({policy:P.POLICY_V31,token,sol:sol.slice(0,2),cutoff:T,coverage:cov}).reason,'sol_usd_stale');
+ assert.equal(P.referencePrice({policy:P.POLICY_V31,token,sol:[sol[0],sol[2]],cutoff:T,coverage:cov}).reason,'sol_usd_gap');
+ assert.equal(P.referencePrice({policy:P.POLICY_V31,token,sol:sol.map(s=>({...s,conf:usd(2)})),cutoff:T,coverage:cov}).reason,'sol_usd_confidence');
+ assert.equal(P.referencePrice({policy:P.POLICY_V31,token:[token[0],{time:T-30,s18:S(20),market:'pool'}],sol,cutoff:T,coverage:cov}).reason,'price_continuity_unverified');
+ assert.equal(P.referencePrice({policy:P.POLICY_V31,token:[token[0],{time:T-30,s18:S(20),market:'pool',continuityVerified:true}],sol,cutoff:T,coverage:cov}).outcome,'pass');
  const explicit={...cov,impliedHeartbeats:false};
- assert.equal(P.referencePrice({token,sol,cutoff:T,coverage:explicit}).outcome,'pass');                       // 30 s gap is at the limit
- assert.equal(P.referencePrice({token:[token[0],{time:T-25,s18:S(20),market:'curve'}],sol,cutoff:T,coverage:explicit}).reason,'price_gap'); // 35 s gap
- assert.equal(P.referencePrice({token:[token[0],{time:T-45,s18:S(20),market:'curve'}],sol,cutoff:T,coverage:explicit}).reason,'price_stale'); // last sample 45 s old
- assert.equal(P.referencePrice({token:[token[0],{time:T-5,s18:S(1000),market:'curve'}],sol,cutoff:T,coverage:cov}).reason,'price_circuit_breaker');
- assert.equal(P.referencePrice({token:[...token,{time:T-20,invalidated:true}],sol,cutoff:T,coverage:cov}).reason,'price_window_incomplete');
+ assert.equal(P.referencePrice({policy:P.POLICY_V31,token,sol,cutoff:T,coverage:explicit}).outcome,'pass');                       // 30 s gap is at the limit
+ assert.equal(P.referencePrice({policy:P.POLICY_V31,token:[token[0],{time:T-25,s18:S(20),market:'curve'}],sol,cutoff:T,coverage:explicit}).reason,'price_gap'); // 35 s gap
+ assert.equal(P.referencePrice({policy:P.POLICY_V31,token:[token[0],{time:T-45,s18:S(20),market:'curve'}],sol,cutoff:T,coverage:explicit}).reason,'price_stale'); // last sample 45 s old
+ assert.equal(P.referencePrice({policy:P.POLICY_V31,token:[token[0],{time:T-5,s18:S(1000),market:'curve'}],sol,cutoff:T,coverage:cov}).reason,'price_circuit_breaker');
+ assert.equal(P.referencePrice({policy:P.POLICY_V31,token:[...token,{time:T-20,invalidated:true}],sol,cutoff:T,coverage:cov}).reason,'price_window_incomplete');
  // Observations after the cutoff are ignored: the cutoff never slides.
- assert.equal(P.referencePrice({token:[...token,{time:T+5,s18:S(1000),market:'curve'}],sol,cutoff:T,coverage:cov}).q18,r.q18);
+ assert.equal(P.referencePrice({policy:P.POLICY_V31,token:[...token,{time:T+5,s18:S(1000),market:'curve'}],sol,cutoff:T,coverage:cov}).q18,r.q18);
  assert.equal(P.curveS18({virtualSolReserves:30n*SOL,virtualTokenReserves:1073000000n*10n**6n}),30n*SOL*P.E18/(1073000000n*10n**6n));
  assert.equal(P.ammS18({quoteReserve:0n,baseReserve:1n}),null);
 });

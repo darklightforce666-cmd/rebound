@@ -72,16 +72,16 @@ test('funded award credits reduce the next round; a later sale does not change t
 
 test('SOL-unit policy (v3.1): no SOL/USD feed needed; loss and awards in lamports; everyone underwater is paid pro rata, never above their loss',()=>{
  const c=scenario(),noFx=()=>null;
- const s=S.build(args(c,{policy:P3.POLICY,fx:noFx,solSeries:[]}));
+ const s=S.build(args(c,{policy:P3.POLICY_V31,fx:noFx,solSeries:[]}));
  assert.equal(s.lossUnit,'SOL');assert.equal(s.state,'ready');assert.ok(s.awards.length>0);
  const losses=Object.fromEntries(s.positions.filter(p=>p.outcome==='eligible').map(p=>[p.owner,BigInt(p.lossUsd)]));
  for(const a of s.awards){assert.ok(BigInt(a.lamports)<=losses[a.owner],'award above SOL loss');assert.equal(a.creditUsd,a.lamports,'credit is the SOL paid');}
  assert.ok(BigInt(s.total)<=SOL);
  // Plenty of funds: every underwater holder is made whole exactly (award == remaining SOL loss) and the rest is carried.
- const rich=S.build(args(c,{policy:P3.POLICY,fx:noFx,solSeries:[],holderReserve:1000n*SOL}));
+ const rich=S.build(args(c,{policy:P3.POLICY_V31,fx:noFx,solSeries:[],holderReserve:1000n*SOL}));
  assert.deepEqual(rich.awards.map(a=>[a.owner,BigInt(a.lamports)]).sort(),Object.entries(losses).filter(([,l])=>l>0n).sort());
  assert.equal(BigInt(rich.undistributed),1000n*SOL-BigInt(rich.total));
  // Same inputs → same snapshot; a different unit → a different policy hash.
- assert.equal(S.build(args(c,{policy:P3.POLICY,fx:noFx,solSeries:[]})).snapshotHash,s.snapshotHash);
- assert.notEqual(P3.hashOf(P3.POLICY),P3.hashOf(P3.POLICY_USD));
+ assert.equal(S.build(args(c,{policy:P3.POLICY_V31,fx:noFx,solSeries:[]})).snapshotHash,s.snapshotHash);
+ assert.notEqual(P3.hashOf(P3.POLICY_V31),P3.hashOf(P3.POLICY_USD));
 });

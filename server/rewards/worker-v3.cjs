@@ -157,7 +157,8 @@ function inputsLoader(db){
   const series=await FX.load(db,minT,cutoff);
   const excluded=new Set([m.curve,m.pool,m.poolAuthority,...[coinRow.intake,coinRow.treasury].filter(Boolean)]);
   const credits=await loadCredits(db,mint,cutoffSlot);
-  const heartbeats=(await db.query('SELECT observed_at,quote_model,base_reserve,real_quote,virtual_quote,market FROM reward_price_observations WHERE mint=$1 AND heartbeat AND observed_at BETWEEN $2 AND $3',[mint,cutoff-120,cutoff])).rows
+  const win=Number(P3.policy(coinRow.policy_version).priceWindowSeconds)+60;   // the policy's TWAP window
+  const heartbeats=(await db.query('SELECT observed_at,quote_model,base_reserve,real_quote,virtual_quote,market FROM reward_price_observations WHERE mint=$1 AND heartbeat AND observed_at BETWEEN $2 AND $3',[mint,cutoff-win,cutoff])).rows
    .map(r=>({time:Number(r.observed_at),market:r.quote_model==='curve'?'pump-curve':'pump-amm:'+r.market,s18:r.quote_model==='curve'?P3.curveS18({virtualSolReserves:r.virtual_quote,virtualTokenReserves:r.base_reserve}):P3.ammS18({quoteReserve:r.real_quote,baseReserve:r.base_reserve})}));
   return{events,parserHolds:holds,coverage:{complete:!!cp?.complete,throughSlot:cp?Number(cp.through_slot):0},excluded,fx:FX.lookup(series),solSeries:series,heartbeats,credits};
  };
@@ -213,11 +214,19 @@ async function reconcileFunding({db,rpc,program},coin){
  const r=await H.signaturesFor(rpc,fw.address,{until:fw.reconciled_signature||null});
  if(!r.complete)return{credits:0,incidents:0,gap:r.reason||'incomplete'};
  const ctx=program?{program:program.toBase58(),wallet:fw.address,coin:W3.addresses(program,new PublicKey(coin.mint)).coin.toBase58()}:null;
+ // Direct settlement: our own payout transactions move holder money out of the wallet (never new funding,
+ // never an owner withdrawal): each is a holder deposit of exactly the awards it paid.
+ const paid=new Map();
+ if(r.signatures.length)for(const a of (await db.query("SELECT signature,job,context FROM reward_chain_attempts WHERE job LIKE 'direct-pay:%' AND signature=ANY($1::text[])",[r.signatures.map(x=>x.signature)])).rows){
+  const cycle=a.job.split(':').slice(1,-1).join(':'),idx=(a.context?.indexes||[]).map(Number);
+  const sum=(await db.query('SELECT COALESCE(sum(amount_lamports),0)::text s FROM reward_awards WHERE cycle_id=$1 AND leaf_index=ANY($2::int[])',[cycle,idx])).rows[0].s;
+  paid.set(a.signature,{kind:'holder_deposit',amount:String(sum)});
+ }
  const classified=[];let last=null,gap=null;
  for(const s of r.signatures.slice().reverse()){
   const tx=await rpc.call('getTransaction',[s.signature,{encoding:'jsonParsed',commitment:'finalized',maxSupportedTransactionVersion:H.TX_VERSION}]);
   if(!tx){gap=s.signature;break;}
-  const intent=ctx?chainDeposit(tx,ctx):null;
+  const intent=paid.get(s.signature)||(ctx?chainDeposit(tx,ctx):null);
   classified.push(F.classify(tx,fw.address,new Map(intent?[[s.signature,intent]]:[])));last=s.signature;
  }
  const out=await FS.applyWalletTransactions(db,{mint:coin.mint,wallet:fw.address,classified});
@@ -345,11 +354,12 @@ async function main({role=process.env.REWARDS_WORKER_ROLE||'all',once=process.ar
    // Direct settlement (no program): rounds are paid by the fee wallet's imported key; no program keys needed.
    const settlement=settles?Object.fromEntries((await sdb.query('SELECT namespace,settlement FROM reward_platform')).rows.map(r=>[r.namespace,r.settlement])):{};
    // Ready-made positions (scheduler role, under the coin lease: the only writer). Bounded per pass.
-   const deadline=started+Number(process.env.REWARDS_POSITIONS_TIME_BUDGET_MS||40000),maxEvents=Number(process.env.REWARDS_POSITIONS_MAX_EVENTS||20000);
-   const positions={project:(c,o={})=>Positions.project({db:sdb},c,{deadline,maxEvents,...o}),inputsAt:(c,cut,slot)=>Positions.inputsAt(sdb,c,cut,slot),applyCredits:Positions.applyCredits};
+   // Each projection gets its own time budget (never what is left of the indexer's pass).
+   const budget=Number(process.env.REWARDS_POSITIONS_TIME_BUDGET_MS||40000),maxEvents=Number(process.env.REWARDS_POSITIONS_MAX_EVENTS||20000);
+   const positions={project:(c,o={})=>Positions.project({db:sdb},c,{maxEvents,...o,deadline:o.deadline??Date.now()+budget}),inputsAt:(c,cut,slot)=>Positions.inputsAt(sdb,c,cut,slot),applyCredits:Positions.applyCredits};
    const direct=c=>c.status==='active'&&c.kind==='primary'&&settlement[c.namespace]==='direct';
    if(settles)for(const coin of coins.filter(direct))
-    await Direct.tick({db:sdb,connection,worker,inputs,positions,deadline,now:async()=>connection.getBlockTime(await connection.getSlot('finalized')),
+    await Direct.tick({db:sdb,connection,worker,inputs,positions,displayBudgetMs:Math.min(20000,budget),now:async()=>connection.getBlockTime(await connection.getSlot('finalized')),
      cutoffSlot:async t=>(await H.findCutoffSlot(rpc,t)).slot,signer:fw=>Signer.load(sdb,fw.signer)},coin)
      .catch(e=>Logs.log(sdb,{severity:'error',component:'scheduler',eventType:'tick_failed',mint:coin.mint,message:e.message,errorCode:e.code||'SCHEDULER_ERROR'}));
    if(settles)for(const coin of coins.filter(c=>!direct(c)))   // every other token: positions for the site

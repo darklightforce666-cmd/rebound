@@ -15,6 +15,7 @@ CREATE TABLE reward_holder_positions (
  owner text NOT NULL,
  lots jsonb NOT NULL DEFAULT '[]'::jsonb,
  holds jsonb NOT NULL DEFAULT '[]'::jsonb,
+ exited jsonb,                         -- v3.2: first sale/transfer {reason, signature, slot}; excluded for good
  recognized_raw reward_uint NOT NULL DEFAULT 0,
  unrecognized_raw reward_uint NOT NULL DEFAULT 0,
  cost_lamports reward_uint NOT NULL DEFAULT 0,
@@ -51,6 +52,9 @@ CREATE TABLE reward_projection_state (
  updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- Graduations and invalidations are read at every round (price continuity) without scanning the history.
+CREATE INDEX reward_events_market_marks ON reward_events(mint,slot) WHERE kind IN ('graduation','market_invalidation');
+
 -- Freshness shown on the site: what the chain head is, how far history is verified, how far positions are
 -- applied, and when the indexer last ran.
 ALTER TABLE reward_public_tokens
@@ -59,6 +63,9 @@ ALTER TABLE reward_public_tokens
  ADD COLUMN positions_slot bigint, ADD COLUMN positions_time bigint,
  ADD COLUMN indexer_at timestamptz, ADD COLUMN price_s18 numeric;
 ALTER TABLE reward_public_cycles ADD COLUMN reason text;
+-- Policy v3.2 outcomes: 'exited' (sold or transferred — excluded for good), 'maturing' (bought < 15 min ago).
+ALTER TABLE reward_snapshot_positions DROP CONSTRAINT reward_snapshot_positions_outcome_check;
+ALTER TABLE reward_snapshot_positions ADD CONSTRAINT reward_snapshot_positions_outcome_check CHECK(outcome IN ('eligible','no_remaining_loss','hold','excluded','no_recognized_quantity','exited','maturing'));
 SELECT reward_secure_new_tables();
 
 GRANT SELECT,INSERT,UPDATE,DELETE ON reward_holder_positions,reward_holder_accounts,reward_projection_state TO rebound_scheduler;

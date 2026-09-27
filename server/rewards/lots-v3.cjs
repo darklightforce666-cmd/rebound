@@ -54,7 +54,7 @@ function observationFrom(ev){
  * @param opts.throughSlot  replay events with slot ≤ throughSlot only
  * @param opts.parserHolds  holds reported by the parser ({wallet?, reason, signature})
  */
-function replay(events,{excluded=new Set(),fx=()=>null,credits=[],throughSlot=Infinity,parserHolds=[],state=null}={}){
+function replay(events,{excluded=new Set(),fx=()=>null,credits=[],throughSlot=Infinity,parserHolds=[],state=null,exitOnOutflow=false}={}){
  const ordered=events.filter(e=>Number(e.slot)<=Number(throughSlot)).sort(chainOrder);
  // `state` resumes a replay (ready-made positions): the owners and token accounts it touches, and the lot
  // counter. Applying events in batches on top of the stored state gives exactly the result of one replay.
@@ -68,6 +68,9 @@ function replay(events,{excluded=new Set(),fx=()=>null,credits=[],throughSlot=In
   try{const r=P3.consumeFifo(b.lots,qty);b.lots=r.lots;for(const m of r.movements)movements.push({...m,eventId:ev.id,kind:ev.kind==='burn'?'burn':ev.kind==='owner_change'?'owner_change':'disposal',slot:Number(ev.slot)});}
   catch(e){hold(owner,e.code||'holding_history_unresolved',ev);b.lots=b.lots.map(l=>({...l,remainingQuantity:0n,remainingCost:0n,paidCredit:0n,reservedCredit:0n}));}
  };
+ // v3.2: the first sale or transfer to another wallet excludes the sender for good (buying again does not
+ // restore it). Burns and moves between the owner's own accounts are not exits.
+ const exit=(owner,ev,reason)=>{if(!exitOnOutflow||!owner||excluded.has(owner))return;const b=book(owner);if(!b.exited)b.exited={reason,signature:ev.signature||null,slot:Number(ev.slot)};};
  const pendingCredits=[...credits].sort((a,b)=>Number(a.slot)-Number(b.slot));
  // Apply credits whose snapshot slot is ≤ `slot` (i.e. before any event of a later slot).
  const applyCreditsThrough=slot=>{
@@ -102,11 +105,12 @@ function replay(events,{excluded=new Set(),fx=()=>null,credits=[],throughSlot=In
       else{const usd=P3.costUsd(cost.lamports,rate.price);addLot(owner,{...lot,costLamports:cost.lamports,cost:usd,remainingCost:usd,fx:{price:String(rate.price),time:rate.time,source:rate.source}});}
      }else addLot(owner,{id:ev.id+':u',kind:'unrecognized_incoming',sourceEvent:ev.id,quantity:qty,remainingQuantity:qty,cost:0n,remainingCost:0n,costLamports:0n,paidCredit:0n,reservedCredit:0n,acquiredAt:Number(ev.time),acquiredSlot:Number(ev.slot),reason:t?'buyer_is_not_recipient':'unmatched_market_delivery'});
      break;}
-    case'transfer_exit':case'burn':{touched.add(ev.owner);consume(ev.owner,n(ev.data.amount),ev);break;}
+    case'transfer_exit':case'burn':{touched.add(ev.owner);consume(ev.owner,n(ev.data.amount),ev);
+     if(ev.kind==='transfer_exit'&&n(ev.data.amount)>0n)exit(ev.owner,ev,excluded.has(ev.data.to)?'sold':'transferred');break;}
     case'incoming_transfer':{const qty=n(ev.data.amount);if(ev.owner&&!excluded.has(ev.owner)){touched.add(ev.owner);addLot(ev.owner,{id:ev.id+':u',kind:'unrecognized_incoming',sourceEvent:ev.id,quantity:qty,remainingQuantity:qty,cost:0n,remainingCost:0n,costLamports:0n,paidCredit:0n,reservedCredit:0n,acquiredAt:Number(ev.time),acquiredSlot:Number(ev.slot),reason:excluded.has(ev.data.from)?'unsupported_route':'transfer_without_purchase_basis'});}break;}
     case'owner_change':{
      if(ev.data.amount===''||ev.data.amount==null){hold(ev.owner,'owner_change_amount_unknown',ev);hold(ev.data.nextOwner,'owner_change_amount_unknown',ev);break;}
-     const qty=n(ev.data.amount);touched.add(ev.owner);touched.add(ev.data.nextOwner);consume(ev.owner,qty,ev);
+     const qty=n(ev.data.amount);touched.add(ev.owner);touched.add(ev.data.nextOwner);consume(ev.owner,qty,ev);if(qty>0n)exit(ev.owner,ev,'account_owner_changed');
      if(qty>0n&&!excluded.has(ev.data.nextOwner))addLot(ev.data.nextOwner,{id:ev.id+':to',kind:'unrecognized_incoming',sourceEvent:ev.id,quantity:qty,remainingQuantity:qty,cost:0n,remainingCost:0n,costLamports:0n,paidCredit:0n,reservedCredit:0n,acquiredAt:Number(ev.time),acquiredSlot:Number(ev.slot),reason:'account_owner_change'});
      break;}
     case'token_balances':{for(const a of ev.data.accounts){accounts.set(a.account,{owner:a.owner,amount:n(a.amount)});touched.add(a.owner);}break;}

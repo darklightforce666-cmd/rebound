@@ -18,22 +18,25 @@ async function storeEvents(db,mint,events){
   SELECT id,$1,signature,path,event_index,slot,tx,"order",kind,owner,data,'test',$3,true FROM jsonb_to_recordset($2::jsonb) AS x(id text,signature text,path text,event_index int,slot bigint,tx int,"order" int,kind text,owner text,data jsonb)`,[mint,JSON.stringify(rows),I.PARSER]);
 }
 
-async function world({mode='mainnet_test',holders=3,budget=5n*SOL,key=true,wallet=10n*SOL}={}){
+// Settlement mechanics are exercised under v3.1 (no maturity, 60 s price window); v3.2 rules have their own tests.
+async function world({mode='mainnet_test',holders=3,budget=5n*SOL,key=true,wallet=10n*SOL,policy='rebound-v3.1-test',build=null,income=false}={}){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'rebound-direct-'));const env={...process.env,REWARDS_SIGNER_MASTER_KEY_FILE:path.join(dir,'master.key')};
  fs.writeFileSync(env.REWARDS_SIGNER_MASTER_KEY_FILE,require('node:crypto').randomBytes(32).toString('hex'),{mode:0o600});
  const conn=new SvmConnection();conn.setTime(T0,1000);
  const dev=Keypair.generate();conn.airdrop(dev.publicKey,wallet);
  const people=Array.from({length:holders},()=>Keypair.generate().publicKey.toBase58());for(const p of people)conn.airdrop(new PublicKey(p),10_000_000n);
  const c=chain({startSlot:100,timeOf:s=>T0+(s-100)*1});const hi={vSol:300n*SOL,vTok:10n**12n};
+ if(build)build(c,people,hi);else{
  people.forEach((p,i)=>c.tx(x=>x.buy(p,'acct'+i,1_000_000n,{lamports:BigInt(4-i)*SOL,...hi})));
- c.tx(x=>x.buy(Keypair.generate().publicKey.toBase58(),'late',10n**9n,{lamports:1_000_000n,vSol:30n*SOL,vTok:10n**12n}));   // price drops 10×
+ c.tx(x=>x.buy(Keypair.generate().publicKey.toBase58(),'late',10n**9n,{lamports:1_000_000n,vSol:30n*SOL,vTok:10n**12n}));}   // price drops 10×
  const db=await supabaseDb();const mint=Keypair.generate().publicKey.toBase58();
  await db.query("UPDATE reward_platform SET execution_mode=$1 WHERE namespace='mainnet_test'",[mode]);
  await db.query('SET ROLE rebound_api');
- try{await A.launch(db,'admin (password)',{},{mint,feeWallet:dev.publicKey.toBase58(),namespace:'mainnet_test',budgetPercent:50,startTest:mode==='mainnet_test'},{connection:null});}finally{await db.query('RESET ROLE');}
+ try{await A.launch(db,'admin (password)',{},{mint,feeWallet:dev.publicKey.toBase58(),namespace:'mainnet_test',budgetPercent:50,startTest:mode==='mainnet_test',...(income?{fundingModel:'income'}:{})},{connection:null});}finally{await db.query('RESET ROLE');}
  await db.query("UPDATE reward_platform SET spend_cap_action_lamports=$1,spend_cap_cycle_lamports=$1,spend_cap_total_lamports=$2 WHERE namespace='mainnet_test'",[String(50n*SOL),String(500n*SOL)]);
- await db.query('UPDATE reward_coins SET schedule_anchor=$2 WHERE mint=$1',[mint,T0]);
- await db.query("UPDATE reward_funding_wallets SET budget_balance_lamports=$2,budget_lamports=$3,budget_start_deposits=0,budget_requested_at=now()-interval '1 minute',budget_set_at=now()-interval '1 minute' WHERE mint=$1",[mint,String(budget*2n),String(budget)]);
+ await db.query('UPDATE reward_coins SET schedule_anchor=$2,policy_version=$3,policy_hash=$4 WHERE mint=$1',[mint,T0,policy,P3.hashOf(P3.policy(policy))]);
+ if(income)await db.query("UPDATE reward_funding_wallets SET opening_slot=0,opening_balance_lamports=$2,opening_credit_lamports=0,operational_reserve_lamports=10000000 WHERE mint=$1",[mint,String(wallet)]);
+ else await db.query("UPDATE reward_funding_wallets SET budget_balance_lamports=$2,budget_lamports=$3,budget_start_deposits=0,budget_requested_at=now()-interval '1 minute',budget_set_at=now()-interval '1 minute' WHERE mint=$1",[mint,String(budget*2n),String(budget)]);
  if(key){const s=await Signer.importSigner(db,{role:'primary_dev',secretText:JSON.stringify(Array.from(dev.secretKey)),expectedAddress:dev.publicKey.toBase58(),env});
   await db.query("UPDATE reward_funding_wallets SET mode='automatic',signer=$2 WHERE mint=$1",[mint,s.id]);}
  await db.query("INSERT INTO reward_public_tokens(mint,namespace,kind,reward_status,pinned,test) VALUES($1,'mainnet_test','primary','active',true,true)",[mint]);
@@ -149,5 +152,46 @@ test('a paused namespace computes the round but reserves nothing; a round of a s
   await w.db.query("UPDATE reward_platform SET paused=true WHERE namespace='mainnet_test'");
   w.conn.setTime(T0+90,1500);await w.tick();
   const r=await w.cycle(1);assert.equal(r.state,'dry_run');assert.equal(r.reason,'paused');assert.equal(w.conn.sent,0);
+ }finally{await w.done();}
+});
+
+test('v3.2: a purchase counts after 15 minutes; any sale or transfer excludes the wallet for good; funded awards survive a later sale',async()=>{
+ const other=Keypair.generate().publicKey.toBase58();
+ const w=await world({policy:'rebound-v3.2-test',budget:5n*SOL,build:(c,people,hi)=>{
+  people.forEach((p,i)=>c.tx(x=>x.buy(p,'acct'+i,1_000_000n,{lamports:BigInt(4-i)*SOL,...hi})));
+  c.tx(x=>x.sell(people[1],'acct1',1000n,{vSol:300n*SOL,vTok:10n**12n}));         // sells a little: out for good
+  c.tx(x=>x.transfer(people[2],'acct2',other,'o1',1000n));                          // transfers a little: out for good
+  c.tx(x=>x.buy(people[1],'acct1',1000n,{lamports:SOL/1000n,...hi}));              // buying again does not restore it
+  c.tx(x=>x.buy(Keypair.generate().publicKey.toBase58(),'late',10n**9n,{lamports:1_000_000n,vSol:30n*SOL,vTok:10n**12n}));
+  c.skipTo(1950);c.tx(x=>x.sell(people[0],'acct0',1000n,{vSol:30n*SOL,vTok:10n**12n}));}});   // after round 8's snapshot slot (1930)
+ try{
+  w.conn.setTime(T0+90,1500);await w.tick();
+  const r1=await w.cycle(1);assert.equal(r1.state,'waiting_for_data');assert.equal(r1.reason,'price_window_incomplete','no 15-minute price history yet');
+  assert.equal((await w.awards(1)).length,0);
+  // Round 3 (cutoff T0+330): a 15-minute price exists? not yet either; round 8 is the first with both.
+  // Round 8's cutoff (T0+930) is 15 minutes after the purchases: only the wallet that never sold or moved tokens is paid.
+  w.conn.setTime(T0+930,3000);await w.tick();
+  const r8=await w.cycle(8);assert.equal(r8.state,'funded',JSON.stringify(r8));
+  const as=await w.awards(8);assert.deepEqual(as.map(a=>a.recipient),[w.people[0]]);
+  const out=new Map((await w.db.query('SELECT owner,outcome FROM reward_snapshot_positions WHERE cycle_id=$1',[r8.id])).rows.map(r=>[r.owner,r.outcome]));
+  assert.equal(out.get(w.people[0]),'eligible');assert.equal(out.get(w.people[1]),'exited');assert.equal(out.get(w.people[2]),'exited');
+  assert.equal((await w.cycle(1)).state,'missed');
+  w.conn.setTime(T0+960,3100);await w.tick(4);
+  assert.equal((await w.awards(8))[0].state,'paid','funded before a later sale: paid');
+ }finally{await w.done();}
+});
+
+test('85/15: without a budget, a round pays at most 85 % of the fees that reached the dev wallet after launch',async()=>{
+ const w=await world({income:true});try{
+  const DBm=require('../../server/rewards/db.cjs'),FS=require('../../server/rewards/funding-store.cjs');
+  const none=await D.available(w.db,w.conn,(await w.db.query('SELECT * FROM reward_funding_wallets WHERE mint=$1',[w.mint])).rows[0]);
+  assert.equal(none.lamports,0n);assert.equal(none.reason,'no_new_fees','the balance the wallet had at launch is not holder money');
+  await DBm.transaction(w.db,async tx=>{await tx.query("INSERT INTO reward_funding_accounts(mint,kind) VALUES($1,'primary') ON CONFLICT DO NOTHING",[w.mint]);
+   await FS.applyCredits(tx,w.mint,[{id:'fee1',signature:'fee-sig-1',slot:5,time:T0+5,gross:2n*SOL}]);});
+  w.conn.setTime(T0+90,1500);await w.tick();
+  const as=await w.awards(1);const total=as.reduce((x,a)=>x+BigInt(a.amount_lamports),0n);
+  assert.equal((await w.cycle(1)).state,'funded');assert.ok(total<=17n*SOL/10n&&total>=17n*SOL/10n-3n,'85 % of 2 SOL: '+total);
+  const after=await D.available(w.db,w.conn,(await w.db.query('SELECT * FROM reward_funding_wallets WHERE mint=$1',[w.mint])).rows[0]);
+  assert.ok(after.lamports<=3n,'the holder share is used up until new fees arrive');
  }finally{await w.done();}
 });
