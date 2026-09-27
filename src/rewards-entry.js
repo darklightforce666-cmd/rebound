@@ -7,6 +7,7 @@ import {createClient} from '@supabase/supabase-js';
 import {Keypair,Transaction} from '@solana/web3.js';
 import {signInWithSelectedWallet,verifiedAddresses,onWalletChanged} from './auth/wallet-session.js';
 import Seal from '../server/rewards/inbox-seal.cjs';
+import {mountHome,mountCheck} from './home.js';
 
 const endpoint='/.netlify/functions/rewards';
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -397,10 +398,17 @@ function logRows(list,rowsOnly){const r=list.map(l=>'<tr class="sev-'+esc(l.seve
 
 // The token's own image (from its metadata, resolved by the indexer) replaces the placeholder logo.
 async function tokenImage(img,signal){try{const r=await api('token',{query:{mint:img.dataset.tokenImage},signal});const u=r.token?.image_uri;if(u&&/^https:\/\//.test(u)&&img.isConnected){img.src=u;img.alt=r.token.symbol||r.token.name||'';}}catch{}}
+// Read-only chain endpoint (balances at finalized commitment) for the wallet check.
+async function readChain(action,address,signal){
+ const r=await fetch('/.netlify/functions/chain?'+new URLSearchParams({action,address}),{signal,cache:'no-store'});
+ if(!r.headers.get('content-type')?.includes('application/json'))throw Error('chain data unavailable on this host');
+ const j=await r.json();if(!r.ok)throw Error(j.message||'chain data unavailable');return j;}
 // ---------------- mount by route ----------------
 async function mount({route,mint,toast,signal}){
  const q=s=>document.querySelector(s);
  if(q('#rewards-summary'))mountSummary(q('#rewards-summary'),signal);
+ if(route==='explore'&&q('#home'))mountHome(q('#home'),{api,realtime,esc,signal,primary:mint});
+ if(route==='check'&&q('#check'))mountCheck(q('#check'),{api,esc,signal,connected:!!wallet?.address,isAddress:a=>window.ReboundData.isAddress(a),chain:readChain});
  if(route==='explore'&&q('#token-list'))mountTokenList(q('#token-list'),signal);
  if(route==='explore'&&q('#payout-feed'))mountPayoutFeed(q('#payout-feed'),signal);
  for(const img of document.querySelectorAll('img[data-token-image]'))tokenImage(img,signal);
