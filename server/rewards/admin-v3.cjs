@@ -207,6 +207,35 @@ async function launch(db,actor,session,{mint,feeWallet,namespace='production',fu
  return{...r,settlement,fundingMode:fw.mode,fundingModel,budgetBps:bps,budgetAction,balance:balance==null?null:String(balance),budgetEstimate:estimate==null?null:String(estimate),test,exists:meta.exists,name:meta.name||null,symbol:meta.symbol||null,
   onChain:settlement==='program'&&program&&connection?await primaryChainStatus(connection,program,mint,feeWallet):null,site:await site(db)};
 }
+/**
+ * Check a contract address before (or after) it is set as the REBOUND token: does the mint exist, what is it
+ * called, does it trade on a pump.fun market, is that market paired with SOL (the 15 % of launched coins buys it
+ * with SOL), who created it, is it already known here. Read-only on chain; every check is kept in the logs.
+ */
+async function checkToken(db,connection,actor,mintIn){
+ const mint=address(mintIn,'token contract'),problems=[];
+ const acc=await connection.getParsedAccountInfo(new PublicKey(mint),'confirmed').catch(()=>null);
+ if(!acc)fail('RPC_UNAVAILABLE','The Solana RPC could not be read; try again',503);
+ const p=acc.value?.data?.parsed,exists=p?.type==='mint';
+ const meta=exists?await require('./token-meta.cjs').resolve(connection,mint,{timeoutMs:4000}).catch(()=>null):null;
+ const market=exists?await pumpMarket(connection,mint):null;
+ let curve=null;
+ if(market==='curve'||market==='pool'){try{const PSDK=require('@pump-fun/pump-sdk'),bc=await connection.getAccountInfo(PSDK.bondingCurvePda(new PublicKey(mint)),'confirmed');
+  if(bc){const c=PSDK.PUMP_SDK.decodeBondingCurve(bc);const q=c.quoteMint&&!c.quoteMint.equals(PublicKey.default)?c.quoteMint.toBase58():null;
+   curve={complete:!!c.complete,creator:c.creator?.toBase58?.()||null,quote:q&&q!=='So11111111111111111111111111111111111111112'?q:'SOL'};}}catch{}}
+ const known=(await db.query('SELECT kind,status,namespace FROM reward_coins WHERE mint=$1',[mint])).rows[0]||null;
+ if(!exists)problems.push('No token mint exists at this address.');
+ else if(market===null)problems.push('It does not trade on a pump.fun bonding curve or PumpSwap pool, so purchases cannot be measured.');
+ if(curve&&curve.quote!=='SOL')problems.push('Its market is paired with '+curve.quote+', not SOL: the 15 % of launched coins buys REBOUND with SOL.');
+ if(known&&known.kind==='third_party')problems.push('This is a coin launched on rebound, not a separate REBOUND token.');
+ const result={mint,exists,name:meta?.name||null,symbol:meta?.symbol||null,image:meta?.image||null,decimals:exists?Number(p.info.decimals):null,supply:exists?String(p.info.supply):null,
+  program:acc.value?.owner?.toBase58?.()||null,market:market||null,graduated:curve?curve.complete:market==='pool',creator:curve?.creator||null,quote:curve?.quote||(market?'SOL':null),
+  known:known?{kind:known.kind,status:known.status,namespace:known.namespace}:null,ok:problems.length===0,problems,checkedAt:new Date().toISOString(),checkedBy:actor};
+ await Logs.log(db,{severity:result.ok?'info':'warn',component:'admin',eventType:'token_checked',mint,
+  message:`Token check${result.ok?' OK':' found problems'}: ${result.name||'unnamed'}${result.symbol?' ('+result.symbol+')':''} ${mint}; `+(exists?`${market?'pump.fun '+(result.graduated?'PumpSwap pool':'bonding curve')+', '+result.quote+' pair':'no pump.fun market'}`:'no mint')+(problems.length?' — '+problems.join(' '):''),
+  metadata:result});
+ return result;
+}
 /** 'curve' | 'pool' | null — where this mint trades on pump.fun (null also when the RPC cannot tell). */
 async function pumpMarket(connection,mint){
  try{const H=require('./history-v3.cjs'),m=H.marketAddresses(mint);
@@ -333,4 +362,4 @@ async function revokeAdmin(db,actor,{wallet}){wallet=address(wallet,'wallet');if
  const left=(await db.query('SELECT count(*)::int n FROM reward_admin_wallets WHERE revoked_at IS NULL AND wallet<>$1',[wallet])).rows[0].n;if(!left)fail('FORBIDDEN','At least one admin must remain',409);
  await db.query('UPDATE reward_admin_wallets SET revoked_at=now(),revoked_by=$2 WHERE wallet=$1',[wallet,actor]);await audit(db,actor,'admin_revoke',{wallet});return{wallet,revoked:true};}
 
-module.exports={pumpMarket,primaryChainStatus,budgetBps,setAdminWallet,overview,setMode,testConfig,pause,registerPrimary,site,setSite,launch,tokenMeta,openingCredit,applyOpeningRequests,syncPrimary,chainPrepare,chainSubmit,addAdmin,revokeAdmin,CHAIN_ACTIONS};
+module.exports={checkToken,pumpMarket,primaryChainStatus,budgetBps,setAdminWallet,overview,setMode,testConfig,pause,registerPrimary,site,setSite,launch,tokenMeta,openingCredit,applyOpeningRequests,syncPrimary,chainPrepare,chainSubmit,addAdmin,revokeAdmin,CHAIN_ACTIONS};

@@ -190,6 +190,41 @@ async function mountToken(host,mint,signal){
    if(table==='reward_public_payouts'&&host.isConnected){const tb=host.querySelector('#payouts-box tbody');if(tb){tb.insertAdjacentHTML('afterbegin',payoutRow(p.new,true,false,U));}}redraw();});}catch{}
 }
 
+// ---------------- portfolio: the connected wallet's rebound coins (live) ----------------
+// Only coins on rebound (the REBOUND token and coins launched here). Per coin: what the wallet holds, what it spent
+// on the tokens it still holds (first in, first out), what they are worth now, the rewards the coin paid it and the
+// PnL (worth now + rewards − spent). Pushed over the websocket when the wallet's position or payouts change, and
+// re-read every 30 seconds.
+let portfolioChannel=null,portfolioFor=null,portfolioTimer=null;
+const rawUnits=(x,dec)=>{const v=BigInt(String(x||0).split('.')[0]);if(v===0n)return '0';const D=10n**BigInt(dec||0),w=v/D;
+ if(w>=1000000n)return (Number(w)/1e6).toLocaleString('en-US',{maximumFractionDigits:2})+'M';if(w>=1000n)return (Number(w)/1e3).toLocaleString('en-US',{maximumFractionDigits:2})+'K';
+ return (Number(v)/Number(D)).toLocaleString('en-US',{maximumFractionDigits:2});};
+async function mountPortfolio(host,signal){
+ const addr=wallet?.address;if(!addr){host.innerHTML='';return;}
+ const draw=async()=>{
+  if(!host.isConnected||wallet?.address!==addr){clearInterval(portfolioTimer);return;}
+  try{const r=await api('wallet-check',{query:{wallet:addr}});if(!host.isConnected||wallet?.address!==addr)return;
+   const rows=r.positions.filter(p=>BigInt(p.quantity_raw||0)>0n||BigInt(p.paid_lamports||0)>0n);
+   const cell=(v,p)=>unitOf(p).v(v)+' '+esc(unitOf(p).u);
+   host.innerHTML='<div class="section-heading"><h2>Your rebound coins <span class="live-dot" title="Updates live"></span></h2><span class="live-caption">Updated '+new Date().toLocaleTimeString()+'</span></div>'+
+    (rows.length?'<div class="table-container"><table class="token-table live-table pf-table"><thead><tr><th>Coin</th><th class="num">Holding</th><th class="num">Spent</th><th class="num">Worth now</th><th class="num">Rewards received</th><th class="num">PnL</th></tr></thead><tbody>'+
+     rows.map(p=>{const cost=BigInt(p.cost_lamports||0),value=BigInt(p.value_lamports||0),paid=BigInt(p.paid_lamports||0),pnl=value+paid-cost,pct=cost>0n?Number(pnl*10000n/cost)/100:null,U=unitOf(p);
+      const sign=pnl>0n?'+':pnl<0n?'−':'',abs=pnl<0n?-pnl:pnl;
+      return '<tr><td><a href="#token/'+esc(p.mint)+'">'+(p.image_uri&&/^https:\/\//.test(p.image_uri)?'<img class="token-inline-img" src="'+esc(p.image_uri)+'" alt="">':'')+'<b>'+esc(p.symbol?'$'+String(p.symbol).replace(/^\$/,''):p.name||short(p.mint))+'</b></a>'+(p.outcome==='sold'||BigInt(p.quantity_raw||0)===0n?' <small class="muted">sold</small>':'')+'</td>'+
+       '<td class="num">'+rawUnits(p.quantity_raw,Number(p.decimals??6))+'</td><td class="num">'+(cost>0n?cell(cost,p):'—')+'</td><td class="num">'+cell(value,p)+'</td>'+
+       '<td class="num'+(paid>0n?' pos':'')+'">'+(paid>0n?'+'+cell(paid,p):'0 '+esc(U.u))+'<small>'+(p.payouts?' · '+esc(p.payouts)+' payout'+(p.payouts==1?'':'s'):'')+'</small></td>'+
+       '<td class="num '+(pnl>0n?'pos':pnl<0n?'neg':'')+'">'+sign+U.v(abs)+' '+esc(U.u)+(pct!=null?'<small> ('+(pct>0?'+':'')+pct.toLocaleString('en-US',{maximumFractionDigits:2})+'%)</small>':'')+'</td></tr>';}).join('')+
+     '</tbody></table></div><p class="live-caption">Spent = what you paid for the tokens you still hold (first in, first out). PnL = worth now + rewards received − spent. Figures follow the coin’s latest verified trades and price.</p>'
+     :'<p class="live-caption">This wallet holds no rebound coins yet. Coins launched on rebound and the REBOUND token appear here once you buy them.</p>');
+  }catch(e){if(host.isConnected&&!signal?.aborted&&!host.querySelector('table'))host.innerHTML='<h2>Your rebound coins</h2><p>'+esc(e.message)+'</p>';}
+ };
+ await draw();
+ clearInterval(portfolioTimer);portfolioTimer=setInterval(draw,30000);
+ if(portfolioFor!==addr){try{portfolioChannel?.unsubscribe();}catch{}portfolioFor=addr;portfolioChannel=null;
+  try{portfolioChannel=await realtime('portfolio-'+addr,[{table:'reward_public_holders',filter:'owner=eq.'+addr},{table:'reward_public_payouts',event:'INSERT',filter:'owner=eq.'+addr}],
+   debounce(()=>{const h=document.querySelector('#portfolio-coins');if(h)mountPortfolio(h);},1500));}catch{}}
+}
+
 // ---------------- public: a wallet's awards ----------------
 let walletChannel=null,walletChannelFor=null;
 async function mountWalletRewards(host,signal){
@@ -346,7 +381,7 @@ async function mountAdmin(host,toast){
  const direct=(pl.settlement||'direct')==='direct',budgetReady=!!(fwLive?.budget_set_at&&(!fwLive.budget_requested_at||new Date(fwLive.budget_set_at)>=new Date(fwLive.budget_requested_at)));
  const launchHtml='<section class="card live-card adm-launch"><h2>Launch</h2><p>Choose the token, the fee wallet that funds holders, and how much of it may be paid out. Every round the worker finds the holders who are underwater (in SOL: what they paid versus what their tokens are worth at the snapshot) and pays them in proportion to their loss, never more than the loss. You can change the token or the wallet at any time — the site, the token card and the chart follow immediately.</p>'+
   '<div class="adm-current"><div><span>Token contract</span><b>'+(st.primary_mint?esc(st.primary_mint):'not set')+'</b>'+(st.primary_name?'<small>'+esc(st.primary_name)+(st.primary_symbol?' · '+esc(st.primary_symbol):'')+'</small>':'')+'</div><div><span>Fee wallet</span><b>'+(st.fee_wallet?esc(st.fee_wallet):'not set')+'</b>'+(fwLive?'<small>'+esc(fwLive.mode==='automatic'?'automatic deposits (key on the worker)':'manual deposits (key not imported)')+'</small>':'')+'</div><div><span>Mode</span><b>'+esc(ns==='production'?'production (30-minute rounds)':'private test (2-minute rounds)')+' · '+esc(pl.execution_mode||'dry_run')+'</b>'+(fundingNote?'<small>'+esc(fundingNote)+'</small>':'')+'</div></div>'+
-  '<form id="adm-launch" class="adm-form"><label>Token contract address (mint)<input name="mint" required autocomplete="off" spellcheck="false" value="'+esc(st.primary_mint||'')+'"></label><label>Fee wallet address (public address; the key is added below)<input name="feeWallet" required autocomplete="off" spellcheck="false" value="'+esc(st.fee_wallet||'')+'"></label>'+
+  '<form id="adm-launch" class="adm-form"><label>Token contract address (mint)<span class="adm-inline"><input name="mint" id="adm-mint" required autocomplete="off" spellcheck="false" value="'+esc(st.primary_mint||'')+'"><button type="button" class="btn small outline" id="adm-check-btn">Check</button></span></label><div id="adm-check" class="adm-check" aria-live="polite"></div><details class="adm-checks"><summary>Earlier checks</summary><div id="adm-check-log"><p class="live-caption">Loading…</p></div></details><label>Fee wallet address (public address; the key is added below)<input name="feeWallet" required autocomplete="off" spellcheck="false" value="'+esc(st.fee_wallet||'')+'"></label>'+
   '<label>Namespace<select name="namespace"><option value="mainnet_test"'+(ns==='mainnet_test'?' selected':'')+'>Private test (2-minute rounds, spending caps)</option><option value="production"'+(ns==='production'?' selected':'')+'>Production (30-minute rounds)</option></select></label>'+
   '<label>Funding<select name="fundingModel"><option value="balance_budget"'+(fwLive?.funding_model!=='income'?' selected':'')+'>Budget: a share of the wallet’s current balance</option>'+'<option value="income"'+(fwLive?.funding_model==='income'?' selected':'')+'>Vault: 85 % of the balance and of every new fee, 20 % of it per round (15 % stays on the dev wallet)</option></select></label>'+
   '<label>Budget, % of the current balance<input name="budgetPercent" type="number" min="0.01" max="100" step="0.01" value="'+esc(fwLive?.budget_bps?fwLive.budget_bps/100:50)+'"></label>'+
@@ -402,6 +437,16 @@ async function mountAdmin(host,toast){
  sub('#adm-set-wallet',f=>adminCall('admin-set-wallet',{wallet:String(f.get('wallet')).trim(),label:'owner'}));
  sub('#adm-password',async f=>{if(f.get('next')!==f.get('confirm'))throw Error('The new passwords do not match.');const r=await api('admin-password',{body:{current:f.get('current'),next:f.get('next')}});setAdminToken(r.token);});
  const out=host.querySelector('#adm-signout');if(out)out.onclick=()=>{setAdminToken(null);adminLogin(host,toast,'Signed out.');};
+ // Check a contract address: read-only on chain; every check stays in the logs (listed under the form).
+ const checkHtml=r=>'<div class="adm-check-card '+(r.ok?'ok':'bad')+'"><b>'+(r.ok?'Looks right':'Check this before launching')+'</b><span>'+esc(r.name||'unnamed')+(r.symbol?' · $'+esc(r.symbol):'')+'</span>'+
+  '<dl><dt>Mint</dt><dd class="mono">'+esc(r.mint)+'</dd><dt>Exists</dt><dd>'+(r.exists?'yes':'no')+'</dd>'+(r.exists?'<dt>Market</dt><dd>'+(r.market?'pump.fun '+(r.graduated?'PumpSwap pool':'bonding curve'):'none on pump.fun')+'</dd><dt>Pair</dt><dd>'+esc(r.quote||'—')+'</dd><dt>Decimals</dt><dd>'+esc(r.decimals)+'</dd><dt>Creator</dt><dd class="mono">'+esc(r.creator||'—')+'</dd><dt>Already here</dt><dd>'+(r.known?esc(r.known.kind+' · '+r.known.status):'no')+'</dd>':'')+'</dl>'+
+  (r.problems.length?'<ul>'+r.problems.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>':'')+'<small>Checked '+esc(new Date(r.checkedAt).toLocaleString())+'</small></div>';
+ const checkLog=async()=>{const box=host.querySelector('#adm-check-log');if(!box)return;try{const r=await api('admin-logs',{query:{event:'token_checked'},auth:true});
+  box.innerHTML=r.logs.length?'<ul class="adm-check-list">'+r.logs.slice(0,30).map(l=>'<li class="'+(l.severity==='info'?'ok':'bad')+'"><time>'+esc(new Date(l.timestamp_utc||l.created_at).toLocaleString())+'</time><span>'+esc(l.safe_message)+'</span></li>').join('')+'</ul>':'<p class="live-caption">No checks yet.</p>';}catch(e){box.innerHTML='<p class="live-caption">'+esc(e.message)+'</p>';}};
+ host.querySelector('#adm-check-btn')?.addEventListener('click',async e=>{const b=e.currentTarget,out=host.querySelector('#adm-check'),m=String(host.querySelector('#adm-mint').value||'').trim();
+  if(!m){out.innerHTML='<p class="live-caption">Paste a contract address first.</p>';return;}
+  b.disabled=true;b.textContent='Checking…';try{out.innerHTML=checkHtml(await api('admin-check-token',{query:{mint:m},auth:true}));await checkLog();}catch(err){out.innerHTML='<p class="notice live-notice">'+esc(err.message)+'</p>';}finally{b.disabled=false;b.textContent='Check';}});
+ checkLog();
  sub('#adm-launch',async f=>{const r=await adminCall('admin-launch',{mint:String(f.get('mint')).trim(),feeWallet:String(f.get('feeWallet')).trim(),namespace:f.get('namespace'),fundingModel:f.get('fundingModel'),budgetPercent:Number(f.get('budgetPercent')||50),newBudget:f.get('newBudget')==='1',startTest:f.get('namespace')==='mainnet_test'&&f.get('startTest')==='1'});
   if(r.exists===false)toast('Saved. No token exists at this address on mainnet yet.');else if(r.budgetEstimate)toast('Saved. New budget ≈ '+sol(r.budgetEstimate)+' ('+(r.budgetBps/100)+' % of '+sol(r.balance)+').');else if(r.budgetAction==='kept')toast('Saved. The budget is unchanged.');else if(r.budgetAction==='lowered')toast('Saved. Budget lowered to '+(r.budgetBps/100)+' %.');});
  const keyForm=host.querySelector('#adm-key');if(keyForm)keyForm.onsubmit=async e=>{e.preventDefault();const btn=e.submitter;if(btn)btn.disabled=true;const area=keyForm.elements.secret;let bytes=null;
@@ -473,6 +518,7 @@ async function mount({route,mint,toast,signal}){
  for(const img of document.querySelectorAll('img[data-token-image]'))tokenImage(img,signal);
  if(route==='launch'&&q('#rewards-launch'))mountLaunch(q('#rewards-launch'),toast,signal);
  if(route==='portfolio'&&q('#wallet-rewards'))mountWalletRewards(q('#wallet-rewards'),signal);
+ if(route==='portfolio'&&q('#portfolio-coins'))mountPortfolio(q('#portfolio-coins'),signal);
  if(route==='token'&&q('#token-rewards'))mountToken(q('#token-rewards'),mint,signal);
  if(route==='admin'&&q('#admin-root'))mountAdmin(q('#admin-root'),toast);
 }

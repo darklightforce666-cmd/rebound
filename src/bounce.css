@@ -356,3 +356,13 @@ fieldset.pair legend{font-weight:500;font-size:14px;margin-bottom:8px;padding:0}
 .pair-opt span:not(.pair-logo){font-size:12.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pair-note{margin:0;padding:12px 14px;border-radius:12px;background:#E7F3EC;color:var(--body);font-size:14px;line-height:1.5}
 @media (max-width:760px){.pair-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.pair-head{flex-direction:column;align-items:flex-start}.pair-head input{max-width:none;width:100%}}
+
+/* ---------- admin: token check ---------- */
+.adm-inline{display:flex;gap:8px;align-items:center}.adm-inline input{flex:1;min-width:0}
+.adm-check-card{margin:4px 0 12px;padding:14px 16px;border-radius:12px;border:1px solid var(--line);background:#FFFFFF;display:flex;flex-direction:column;gap:6px;font-size:14px}
+.adm-check-card.ok{border-color:var(--mint-line);background:#F3FAF6}.adm-check-card.bad{border-color:var(--amber-line);background:var(--amber-deep)}
+.adm-check-card>b{font-size:15px}.adm-check-card dl{display:grid;grid-template-columns:120px minmax(0,1fr);gap:4px 12px;margin:6px 0 0}.adm-check-card dt{color:var(--muted)}.adm-check-card dd{margin:0;overflow-wrap:anywhere}
+.adm-check-card ul{margin:4px 0 0;padding-left:18px;color:var(--amber)}.adm-check-card small{color:var(--muted)}
+.adm-checks{margin:0 0 14px}.adm-checks summary{cursor:pointer;font-size:14px;color:var(--muted)}
+.adm-check-list{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px;font-size:13px}
+.adm-check-list li{display:grid;grid-template-columns:160px minmax(0,1fr);gap:10px;padding:6px 0;border-top:1px solid var(--line)}.adm-check-list li.bad span{color:var(--amber)}.adm-check-list time{color:var(--muted)}

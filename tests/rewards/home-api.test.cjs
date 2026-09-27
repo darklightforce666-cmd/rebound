@@ -23,3 +23,24 @@ test('home: coins with holders and current round, the headline round and the lat
  assert.equal(w.paid.lamports,'600');
  await assert.rejects(()=>H['wallet-check']({db,q:{wallet:'nope'}}),/Solana address/);
 });
+
+test('portfolio and admin: wallet-check carries holdings for the portfolio; a token check is read-only and always logged',async()=>{
+ const db=await supabaseDb();
+ try{
+  await db.query("INSERT INTO reward_public_tokens(mint,namespace,kind,name,symbol,reward_status,decimals) VALUES($1,'production','third_party','Frog','FROG','active',6)",[B]);
+  await db.query("INSERT INTO reward_public_holders(mint,owner,quantity_raw,cost_lamports,value_lamports,loss_lamports,paid_lamports,payouts,outcome,cycle_number) VALUES($1,$2,5000000,1000,400,500,100,1,'eligible',2)",[B,OWNER]);
+  const w=await as(db,'rebound_api',null,d=>H['wallet-check']({db:d,q:{wallet:OWNER}}));
+  const p=w.positions[0];assert.equal(p.quantity_raw,'5000000');assert.equal(p.decimals,6);assert.equal(p.cost_lamports,'1000');assert.equal(p.paid_lamports,'100');
+  // Admin check of a contract address: no mint there → a problem, and a log row either way.
+  const A=require('../../server/rewards/admin-v3.cjs');
+  const conn={getParsedAccountInfo:async()=>({value:null}),getMultipleAccountsInfo:async()=>[null,null]};
+  const r=await A.checkToken(db,conn,'admin (password)',A_MINT);   // (outside a rolled-back role transaction, so the log row stays)
+  assert.equal(r.exists,false);assert.equal(r.ok,false);assert.match(r.problems[0],/No token mint/);
+  const logs=(await db.query("SELECT safe_message,severity,mint FROM reward_logs WHERE event_type='token_checked'")).rows;
+  assert.equal(logs.length,1);assert.equal(logs[0].mint,A_MINT);assert.equal(logs[0].severity,'warn');
+  // The API role (which serves the dashboard) may write the check's log row.
+  await as(db,'rebound_api',null,async d=>{await A.checkToken(d,conn,'x',A_MINT);assert.equal((await d.query("SELECT count(*)::int n FROM reward_logs WHERE event_type='token_checked'")).rows[0].n,2);});
+  await assert.rejects(()=>A.checkToken(db,conn,'admin','not-a-mint'),/Invalid token contract/);
+ }finally{await db.close();}
+});
+const A_MINT='3SohGcVPEwv6HS4DcSCMBE6RKu623aVzZKh4oWFppump';

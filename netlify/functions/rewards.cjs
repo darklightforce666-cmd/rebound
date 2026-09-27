@@ -112,7 +112,7 @@ async function homeData(db){
 // round's budget (when the budget is fixed) and everything already paid to it. Read-only, public data.
 async function walletCheck(db,q){
  const wallet=(()=>{try{W.pk(q.wallet);return q.wallet;}catch{fail(400,'WALLET_INVALID','That isn’t a Solana address.');}})();
- const rows=(await db.query(`SELECT h.mint,t.name,t.symbol,t.quote_mint,t.quote_symbol,t.quote_decimals,h.cost_lamports::text,h.value_lamports::text,h.compensated_lamports::text,h.loss_lamports::text,h.paid_lamports::text,h.payouts,h.outcome,
+ const rows=(await db.query(`SELECT h.mint,t.name,t.symbol,t.image_uri,t.decimals,t.quote_mint,t.quote_symbol,t.quote_decimals,h.quantity_raw::text,h.updated_at,h.cost_lamports::text,h.value_lamports::text,h.compensated_lamports::text,h.loss_lamports::text,h.paid_lamports::text,h.payouts,h.outcome,
   (SELECT COALESCE(sum(x.loss_lamports),0)::text FROM reward_public_holders x WHERE x.mint=h.mint AND x.outcome<>'sold') AS total_loss,
   (SELECT row_to_json(c) FROM (SELECT cycle_number,state,cutoff_time,scheduled_end,available_lamports::text FROM reward_public_cycles WHERE mint=h.mint ORDER BY cycle_number DESC LIMIT 1) c) AS round
   FROM reward_public_holders h JOIN reward_public_tokens t USING(mint) WHERE h.owner=$1 ORDER BY h.loss_lamports DESC LIMIT 50`,[wallet])).rows;
@@ -191,11 +191,14 @@ const handlers={
   async 'admin-logs'({db,event,q}){
    await adminAccess(db,event);
    const where=[],args=[];const add=(sql,v)=>{args.push(v);where.push(sql.replace('?','$'+args.length));};
-   if(q.mint)add('mint=?',q.mint);if(q.cycle)add('cycle_id=?',q.cycle);if(q.severity)add('severity=?',q.severity);if(q.component)add('component=?',q.component);
+   if(q.mint)add('mint=?',q.mint);if(q.event)add('event_type=?',String(q.event).slice(0,96));if(q.cycle)add('cycle_id=?',q.cycle);if(q.severity)add('severity=?',q.severity);if(q.component)add('component=?',q.component);
    if(q.before&&/^\d+$/.test(q.before))add('id<?',q.before);if(q.search)add("safe_message ILIKE '%'||?||'%'",String(q.search).slice(0,80));
    const rows=(await db.query(`SELECT * FROM reward_logs ${where.length?'WHERE '+where.join(' AND '):''} ORDER BY id DESC LIMIT 100`,args)).rows;
    return{logs:rows,next:rows.length===100?rows.at(-1).id:null};
   },
+  // Check a contract address (admin): read-only on chain; the result is kept in the logs (event token_checked).
+  async 'admin-check-token'({db,event,q}){const s=await adminAccess(db,event);const connection=rpcConnection();if(!connection)fail(503,'SETUP_REQUIRED','The Solana RPC is not configured',true);
+   return planCall(()=>Admin.checkToken(db,connection,s.via==='password'?s.actor:s.wallet||'admin wallet',q.mint));},
   async 'admin-health'({db,event}){
    await adminAccess(db,event);
    return{components:(await db.query('SELECT * FROM reward_health ORDER BY component')).rows,now:new Date().toISOString()};
