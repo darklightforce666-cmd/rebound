@@ -80,5 +80,5 @@ test('production output contains no demo runtime, server files, or environment s
  for(const p of ['src/fixtures.cjs','src/engine.cjs','netlify','server','.env','contracts','preview'])assert.ok(!fs.existsSync(path.join(root,'dist',p)),p);
  const browserFiles=fs.readdirSync(path.join(root,'dist/src')).filter(p=>p.endsWith('.js')).map(p=>fs.readFileSync(path.join(root,'dist/src',p),'utf8')).join('\n');
  assert.doesNotMatch(browserFiles,/SOLANA_RPC_URL|private-secret|api-key=/);
- assert.match(html,/rebound:unlocked/);assert.match(app,/AbortController/);assert.match(app,/address!==wallet.address/);
+ assert.match(html,/src\/boot\.js/);assert.match(fs.readFileSync(path.join(root,'dist/src/boot.js'),'utf8'),/rebound:unlocked/);assert.match(app,/AbortController/);assert.match(app,/address!==wallet.address/);
 });

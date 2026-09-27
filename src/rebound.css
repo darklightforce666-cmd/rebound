@@ -1,0 +1,82 @@
+/* REBOUND — "Proof in motion". Tokens live in styles.css; this layer holds the new shell and screens.
+   Loaded last. Every animation has a reduced-motion fallback at the end of the file. */
+
+/* ---------- base ---------- */
+html{background:var(--bg)}
+body{font-family:var(--font-body);background-color:var(--bg);background-image:linear-gradient(#0C1F17 1px,transparent 1px),linear-gradient(90deg,#0C1F17 1px,transparent 1px);background-size:64px 64px;background-attachment:fixed;color:var(--ink);-webkit-font-smoothing:antialiased}
+h1,h2,h3,.display{font-family:var(--font-display);letter-spacing:-.03em}
+.mono,.num,code,.live-address{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+::selection{background:#6BF0A855;color:var(--ink)}
+:focus-visible{outline:2px solid var(--mint);outline-offset:3px}
+
+/* ---------- boot: loader ---------- */
+.loader{position:fixed;inset:0;z-index:2147483646;display:grid;place-items:center;overflow:hidden;background-color:var(--bg);
+ background-image:linear-gradient(#0E2119 1px,transparent 1px),linear-gradient(90deg,#0E2119 1px,transparent 1px);background-size:64px 64px;color:var(--ink);font-family:var(--font-body)}
+.loader-glow{position:absolute;left:50%;top:32%;width:400px;height:400px;margin:-200px 0 0 -200px;border-radius:50%;background:var(--mint-deep);filter:blur(120px);opacity:.25;animation:ld-glow 4s ease-in-out infinite}
+.loader-stage{position:relative;display:flex;flex-direction:column;align-items:center;gap:32px;padding:24px}
+.loader-mark{position:relative;width:min(390px,78vw);aspect-ratio:300/230;animation:ld-land .6s 1.3s ease-out both}
+.loader-mark svg{width:100%;height:100%;display:block;overflow:visible}
+.loader-mark .ld-line{stroke-dasharray:1;stroke-dashoffset:1;animation:ld-draw 1.2s .1s cubic-bezier(.6,0,.3,1) forwards}
+.loader-mark .ld-arrow{stroke-dasharray:1;stroke-dashoffset:1;animation:ld-draw .3s 1.25s ease-out forwards}
+.loader-tip{position:absolute;left:74.4%;top:18.3%;width:9.2%;aspect-ratio:1;margin:-4.6% 0 0 -4.6%;border-radius:50%;border:2px solid var(--mint);opacity:0;animation:ld-tip .8s 1.45s ease-out both}
+.loader-wl{position:absolute;right:-6px;top:47%;font:500 11px/1 var(--font-mono);letter-spacing:.12em;color:var(--teal)}
+.loader-word{display:flex;font:700 clamp(44px,8vw,64px)/1 var(--font-display);letter-spacing:-.04em}
+.loader-word span{display:inline-block;animation:ld-letter .55s cubic-bezier(.3,1.5,.5,1) both}
+.loader-word span:nth-child(1){animation-delay:1.3s}.loader-word span:nth-child(2){animation-delay:1.35s}.loader-word span:nth-child(3){animation-delay:1.4s}
+.loader-word span:nth-child(4){animation-delay:1.45s}.loader-word span:nth-child(5){animation-delay:1.5s}.loader-word span:nth-child(6){animation-delay:1.55s}
+.loader-word span:nth-child(7){animation-delay:1.6s;color:var(--mint)}
+.loader-checks{list-style:none;margin:0;padding:0;width:min(460px,92vw);display:flex;flex-direction:column;gap:12px;font:400 13.5px/1.3 var(--font-mono)}
+.loader-checks li{display:flex;align-items:center;gap:12px;min-height:20px}
+.loader-checks .lc-icon{position:relative;width:18px;height:18px;flex-shrink:0}
+.loader-checks .lc-spin{position:absolute;inset:1px;border-radius:50%;border:2px solid var(--line);border-top-color:var(--mint);animation:ld-spin .7s linear infinite;transition:opacity .15s}
+.loader-checks .lc-ok,.loader-checks .lc-miss{position:absolute;inset:0;opacity:0;transform:scale(.4)}
+.loader-checks .lc-label{color:var(--muted);flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.loader-checks .lc-val{color:var(--ink);opacity:0;transform:translateX(-6px);transition:opacity .3s,transform .3s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:55%}
+.loader-checks li.done .lc-spin,.loader-checks li.miss .lc-spin{opacity:0;animation:none}
+.loader-checks li.done .lc-ok,.loader-checks li.miss .lc-miss{animation:ld-pop .35s ease-out forwards}
+.loader-checks li.done .lc-val,.loader-checks li.miss .lc-val{opacity:1;transform:none}
+.loader-checks li.miss .lc-val{color:var(--subtle)}
+.loader.out{animation:ld-exit .5s cubic-bezier(.4,0,.2,1) forwards;pointer-events:none}
+@media (max-width:480px){.loader-checks{font-size:11.5px;gap:10px}.loader-checks li{gap:9px}.loader-stage{gap:26px}}
+/* A repeat visit: the finished logo, then a short fade. */
+.boot-quick .loader-mark,.boot-quick .loader-word span,.boot-quick .loader-mark .ld-line,.boot-quick .loader-mark .ld-arrow{animation:none;stroke-dashoffset:0}
+.boot-quick .loader-tip,.boot-quick .loader-checks{display:none}
+.boot-quick .loader.out{animation-duration:.4s}
+@keyframes ld-draw{to{stroke-dashoffset:0}}
+@keyframes ld-letter{0%{opacity:0;transform:translateY(40px)}60%{opacity:1;transform:translateY(-10px)}100%{opacity:1;transform:none}}
+@keyframes ld-spin{to{transform:rotate(360deg)}}
+@keyframes ld-pop{0%{opacity:0;transform:scale(.4)}70%{opacity:1;transform:scale(1.2)}100%{opacity:1;transform:scale(1)}}
+@keyframes ld-land{0%{transform:scale(1)}40%{transform:scale(1.06)}70%{transform:scale(.98)}100%{transform:scale(1)}}
+@keyframes ld-exit{to{opacity:0;transform:translateY(-12px) scale(1.03)}}
+@keyframes ld-glow{0%,100%{opacity:.25}50%{opacity:.5}}
+@keyframes ld-tip{0%{opacity:0;transform:scale(.2)}50%{opacity:1;transform:scale(1.4)}100%{opacity:0;transform:scale(2.4)}}
+
+/* ---------- boot: private preview (password) ---------- */
+#rebound-entry{position:fixed;inset:0;z-index:2147483645;display:grid;place-items:center;overflow:auto;padding:24px;box-sizing:border-box;background-color:var(--bg);
+ background-image:linear-gradient(#0E2119 1px,transparent 1px),linear-gradient(90deg,#0E2119 1px,transparent 1px);background-size:64px 64px;color:var(--ink);font:16px/1.5 var(--font-body)}
+#rebound-entry::before{content:"";position:absolute;left:50%;top:30%;width:420px;height:420px;margin:-210px 0 0 -210px;border-radius:50%;background:var(--mint-deep);filter:blur(130px);opacity:.22;pointer-events:none}
+#rebound-entry .entry-card{position:relative;width:100%;max-width:420px;padding:36px;border:1px solid var(--line);border-radius:26px;background:var(--surface);box-shadow:0 40px 80px -40px #000C;animation:rb-rise .5s var(--ease-out) both}
+#rebound-entry .entry-brand{display:flex;align-items:center;gap:12px;margin:0 0 28px;font:700 22px/1 var(--font-display);letter-spacing:-.03em}
+#rebound-entry .entry-brand svg{width:36px;height:36px;flex-shrink:0}
+#rebound-entry h1{margin:0 0 8px;font:600 26px/1.15 var(--font-display);letter-spacing:-.03em}
+#rebound-entry .entry-copy{margin:0 0 24px;color:var(--muted)}
+#rebound-entry label{display:block;margin-bottom:8px;font-size:14px;font-weight:500}
+#rebound-entry input{display:block;width:100%;height:54px;padding:0 16px;box-sizing:border-box;border:1px solid var(--line-strong);border-radius:14px;background:var(--bg);color:var(--ink);font:15px var(--font-mono);letter-spacing:.2em;transition:border-color .2s,box-shadow .2s}
+#rebound-entry input:focus{outline:none;border-color:var(--mint);box-shadow:0 0 0 4px #6BF0A826}
+#rebound-entry input[aria-invalid=true]{border-color:var(--amber);animation:rb-shake .4s ease-out}
+#rebound-entry button{width:100%;height:54px;margin-top:4px;border:0;border-radius:14px;background:var(--mint);color:var(--on-mint);font:600 16px var(--font-body);cursor:pointer;transition:transform .16s var(--ease-spring),box-shadow .25s}
+#rebound-entry button:hover{transform:translateY(-2px);box-shadow:0 10px 34px -8px #6BF0A899}
+#rebound-entry button:active{transform:translateY(1px) scale(.97)}
+#rebound-entry .entry-error{min-height:22px;margin:8px 0;color:var(--amber);font-size:13.5px}
+@keyframes rb-rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+@keyframes rb-shake{0%,100%{transform:none}20%{transform:translateX(-6px)}40%{transform:translateX(6px)}60%{transform:translateX(-4px)}80%{transform:translateX(3px)}}
+
+/* ---------- reduced motion ---------- */
+@media (prefers-reduced-motion:reduce){
+ .loader *,.loader,#rebound-entry *{animation:none!important;transition:none!important}
+ .loader-mark .ld-line,.loader-mark .ld-arrow{stroke-dashoffset:0}
+ .loader-tip{display:none}
+ .loader-checks .lc-spin{border-top-color:var(--line)}
+ .loader-checks li.done .lc-ok,.loader-checks li.miss .lc-miss{opacity:1;transform:none}
+ .loader.out{opacity:0}
+}

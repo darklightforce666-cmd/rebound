@@ -4,11 +4,15 @@ function build(){
  // Only this fixed, generated directory may be cleared.
  if(path.dirname(dist)!==root||path.basename(dist)!=='dist')throw Error('Invalid output path');
  fs.rmSync(dist,{recursive:true,force:true});
- const files=['index.html','src/mainnet-config.js','src/live-data.js','src/wallet.js','src/app.js','src/token-charts.js','src/styles.css','src/solana.css','src/motion.css','src/live.css','src/motion.js'];
+ const files=['index.html','src/mainnet-config.js','src/live-data.js','src/wallet.js','src/app.js','src/token-charts.js','src/fonts.css','src/styles.css','src/solana.css','src/motion.css','src/live.css','src/rebound.css','src/motion.js','src/boot.js'];
  for(const file of files){
   const target=path.join(dist,file);fs.mkdirSync(path.dirname(target),{recursive:true});fs.copyFileSync(path.join(root,file),target);
  }
  fs.cpSync(path.join(root,'assets'),path.join(dist,'assets'),{recursive:true});
+ // Self-hosted fonts (OFL): only the latin and cyrillic subsets the site uses.
+ fs.mkdirSync(path.join(dist,'assets/fonts'),{recursive:true});
+ for(const [pkg,file] of [['unbounded','unbounded'],['geist','geist'],['geist-mono','geist-mono']])for(const sub of ['latin','cyrillic']){
+  const name=file+'-'+sub+'-wght-normal.woff2';fs.copyFileSync(path.join(path.dirname(require.resolve('@fontsource-variable/'+pkg+'/package.json')),'files',name),path.join(dist,'assets/fonts',name));}
  const chartPackage=path.dirname(require.resolve('lightweight-charts/package.json'));
  fs.mkdirSync(path.join(dist,'vendor'),{recursive:true});
  fs.copyFileSync(path.join(chartPackage,'dist/lightweight-charts.standalone.production.js'),path.join(dist,'vendor/lightweight-charts.js'));
