@@ -43,7 +43,7 @@ test('ingest discovers token accounts, records exact in-block order, and resumes
  const {db,mint,coin}=await setup();try{
   const chain=fakeChain(),A=key(),B=key(),C=key(),ta=key(),tb=key(),tc=key();
   const t1=transfer({mint,from:A,fromAcc:ta,to:B,toAcc:tb,amount:40,pre:[100,0],slot:10});chain.add(t1,[mint,ta,tb]);   // transferChecked touches the mint
-  let r=await Wk.ingest({db,rpc:chain},coin);
+  let r=await Wk.ingest({db,rpc:chain},coin,{holderCheckSeconds:0});
   assert.equal(r.complete,true);assert.equal(r.newTx,1);
   const cursors=(await db.query('SELECT address,role,newest_signature FROM reward_history_cursors WHERE mint=$1 ORDER BY role,address',[mint])).rows;
   assert.deepEqual(cursors.filter(c=>c.role==='token_account').map(c=>c.address).sort(),[ta,tb].sort());
@@ -53,11 +53,11 @@ test('ingest discovers token accounts, records exact in-block order, and resumes
   // A later transfer that touches only token accounts (no mint key) is still found through the token-account cursors.
   const t2=transfer({mint,from:B,fromAcc:tb,to:C,toAcc:tc,amount:10,pre:[40,0],slot:12});t2.transaction.message.accountKeys.splice(2,1,{pubkey:key()});
   t2.transaction.message.instructions[0].parsed={type:'transfer',info:{source:tb,destination:tc,amount:'10',authority:B}};chain.add(t2,[tb,tc]);
-  const before=chain.calls.getTransaction;r=await Wk.ingest({db,rpc:chain},coin);
+  const before=chain.calls.getTransaction;r=await Wk.ingest({db,rpc:chain},coin,{holderCheckSeconds:0});
   assert.equal(r.newTx,1);assert.equal(chain.calls.getTransaction-before,1,'already-ingested history is never refetched');
   assert.ok((await db.query("SELECT 1 FROM reward_history_cursors WHERE mint=$1 AND address=$2 AND role='token_account'",[mint,tc])).rows.length,'recipient account discovered');
   const cp=(await db.query('SELECT * FROM reward_checkpoints WHERE name=$1',['history:'+mint])).rows[0];assert.equal(cp.complete,true);assert.equal(Number(cp.through_slot),12);
-  r=await Wk.ingest({db,rpc:chain},coin);assert.equal(r.newTx,0);
+  r=await Wk.ingest({db,rpc:chain},coin,{holderCheckSeconds:0});assert.equal(r.newTx,0);
  }finally{await db.close();}
 });
 
@@ -66,11 +66,11 @@ test('an unavailable transaction marks coverage incomplete and stays queued unti
   const chain=fakeChain(),A=key(),B=key(),ta=key(),tb=key();
   const s1=chain.add(transfer({mint,from:A,fromAcc:ta,to:B,toAcc:tb,amount:5,pre:[100,0],slot:20}),[mint,ta,tb]);
   chain.down.add(s1);
-  let r=await Wk.ingest({db,rpc:chain},coin);assert.equal(r.complete,false);
+  let r=await Wk.ingest({db,rpc:chain},coin,{holderCheckSeconds:0});assert.equal(r.complete,false);
   let cp=(await db.query('SELECT * FROM reward_checkpoints WHERE name=$1',['history:'+mint])).rows[0];assert.equal(cp.complete,false);assert.match(JSON.stringify(cp.incident),/transaction_unavailable/);
   assert.equal((await db.query('SELECT fetched_at FROM reward_history_queue WHERE mint=$1 AND signature=$2',[mint,s1])).rows[0].fetched_at,null,'listed but not fetched: kept in the queue');
   const inputs=await Wk.inputsLoader(db)(coin,1,1000+30,30);assert.equal(inputs.coverage.complete,false,'snapshot sees incomplete coverage and holds');
-  chain.down.clear();r=await Wk.ingest({db,rpc:chain},coin);assert.equal(r.complete,true);assert.equal(r.newTx,1);
+  chain.down.clear();r=await Wk.ingest({db,rpc:chain},coin,{holderCheckSeconds:0});assert.equal(r.complete,true);assert.equal(r.newTx,1);
   cp=(await db.query('SELECT * FROM reward_checkpoints WHERE name=$1',['history:'+mint])).rows[0];assert.equal(cp.complete,true);
  }finally{await db.close();}
 });
@@ -80,7 +80,7 @@ test('inputsLoader returns only finalized evidence at or before the cutoff slot,
   const chain=fakeChain(),A=key(),B=key(),ta=key(),tb=key();
   chain.add(transfer({mint,from:A,fromAcc:ta,to:B,toAcc:tb,amount:5,pre:[100,0],slot:30}),[mint,ta,tb]);
   chain.add(transfer({mint,from:A,fromAcc:ta,to:B,toAcc:tb,amount:5,pre:[95,5],slot:40}),[mint,ta,tb]);
-  await Wk.ingest({db,rpc:chain},coin);
+  await Wk.ingest({db,rpc:chain},coin,{holderCheckSeconds:0});
   const inputs=await Wk.inputsLoader(db)(coin,1,1000+35,35);
   assert.ok(inputs.events.length>0&&inputs.events.every(e=>e.slot<=35));
   assert.deepEqual(inputs.coverage,{complete:true,throughSlot:40});
@@ -130,7 +130,7 @@ test('v1 transactions are requested and the RPC-reported block index is used wit
  const {db,mint,coin}=await setup();try{
   const chain=fakeChain({reportIndex:true}),A=key(),B=key(),ta=key(),tb=key();
   chain.add(transfer({mint,from:A,fromAcc:ta,to:B,toAcc:tb,amount:5,pre:[100,0],slot:50}),[mint,ta,tb]);
-  const r=await Wk.ingest({db,rpc:chain},coin);assert.equal(r.complete,true);assert.equal(r.newTx,1);
+  const r=await Wk.ingest({db,rpc:chain},coin,{holderCheckSeconds:0});assert.equal(r.complete,true);assert.equal(r.newTx,1);
   assert.equal(chain.calls.getBlock||0,0);
   assert.ok((await db.query('SELECT transaction_index FROM reward_events WHERE mint=$1',[mint])).rows.every(e=>e.transaction_index===1));
  }finally{await db.close();}
@@ -179,15 +179,17 @@ test('with current holders known, only their token accounts are crawled and each
   chain.add(transfer({mint,from:A,fromAcc:ta,to:C,toAcc:tc,amount:60,pre:[60,0],slot:11}),[ta,tc]);   // A sold out
   const orig=chain.call.bind(chain);let batches=0;
   chain.call=async(m,p)=>{if(m==='getAccountInfo')return{value:{owner:TOKEN}};
-   if(m==='getProgramAccounts'){chain.calls[m]=(chain.calls[m]||0)+1;return[tb,tc].map(a=>({pubkey:a,account:{data:{parsed:{info:{owner:a===tb?B:C,tokenAmount:{amount:'10'}}}}}}));}
+   if(m==='getProgramAccounts'){chain.calls[m]=(chain.calls[m]||0)+1;return[tb,tc].map(a=>({pubkey:a,account:{data:{parsed:{info:{owner:a===tb?B:C,tokenAmount:{amount:a===tb?'40':'60'}}}}}}));}
    return orig(m,p);};
   chain.batch=async calls=>{batches++;return Promise.all(calls.map(([m,p])=>chain.call(m,p)));};
-  const r=await Wk.ingest({db,rpc:chain},coin);
+  const r=await Wk.ingest({db,rpc:chain},coin,{holderCheckSeconds:0});
   assert.equal(r.complete,true);assert.equal(r.newTx,2);assert.equal(r.holders,2);assert.ok(batches>=1);
   assert.equal(chain.calls.getTransaction,2,'each transaction exactly once, although listed under several addresses');
   const listed=(await db.query('SELECT count(*)::int n FROM reward_history_queue WHERE mint=$1',[mint])).rows[0].n;assert.equal(listed,2);
   const crawled=chain.calls.getSignaturesForAddress;
-  assert.equal(crawled,5,'mint, curve, pool and the two current holders; the sold-out wallet is never listed');
-  const again=await Wk.ingest({db,rpc:chain},coin);assert.equal(again.newTx,0);assert.equal(chain.calls.getTransaction,2);
+  assert.equal(crawled,4,'mint, curve, pool and only the holder whose balance the trades do not explain; the sold-out wallet and the matching holder are never listed');
+  assert.equal(r.mismatched,1);
+  const again=await Wk.ingest({db,rpc:chain},coin,{holderCheckSeconds:0});assert.equal(again.newTx,0);assert.equal(chain.calls.getTransaction,2);
+  assert.equal(chain.calls.getSignaturesForAddress-crawled,3,'steady state: only the three market addresses');
  }finally{await db.close();}
 });

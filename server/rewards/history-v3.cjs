@@ -114,11 +114,14 @@ function parseAll(history,coin){
  return{events,holds};
 }
 // Token accounts that hold the mint right now (one request): {account, owner, amount}. Token or Token-2022.
+// Returns {slot, accounts:[{account, owner, amount}]} (amount > 0) at a finalized slot.
 async function currentHolderAccounts(rpc,mint){
  const info=await rpc.call('getAccountInfo',[mint,{encoding:'base64',commitment:'finalized'}]);
  const program=info?.value?.owner;if(!program)throw Object.assign(Error('mint not found'),{code:'MINT_NOT_FOUND'});
- const list=await rpc.call('getProgramAccounts',[program,{encoding:'jsonParsed',commitment:'finalized',filters:[{memcmp:{offset:0,bytes:mint}}]}]);
- return(list||[]).map(a=>({account:a.pubkey,owner:a.account?.data?.parsed?.info?.owner,amount:a.account?.data?.parsed?.info?.tokenAmount?.amount})).filter(a=>a.account&&a.amount&&a.amount!=='0');
+ const filters=[{memcmp:{offset:0,bytes:mint}}];if(program==='TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')filters.unshift({dataSize:165});
+ const r=await rpc.call('getProgramAccounts',[program,{encoding:'jsonParsed',commitment:'finalized',withContext:true,filters}]);
+ const list=Array.isArray(r)?r:(r?.value||[]),slot=Array.isArray(r)?null:(r?.context?.slot??null);
+ return{slot,accounts:list.map(a=>({account:a.pubkey,owner:a.account?.data?.parsed?.info?.owner,amount:a.account?.data?.parsed?.info?.tokenAmount?.amount})).filter(a=>a.account&&a.amount&&a.amount!=='0')};
 }
 module.exports={Rpc,marketAddresses,signaturesFor,collect,parseAll,TX_VERSION,reportedIndex,currentHolderAccounts};
 
