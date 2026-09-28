@@ -1,7 +1,7 @@
-/* Boot: the loading screen ("the bounce": a ball falls, rides the arrow, the word hops in, everything
-   launches up), then the private-preview gate. It never touches wallet or reward state. The page renders
-   underneath while it plays; a click or a key skips it. It plays on every page load (≈4.8 s); with
-   reduced motion the final frame shows briefly and nothing moves. */
+/* Boot: the loading screen (the owner's rebound-loader.html: the mark draws itself, the word hops in,
+   everything launches up), then the private-preview gate. It never touches wallet or reward state. The page
+   renders underneath while it plays; a click or a key skips it. It plays on every page load (≈3.8 s); with
+   reduced motion it is skipped. */
 (function () {
   'use strict';
   var html = document.documentElement, loader = document.getElementById('rebound-loader');
@@ -9,7 +9,7 @@
   var password = document.getElementById('rebound-entry-password'), error = document.getElementById('rebound-entry-error');
   var quick = html.classList.contains('boot-quick');
   var reduced = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
-  var started = Date.now(), EXIT_AT = quick ? 150 : reduced ? 700 : 4300;
+  var started = Date.now(), EXIT_AT = quick ? 150 : reduced ? 200 : 3350;
   var API = '/.netlify/functions/rewards?action=';
   var gate = null; // 'open' | 'closed'
 
@@ -32,9 +32,13 @@
     if (!loader || finishing || gate === null) return;
     finishing = true;
     loader.classList.add('out');
-    setTimeout(function () { if (loader) loader.remove(); loader = null; if (gate === 'open') { var m = document.getElementById('main'); if (m) m.focus({ preventScroll: true }); } else if (password) password.focus(); }, quick || reduced ? 250 : 500);
+    setTimeout(function () { if (loader) loader.remove(); loader = null; if (gate === 'open') { var m = document.getElementById('main'); if (m) m.focus({ preventScroll: true }); } else if (password) password.focus(); }, quick || reduced ? 250 : 450);
   }
   // Skip: any click or key once the gate is decided.
+  // Fit the 520×500 stage to small screens (never scaled up).
+  var stage = loader && loader.querySelector('.rbl-stage');
+  function fit() { if (stage) stage.style.transform = 'scale(' + Math.min(1, (innerWidth - 32) / 520, (innerHeight - 32) / 500) + ')'; }
+  fit(); window.addEventListener('resize', fit);
   if (loader) { loader.addEventListener('click', finish); window.addEventListener('keydown', function k() { finish(); window.removeEventListener('keydown', k); }); }
   // The gate: the administrator can open the site to everyone (admin dashboard → Site access).
   var decided = new Promise(function (resolve) {

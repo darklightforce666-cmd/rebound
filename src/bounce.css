@@ -167,36 +167,28 @@ table.coins tr.fresh td{animation:bn-fresh 2.4s ease-out}
 .pay-row>span b{font-weight:600}
 .pay-row>a{text-align:right;color:var(--ink);text-decoration:underline;text-decoration-color:#C8C8C0;text-underline-offset:3px}
 
-/* ---------- loader ("the bounce", ≈4.8 s, no text) ---------- */
-.loader{position:fixed;inset:0;z-index:2147483646;display:grid;place-items:center;overflow:hidden;background:var(--bg);color:var(--ink);cursor:pointer}
-.loader.out{animation:bn-fade .45s ease-in forwards;pointer-events:none}
-.ld-stage{position:relative;width:440px;height:560px;max-width:100vw}
-.ld-mark{position:absolute;left:0;top:0;width:440px;height:360px;animation:bn-launch .75s 4.05s cubic-bezier(.5,0,.75,0) both}
-.ld-squash{position:absolute;inset:0;transform-origin:50% 90%;animation:bn-squash .6s 2.05s ease-out both}
-.ld-squash svg{position:absolute;inset:0;width:440px;height:360px;overflow:visible}
-.ld-arrow,.ld-head{fill:none;stroke:var(--ink);stroke-width:26;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:1;stroke-dashoffset:1}
-.ld-arrow{animation:bn-draw 1s 1s cubic-bezier(.55,.05,.45,.95) forwards}
-.ld-headg{transform-origin:300px 92px;animation:bn-headpop .5s 1.98s cubic-bezier(.3,1.5,.5,1) both}
-.ld-head{animation:bn-draw .25s 1.98s ease-out forwards}
-.ld-shadow{position:absolute;left:60px;top:88px;width:48px;height:10px;border-radius:50%;background:var(--ink);opacity:0;animation:bn-shadow 1s both}
-.ld-ball{position:absolute;left:66px;top:59px;width:36px;height:36px;border-radius:50%;background:var(--mint-light);transform-origin:50% 100%;animation:bn-fall 1s both}
-.ld-rider{position:absolute;left:0;top:0;width:36px;height:36px;border-radius:50%;background:var(--mint-light);offset-path:path('M84 108 V216 A108 108 0 0 0 300 216 V72');offset-rotate:0deg;opacity:0;animation:bn-ride 1s 1s cubic-bezier(.55,.05,.45,.95) forwards,bn-gone .18s 1.98s ease-in forwards}
-.ld-mark .cf{position:absolute;display:block;opacity:0}
-.cf.c0{left:294px;top:54px;width:12px;height:12px;border-radius:50%;background:var(--confetti-a);animation:bn-p0 .9s 2.02s cubic-bezier(.2,.7,.4,1) both}
-.cf.c1{left:295px;top:55px;width:10px;height:10px;border-radius:2px;background:var(--confetti-b);animation:bn-l1 .95s 2.02s cubic-bezier(.2,.7,.4,1) both}
-.cf.c2{left:293px;top:53px;width:14px;height:14px;border-radius:50%;background:var(--mint-light);animation:bn-l2 .9s 2.04s cubic-bezier(.2,.7,.4,1) both}
-.cf.c3{left:293px;top:53px;width:14px;height:14px;fill:var(--ink);animation:bn-l3 1s 2.03s cubic-bezier(.2,.7,.4,1) both}
-.cf.c4{left:295px;top:55px;width:9px;height:9px;border-radius:50%;background:var(--confetti-a);animation:bn-l4 .85s 2.05s cubic-bezier(.2,.7,.4,1) both}
-.cf.c5{left:295px;top:55px;width:10px;height:10px;border-radius:2px;background:var(--mint-light);animation:bn-l5 1s 2.04s cubic-bezier(.2,.7,.4,1) both}
-.cf.c6{left:293px;top:53px;width:14px;height:14px;fill:var(--confetti-b);animation:bn-l6 1s 2.02s cubic-bezier(.2,.7,.4,1) both}
-.cf.c7{left:296px;top:56px;width:7px;height:7px;border-radius:50%;background:var(--ink);animation:bn-l7 .8s 2.06s cubic-bezier(.2,.7,.4,1) both}
-.cf.c8{left:296px;top:56px;width:8px;height:8px;border-radius:2px;background:var(--confetti-a);animation:bn-l8 .9s 2.03s cubic-bezier(.2,.7,.4,1) both}
-.ld-word{position:absolute;left:0;right:0;top:390px;display:flex;justify-content:center;font:900 108px/1 var(--font-display);letter-spacing:-.05em;animation:bn-launch .75s 4.12s cubic-bezier(.5,0,.75,0) both}
-.ld-word span{display:inline-block;transform-origin:50% 100%;animation:bn-hopin .7s both}
-.ld-word span:nth-child(1){animation-delay:2.25s}.ld-word span:nth-child(2){animation-delay:2.32s}.ld-word span:nth-child(3){animation-delay:2.39s}.ld-word span:nth-child(4){animation-delay:2.46s}
-.ld-word span:nth-child(5){animation-delay:2.53s}.ld-word span:nth-child(6){animation-delay:2.6s}.ld-word span:nth-child(7){animation-delay:2.67s}
-/* A repeat visit: plain paper, then a short fade (the page is already underneath). */
-.boot-quick .ld-stage{display:none}
+/* ---------- loader (the owner's rebound-loader.html, ≈3.8 s): the mark draws itself, the head pops with
+   confetti, the word hops in, everything launches up. boot.js fades it out and scales the stage to fit. ---------- */
+.loader{position:fixed;inset:0;z-index:2147483646;overflow:hidden;background:#F7F7F4;color:#0D1310;cursor:pointer}
+.loader.out{animation:bn-fade .4s ease-in forwards;pointer-events:none}
+.rbl-stage{position:absolute;left:50%;top:50%;width:520px;height:500px;margin:-250px 0 0 -260px;transform-origin:50% 50%;font-family:var(--font-display),'Schibsted Grotesk',system-ui,sans-serif}
+@keyframes rbl-swoosh{0%{stroke-dashoffset:1;animation-timing-function:cubic-bezier(.35,0,.75,.85)}48%{stroke-dashoffset:.3;animation-timing-function:linear}58%{stroke-dashoffset:.2;animation-timing-function:cubic-bezier(.35,.4,.9,.45)}100%{stroke-dashoffset:0}}
+@keyframes rbl-headpop{0%{transform:scale(0)}50%{transform:scale(1.32)}74%{transform:scale(.9)}90%{transform:scale(1.04)}100%{transform:scale(1)}}
+@keyframes rbl-speed{0%{opacity:0;transform:translateY(-40px)}30%{opacity:.35}100%{opacity:0;transform:translateY(170px)}}
+@keyframes rbl-seam{to{opacity:1}}
+@keyframes rbl-kick{0%{transform:none}28%{transform:translateY(-26px) scale(.95,1.07)}58%{transform:translateY(5px) scale(1.05,.95)}80%{transform:translateY(-3px) scale(.99,1.01)}100%{transform:none}}
+@keyframes rbl-hopin{0%{transform:translateY(90px) scale(1,.4);opacity:0}38%{transform:translateY(-30px) scale(.9,1.14);opacity:1}62%{transform:translateY(0) scale(1.14,.84)}80%{transform:translateY(-7px) scale(.98,1.03)}100%{transform:translateY(0) scale(1)}}
+@keyframes rbl-launch{0%{transform:translateY(0) scale(1)}28%{transform:translateY(16px) scale(1.06,.9)}100%{transform:translateY(-820px) scale(.9,1.1)}}
+@keyframes rbl-p0{0%{transform:translate(0,0) scale(0);opacity:1}25%{transform:translate(-84px,-49px) scale(1)}100%{transform:translate(-120px,-10px) scale(.5);opacity:0}}
+@keyframes rbl-p1{0%{transform:translate(0,0) scale(0) rotate(0);opacity:1}25%{transform:translate(-42px,-84px) scale(1) rotate(90deg)}100%{transform:translate(-60px,-60px) scale(.5) rotate(200deg);opacity:0}}
+@keyframes rbl-p2{0%{transform:translate(0,0) scale(0);opacity:1}25%{transform:translate(7px,-98px) scale(1)}100%{transform:translate(10px,-80px) scale(.5);opacity:0}}
+@keyframes rbl-p3{0%{transform:translate(0,0) scale(0) rotate(0);opacity:1}25%{transform:translate(56px,-77px) scale(1) rotate(-80deg)}100%{transform:translate(80px,-50px) scale(.5) rotate(-190deg);opacity:0}}
+@keyframes rbl-p4{0%{transform:translate(0,0) scale(0);opacity:1}25%{transform:translate(98px,-35px) scale(1)}100%{transform:translate(140px,10px) scale(.5);opacity:0}}
+@keyframes rbl-p5{0%{transform:translate(0,0) scale(0) rotate(0);opacity:1}25%{transform:translate(84px,14px) scale(1) rotate(60deg)}100%{transform:translate(120px,80px) scale(.5) rotate(160deg);opacity:0}}
+@keyframes rbl-p6{0%{transform:translate(0,0) scale(0) rotate(0);opacity:1}25%{transform:translate(-105px,0) scale(1) rotate(-70deg)}100%{transform:translate(-150px,60px) scale(.5) rotate(-180deg);opacity:0}}
+@keyframes rbl-p7{0%{transform:translate(0,0) scale(0);opacity:1}25%{transform:translate(28px,-56px) scale(1)}100%{transform:translate(40px,-20px) scale(.5);opacity:0}}
+@keyframes rbl-p8{0%{transform:translate(0,0) scale(0) rotate(0);opacity:1}25%{transform:translate(-14px,-63px) scale(1) rotate(45deg)}100%{transform:translate(-20px,-30px) scale(.5) rotate(135deg);opacity:0}}
+.boot-quick .rbl-stage{display:none}
 .boot-quick .loader.out{animation-duration:.25s}
 
 /* ---------- private preview (password) ---------- */
@@ -314,15 +306,12 @@ dialog::backdrop{background:rgba(13,19,16,.25);backdrop-filter:none;-webkit-back
  table.coins tr:first-child td{border-top:1px solid var(--ink)}
  .pay-row{grid-template-columns:auto minmax(0,1fr);gap:4px 12px;font-size:15.5px;padding:14px 0}
  .pay-row>a{grid-column:2;text-align:left;font-size:14px}
- .ld-stage{transform:scale(.62);transform-origin:50% 50%}
 }
 
 /* ---------- reduced motion: keep every figure, drop the movement ---------- */
 @media (prefers-reduced-motion:reduce){
  .home *,.loader *,.topbar *,.hc-row{animation:none!important;transition:none!important}
- .ld-arrow,.ld-head{stroke-dashoffset:0}
- .ld-ball,.ld-shadow,.ld-rider,.ld-mark .cf{display:none}
- .ld-headg{opacity:1}
+ .rbl-stage{display:none}
  .clock.paid .ck-pill{opacity:1;transform:translateX(-30%)}
  .clock.paid .ck-headg{opacity:1}
  .ck-proc::before{border-top-color:#CFE0E3}

@@ -31,11 +31,51 @@ body.rebound-unlocked #rebound-entry{display:none}
 </head>
 <body>
 <div id="rebound-loader" class="loader" role="status" aria-label="Loading rebound">
-<div class="ld-stage" aria-hidden="true">
-<div class="ld-mark"><div class="ld-squash"><svg viewBox="0 0 440 360"><path class="ld-arrow" d="M84 108 V216 A108 108 0 0 0 300 216 V72" pathLength="1"/><g class="ld-headg"><path class="ld-head" d="M228 132 L300 60 L360 132" pathLength="1"/></g></svg></div>
-<span class="ld-shadow"></span><span class="ld-ball"></span><span class="ld-rider"></span>
-<span class="cf c0"></span><span class="cf c1"></span><span class="cf c2"></span><svg class="cf c3" viewBox="0 0 10 10"><path d="M5 .6 9.6 9.2H.4Z"/></svg><span class="cf c4"></span><span class="cf c5"></span><svg class="cf c6" viewBox="0 0 10 10"><path d="M5 .6 9.6 9.2H.4Z"/></svg><span class="cf c7"></span><span class="cf c8"></span></div>
-<div class="ld-word"><span>r</span><span>e</span><span>b</span><span>o</span><span>u</span><span>n</span><span>d</span></div>
+<div class="rbl-stage" aria-hidden="true">
+<div aria-hidden="true" style="position: absolute; left: 64px; top: 13px; width: 420px; height: 420px; animation: rbl-launch .75s 3s cubic-bezier(.5,0,.75,0) both">
+<div style="position: absolute; inset: 0; transform-origin: 50% 100%; animation: rbl-kick .6s 1.6s ease-out both">
+<div style="position: absolute; inset: 0">
+<svg width="420" height="420" viewBox="0 0 1024 1024" style="position: absolute; inset: 0">
+<defs>
+<clipPath id="rbl-body"><path d="M0.2 237.4C0.3 237.5 3.5 242.2 7.3 247.9C44.3 303.4 88.0 366.2 122.6 413.5C246.6 582.7 346.8 684.6 443.1 739.6C516.8 781.6 589.9 795.8 660.0 781.6C769.5 759.5 853.5 672.5 871.5 562.8C873.5 550.4 875.0 533.2 875.0 521.9L875.0 520.0L915.4 519.9L955.8 519.9L890.5 439.2C854.6 394.9 825.2 358.6 825.0 358.6C824.8 358.6 795.4 394.9 759.5 439.2L694.3 519.9L734.7 519.9L775.1 520.0L774.9 525.2C772.6 601.4 715.4 665.2 640.0 675.5C632.6 676.5 629.9 676.6 619.1 676.6C608.2 676.6 605.3 676.4 597.1 675.2C515.7 663.4 428.2 584.8 341.6 445.8C273.8 336.9 206.8 191.3 141.7 11.1C139.7 5.5 138.0 0.7 137.9 0.4Z"></path></clipPath>
+<mask id="rbl-draw" maskUnits="userSpaceOnUse" x="-120" y="-120" width="1264" height="1264">
+<path d="M0 -60 C120 280 270 560 450 680 C560 745 640 745 700 725 C790 690 825 610 825 520" pathLength="1" fill="none" stroke="#FFFFFF" stroke-width="232" stroke-linecap="butt" stroke-dasharray="1" style="stroke-dashoffset: 1; animation: rbl-swoosh 1.3s .3s forwards"></path>
+</mask>
+</defs>
+<g>
+<path d="M0.2 237.4C0.3 237.5 3.5 242.2 7.3 247.9C44.3 303.4 88.0 366.2 122.6 413.5C246.6 582.7 346.8 684.6 443.1 739.6C516.8 781.6 589.9 795.8 660.0 781.6C769.5 759.5 853.5 672.5 871.5 562.8C873.5 550.4 875.0 533.2 875.0 521.9L875.0 520.0L915.4 519.9L955.8 519.9L890.5 439.2C854.6 394.9 825.2 358.6 825.0 358.6C824.8 358.6 795.4 394.9 759.5 439.2L694.3 519.9L734.7 519.9L775.1 520.0L774.9 525.2C772.6 601.4 715.4 665.2 640.0 675.5C632.6 676.5 629.9 676.6 619.1 676.6C608.2 676.6 605.3 676.4 597.1 675.2C515.7 663.4 428.2 584.8 341.6 445.8C273.8 336.9 206.8 191.3 141.7 11.1C139.7 5.5 138.0 0.7 137.9 0.4Z" fill="#0D1310" mask="url(#rbl-draw)"></path>
+<line x1="735" y1="560" x2="735" y2="700" stroke="#0D1310" stroke-width="12" stroke-linecap="round" style="opacity: 0; animation: rbl-speed .45s 1.15s ease-in both"></line>
+<line x1="915" y1="540" x2="915" y2="640" stroke="#0D1310" stroke-width="10" stroke-linecap="round" style="opacity: 0; animation: rbl-speed .4s 1.22s ease-in both"></line>
+<line x1="960" y1="600" x2="960" y2="680" stroke="#0D1310" stroke-width="8" stroke-linecap="round" style="opacity: 0; animation: rbl-speed .35s 1.3s ease-in both"></line>
+<rect x="760" y="517" width="130" height="33" fill="#0D1310" clip-path="url(#rbl-body)" style="opacity: 0; animation: rbl-seam .01s 1.6s forwards"></rect>
+<g style="transform-origin: 825px 520px; animation: rbl-headpop .5s 1.6s cubic-bezier(.3,1.5,.5,1) both">
+<path d="M694.3 519.9L759.5 439.2C795.4 394.9 824.8 358.6 825.0 358.6C825.2 358.6 854.6 394.9 890.5 439.2L955.8 519.9Z" fill="#0D1310"></path>
+</g>
+</g>
+</svg>
+</div>
+</div>
+<span style="position: absolute; left: 333px; top: 141px; width: 12px; height: 12px; border-radius: 50%; background: #F2B530; opacity: 0; animation: rbl-p0 .9s 1.64s cubic-bezier(.2,.7,.4,1) both"></span>
+<span style="position: absolute; left: 334px; top: 142px; width: 10px; height: 10px; border-radius: 2px; background: #E4572E; opacity: 0; animation: rbl-p1 .95s 1.64s cubic-bezier(.2,.7,.4,1) both"></span>
+<span style="position: absolute; left: 332px; top: 140px; width: 14px; height: 14px; border-radius: 50%; background: #0F9D63; opacity: 0; animation: rbl-p2 .9s 1.66s cubic-bezier(.2,.7,.4,1) both"></span>
+<svg width="14" height="14" viewBox="0 0 10 10" style="position: absolute; left: 332px; top: 140px; opacity: 0; animation: rbl-p3 1s 1.65s cubic-bezier(.2,.7,.4,1) both"><path d="M5 .6 9.6 9.2H.4Z" fill="#0D1310"></path></svg>
+<span style="position: absolute; left: 334px; top: 142px; width: 9px; height: 9px; border-radius: 50%; background: #F2B530; opacity: 0; animation: rbl-p4 .85s 1.67s cubic-bezier(.2,.7,.4,1) both"></span>
+<span style="position: absolute; left: 334px; top: 142px; width: 10px; height: 10px; border-radius: 2px; background: #0F9D63; opacity: 0; animation: rbl-p5 1s 1.66s cubic-bezier(.2,.7,.4,1) both"></span>
+<svg width="14" height="14" viewBox="0 0 10 10" style="position: absolute; left: 332px; top: 140px; opacity: 0; animation: rbl-p6 1s 1.64s cubic-bezier(.2,.7,.4,1) both"><path d="M5 .6 9.6 9.2H.4Z" fill="#E4572E"></path></svg>
+<span style="position: absolute; left: 335px; top: 143px; width: 7px; height: 7px; border-radius: 50%; background: #0D1310; opacity: 0; animation: rbl-p7 .8s 1.68s cubic-bezier(.2,.7,.4,1) both"></span>
+<span style="position: absolute; left: 335px; top: 143px; width: 8px; height: 8px; border-radius: 2px; background: #F2B530; opacity: 0; animation: rbl-p8 .9s 1.65s cubic-bezier(.2,.7,.4,1) both"></span>
+</div>
+
+<div aria-label="rebound" style="position: absolute; left: 0; right: 0; top: 379px; display: flex; justify-content: center; font-weight: 900; font-size: 108px; line-height: 1; letter-spacing: -0.05em; animation: rbl-launch .75s 3.07s cubic-bezier(.5,0,.75,0) both">
+<span style="display: inline-block; transform-origin: 50% 100%; animation: rbl-hopin .7s 1.87s both">r</span>
+<span style="display: inline-block; transform-origin: 50% 100%; animation: rbl-hopin .7s 1.94s both">e</span>
+<span style="display: inline-block; transform-origin: 50% 100%; animation: rbl-hopin .7s 2.01s both">b</span>
+<span style="display: inline-block; transform-origin: 50% 100%; animation: rbl-hopin .7s 2.08s both">o</span>
+<span style="display: inline-block; transform-origin: 50% 100%; animation: rbl-hopin .7s 2.15s both">u</span>
+<span style="display: inline-block; transform-origin: 50% 100%; animation: rbl-hopin .7s 2.22s both">n</span>
+<span style="display: inline-block; transform-origin: 50% 100%; animation: rbl-hopin .7s 2.29s both">d</span>
+</div>
+</div>
 </div>
 </div>
 <section id="rebound-entry" aria-labelledby="entry-heading" hidden>
