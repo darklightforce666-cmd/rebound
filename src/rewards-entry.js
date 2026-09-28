@@ -327,6 +327,11 @@ async function review(flow,attemptId,toast){
   if(st.state!=='draft')flow.innerHTML=txSteps(3,s.signature,'');
   if(st.state==='draft'){flow.innerHTML='<p class="notice live-notice">The creation did not land; no token exists. Review again to retry.</p><button class="btn" id="launch-again">Review again</button>';flow.querySelector('#launch-again').onclick=()=>review(flow,attemptId,toast).catch(e=>toast(e.message));return;}
   if(p.transactions[1]){flow.innerHTML='<p>Token created. Approve your initial buy.</p>';await api('launch-submit',{body:{attemptId,index:1,signedTransaction:await signB64(p.transactions[1])},auth:true});}
+  // Direct launches: creation and the first buy are two transactions (they do not fit one); the buy is built
+  // with a fresh blockhash once the token exists. A failed buy never undoes the created token.
+  if(p.initialBuyPending&&st.state!=='draft'){flow.innerHTML=txSteps(3,s.signature,'Token created. Approve your initial buy in your wallet.');
+   try{const b=await api('launch-buy-prepare',{body:{attemptId},auth:true});const r=await api('launch-submit',{body:{attemptId,index:1,signedTransaction:await signB64(b.transaction)},auth:true});toast('Initial buy submitted '+short(r.signature)+'.');}
+   catch(e){toast('The token is created, but the initial buy did not go through: '+e.message+' You can buy on pump.fun.');}}
   if(p.settlement==='direct'){const a=await waitFor(attemptId,x=>x.state==='active'||x.state==='failed_action_required',120000);mintKey=null;dropMint(attemptId);return directDone(flow,a);}
   mintKey=null;await activation(flow,attemptId,toast);
  }catch(e){flow.querySelector('#launch-sign')&&(flow.querySelector('#launch-sign').disabled=false);toast(e.message);}};

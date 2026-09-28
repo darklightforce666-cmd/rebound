@@ -132,3 +132,23 @@ test('launch roles: the API reserves only through the function and cannot rewrit
    await d.query("SELECT count(*) FROM reward_burns");});
  }finally{await db.close();}
 });
+
+t('a launch with an initial buy: creation and buy are two transactions, each within the 1232-byte limit',async()=>{
+ const s=await setup();try{
+  const {w,ports,session}=s;
+  const a=await LD.draft(ports,{session,wallet:s.user,idempotencyKey:'launch-test-buy1',metadataHash:'a'.repeat(64),name:'Buy coin with a long name',symbol:'BUYCOIN',initialBuyLamports:100_000_000n,namespace:'mainnet_test'});
+  const mintKp=Keypair.generate();
+  const p=await LD.prepare(ports,{session,attemptId:a.id,mint:mintKp.publicKey.toBase58()});
+  assert.equal(p.transactions.length,1);assert.equal(p.initialBuyPending,true);
+  const tx=Transaction.from(Buffer.from(p.transactions[0],'base64'));tx.partialSign(w.user,mintKp);
+  const raw=tx.serialize();assert.ok(raw.length<=1232,'creation fits: '+raw.length);
+  await assert.rejects(LD.prepareBuy(ports,{session,attemptId:a.id}),/does not exist yet|LAUNCH_STATE/);
+  const sub=await LD.submit(ports,{session,attemptId:a.id,signedTransaction:raw.toString('base64')});assert.ok(sub.signature);
+  w.conn.advance({slots:2,seconds:2});w.conn.finalizeAll();
+  await LD.status(ports,{session,attemptId:a.id});
+  const b=await LD.prepareBuy(ports,{session,attemptId:a.id});
+  const btx=Transaction.from(Buffer.from(b.transaction,'base64'));btx.partialSign(w.user);const braw=btx.serialize();assert.ok(braw.length<=1232,'buy fits: '+braw.length);
+  const r=await LD.submit(ports,{session,attemptId:a.id,index:1,signedTransaction:braw.toString('base64')});assert.ok(r.signature);
+  await assert.rejects(LD.prepareBuy(ports,{session,attemptId:a.id}),/already submitted/);
+ }finally{await s.done();}
+});

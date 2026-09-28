@@ -98,14 +98,17 @@ async function prepare(ports,{session,attemptId,mint}){
  const user=new PublicKey(a.wallet),mintKey=new PublicKey(mint),creatorKey=new PublicKey(creator.address);
  const ixs=[ComputeBudgetProgram.setComputeUnitLimit({units:quote?500_000:400_000}),
   SystemProgram.transfer({fromPubkey:user,toPubkey:creatorKey,lamports:OPERATING_LAMPORTS})];
- const buy=BigInt(a.initial_buy_lamports||0);let initialBuy=null;
+ const buy=BigInt(a.initial_buy_lamports||0);let initialBuy=null,buyTx=null;
  if(quote){
   ixs.push(await PV.sdk.createV2Instruction({mint:mintKey,name:a.name,symbol:a.symbol,uri:a.metadata_uri,creator:creatorKey,user,mayhemMode:false,quoteMint:quote.mint,quoteTokenProgram:quote.quoteTokenProgram}));
  }else if(buy>0n){
   const global=await online.fetchGlobal();
   const tokens=PSDK.getBuyTokenAmountFromSolAmount({global,feeConfig:null,mintSupply:null,bondingCurve:null,amount:bn(buy),quoteMint:NATIVE_MINT});
   const minOut=BigInt(tokens.toString())*97n/100n;   // 3 % slippage for the creator's own first buy
-  ixs.push(...await PV.sdk.createV2AndBuyInstructions({global,mint:mintKey,name:a.name,symbol:a.symbol,uri:a.metadata_uri,creator:creatorKey,user,amount:bn(minOut),solAmount:bn(buy),mayhemMode:false}));
+  // Creation and the creator's first buy do not fit one transaction (1232 bytes): the token is created first, and
+  // the buy (its token account + buy instruction, built for this mint now) is a second signature right after it.
+  const [createIx,...buyIxs]=await PV.sdk.createV2AndBuyInstructions({global,mint:mintKey,name:a.name,symbol:a.symbol,uri:a.metadata_uri,creator:creatorKey,user,amount:bn(minOut),solAmount:bn(buy),mayhemMode:false});
+  ixs.push(createIx);buyTx=[ComputeBudgetProgram.setComputeUnitLimit({units:300_000}),...buyIxs];
   initialBuy={lamports:String(buy),minTokens:String(minOut)};
  }else{
   ixs.push(await PV.sdk.createV2Instruction({mint:mintKey,name:a.name,symbol:a.symbol,uri:a.metadata_uri,creator:creatorKey,user,mayhemMode:false}));
@@ -113,21 +116,21 @@ async function prepare(ports,{session,attemptId,mint}){
  const sim=await L.simulate(connection,ixs,a.wallet);
  if(sim.err)fail('SIMULATION_FAILED','The creation transaction would fail on chain; nothing was signed ('+JSON.stringify(sim.err).slice(0,120)+')',422);
  const bh=await connection.getLatestBlockhash('confirmed');
- const body={mint,creator:creator.address,quoteMint:quote?quote.mint.toBase58():null,transactions:[ixs.map(L.ixJson)],blockhash:bh.blockhash,lastValidBlockHeight:bh.lastValidBlockHeight};
+ const body={mint,creator:creator.address,quoteMint:quote?quote.mint.toBase58():null,transactions:[ixs.map(L.ixJson),...(buyTx?[buyTx.map(L.ixJson)]:[])],blockhash:bh.blockhash,lastValidBlockHeight:bh.lastValidBlockHeight};
  await db.query(`INSERT INTO reward_intents(id,kind,mint,job,namespace,body,body_hash,amount_lamports,signer_role,state) VALUES($1,'direct_launch',$2,$3,$4,$5,$6,$7,'creator','awaiting_signature')
   ON CONFLICT(kind,job) DO UPDATE SET body=EXCLUDED.body,body_hash=EXCLUDED.body_hash,mint=EXCLUDED.mint,state='awaiting_signature',updated_at=now()`,
   [require('node:crypto').randomUUID(),mint,`launch:${a.id}`,a.namespace,stable(body),P3.canonicalHash(body),String(buy+OPERATING_LAMPORTS)]);
  await db.query("UPDATE reward_launch_attempts SET state='awaiting_creation_signature',creator_wallet=$2,intake=$2,settlement='direct',updated_at=now() WHERE id=$1",[a.id,creator.address]);
  const pol=P3.policy(a.policy_version),unsigned=unsignedTx(ixs,a.wallet,bh);
  const pair=quote?(await quoteMints(connection).catch(()=>[])).find(x=>x.mint===body.quoteMint)||{mint:body.quoteMint}:{mint:SOL_KEY,symbol:'SOL'};
- return{attemptId:a.id,mint,settlement:'direct',transactions:[unsigned],signers:['mint'],
+ return{attemptId:a.id,mint,settlement:'direct',transactions:[unsigned],initialBuyPending:!!buyTx,signers:['mint'],
   disclosure:{creatorWallet:a.wallet,commissionTreasury:creator.address,pair,
    feeRouting:'Every creator fee of this token goes to its own REBOUND creator wallet (held by the REBOUND worker, not by you). Each collected fee is split once: 85 % pays this token\'s holders who are underwater, 15 % buys the REBOUND token and burns it.',
    primaryBurnTarget:a.primary_target_mint,
    policy:{version:a.policy_version,hash:P3.hashOf(pol),cycleSeconds:pol.cycleSeconds,cutoffLeadSeconds:pol.cutoffLeadSeconds,lossUnit:quote?(pair.symbol||'pair asset'):'SOL',maturitySeconds:pol.maturitySeconds,permanentExitOnSale:pol.permanentExitOnSale},
    costs:{operatingLamports:String(OPERATING_LAMPORTS),reboundCoinRentLamports:'0',initialBuyLamports:String(buy),initialBuyQuote:initialBuy,networkFeeLamports:5000*2},
    pairNote:quote?'This coin\'s creator fees arrive in '+(pair.symbol||'the pair asset')+', so its holders are measured and paid in '+(pair.symbol||'it')+'. The 15 % is swapped to SOL and buys and burns REBOUND.':null,
-   steps:['Create token'],irreversible:['The token\'s pump.fun creator (fee recipient) is fixed to its REBOUND creator wallet.']}};
+   steps:buyTx?['Create token','Initial buy']:['Create token'],irreversible:['The token\'s pump.fun creator (fee recipient) is fixed to its REBOUND creator wallet.']}};
 }
 const {Transaction}=require('@solana/web3.js');
 const unsignedTx=(ixs,payer,bh)=>new Transaction({feePayer:new PublicKey(payer),blockhash:bh.blockhash,lastValidBlockHeight:bh.lastValidBlockHeight}).add(...ixs).serialize({requireAllSignatures:false,verifySignatures:false}).toString('base64');
@@ -136,8 +139,29 @@ async function settled(connection,sig){if(!sig)return{definitivelyUnsettled:true
  return s&&s.confirmationStatus==='finalized'&&!s.err?{settled:true,signature:sig,slot:s.slot}:{definitivelyUnsettled:!s};}
 
 /** 3. The signed creation: verified against the intent, persisted, broadcast. */
-async function submit(ports,{session,attemptId,signedTransaction}){
+/** 2b. The creator's first buy, after the token exists: a fresh unsigned transaction for the prepared buy. */
+async function prepareBuy(ports,{session,attemptId}){
  const {db,connection}=ports;const a=await attemptOf(db,attemptId,session.userId);
+ const intent=(await db.query("SELECT * FROM reward_intents WHERE kind='direct_launch' AND job=$1",[`launch:${a.id}`])).rows[0];
+ if(!intent?.body?.transactions?.[1])fail('PLAN_STALE','No initial buy was prepared for this launch',409);
+ if(!a.mint||!(await connection.getAccountInfo(new PublicKey(a.mint))))fail('LAUNCH_STATE','The token does not exist yet',409);
+ if((await db.query("SELECT 1 FROM reward_chain_attempts WHERE job=$1",[`launch:${a.id}:1`])).rows.length)fail('LAUNCH_STATE','The initial buy was already submitted',409);
+ const bh=await connection.getLatestBlockhash('confirmed');const body={...intent.body,buyBlockhash:bh.blockhash,buyLastValidBlockHeight:bh.lastValidBlockHeight};
+ await db.query('UPDATE reward_intents SET body=$2,body_hash=$3,updated_at=now() WHERE id=$1',[intent.id,stable(body),P3.canonicalHash(body)]);
+ return{attemptId:a.id,transaction:unsignedTx(body.transactions[1].map(L.ixFrom),a.wallet,bh)};
+}
+
+async function submit(ports,{session,attemptId,signedTransaction,index=0}){
+ const {db,connection}=ports;const a=await attemptOf(db,attemptId,session.userId);
+ if(index===1){
+  const intent=(await db.query("SELECT * FROM reward_intents WHERE kind='direct_launch' AND job=$1",[`launch:${a.id}`])).rows[0],body=intent?.body;
+  if(!body?.transactions?.[1]||!body.buyBlockhash)fail('PLAN_STALE','Prepare the initial buy first',409);
+  let tx;try{tx=Transaction.from(Buffer.from(signedTransaction,'base64'));}catch{fail('INVALID_TRANSACTION','Unsupported transaction encoding');}
+  if(!T.matchesIntent(tx,{instructions:body.transactions[1].map(L.ixFrom),signer:a.wallet,blockhash:body.buyBlockhash}))fail('FORBIDDEN','Signed transaction does not match the prepared initial buy',403);
+  const r=await T.persistAndBroadcast(db,connection,{job:`launch:${a.id}:1`,kind:'launch',mint:body.mint,signerRole:'creator',intentId:intent.id,bytes:tx.serialize(),signature:bs58.encode(tx.signature),lastValidBlockHeight:body.buyLastValidBlockHeight});
+  await Logs.log(db,{component:'launch',eventType:'initial_buy_submitted',mint:body.mint,message:'Creator initial buy signed and submitted',metadata:{signature:r.signature}});
+  return{state:r.state,signature:r.signature};
+ }
  if(!['awaiting_creation_signature','creation_submitted'].includes(a.state))fail('LAUNCH_STATE',`Launch is ${a.state}`,409);
  const intent=(await db.query("SELECT * FROM reward_intents WHERE kind='direct_launch' AND job=$1",[`launch:${a.id}`])).rows[0];if(!intent)fail('PLAN_STALE','Prepare the launch first',409);
  const body=intent.body;let tx;try{tx=Transaction.from(Buffer.from(signedTransaction,'base64'));}catch{fail('INVALID_TRANSACTION','Unsupported transaction encoding');}
@@ -210,4 +234,4 @@ async function register(ports,a,signature){
   ?`Token created on pump.fun (pair ${qa?.symbol||quoteMint}) with its REBOUND creator wallet ${creatorWallet}; rewards are active in ${qa?.symbol||'the pair asset'} (85 % holders, 15 % swapped to SOL for the REBOUND buy & burn)`
   :`Token created on pump.fun with its REBOUND creator wallet ${creatorWallet}; rewards are active (85 % holders, 15 % REBOUND buy & burn)`});
 }
-module.exports={draft,prepare,submit,status,quoteMints,quoteCategory,OPERATING_LAMPORTS,register};
+module.exports={draft,prepare,prepareBuy,submit,status,quoteMints,quoteCategory,OPERATING_LAMPORTS,register};

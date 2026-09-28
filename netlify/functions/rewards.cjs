@@ -246,8 +246,9 @@ const handlers={
    if(await attemptSettlement(db,id)==='direct')return planCall(()=>LaunchDirect.prepare(directPorts(db),{session:s,attemptId:id,mint:String(data.mint||'')}));
    return planCall(()=>Launch.prepare(launchPorts(db),{session:s,attemptId:id,mint:String(data.mint||'')}));},
   async 'launch-submit'({db,event,data}){const s=await Session.authenticate(db,event.headers);const id=uuid(data.attemptId);
-   if(await attemptSettlement(db,id)==='direct')return planCall(()=>LaunchDirect.submit(directPorts(db),{session:s,attemptId:id,signedTransaction:b64tx(data.signedTransaction)}));
+   if(await attemptSettlement(db,id)==='direct')return planCall(()=>LaunchDirect.submit(directPorts(db),{session:s,attemptId:id,index:data.index===1?1:0,signedTransaction:b64tx(data.signedTransaction)}));
    return planCall(()=>Launch.submit(launchPorts(db),{session:s,attemptId:id,index:data.index===1?1:0,signedTransaction:b64tx(data.signedTransaction)}));},
+  async 'launch-buy-prepare'({db,event,data}){const s=await Session.authenticate(db,event.headers);return planCall(()=>LaunchDirect.prepareBuy(directPorts(db),{session:s,attemptId:uuid(data.attemptId)}));},
   async 'activation-prepare'({db,event,data}){const s=await Session.authenticate(db,event.headers);return planCall(()=>Launch.activationPrepare(launchPorts(db),{session:s,attemptId:uuid(data.attemptId)}));},
   async 'activation-submit'({db,event,data}){const s=await Session.authenticate(db,event.headers);
    if(!['create_fee_sharing','lock_fee_sharing','activate'].includes(data.step))fail(400,'INVALID_BODY','Unknown setup step');
