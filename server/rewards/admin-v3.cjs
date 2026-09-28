@@ -19,16 +19,16 @@ async function overview(db,{connection=null,program=null}={}){
  const q=(sql,a=[])=>db.query(sql,a).then(r=>r.rows);
  const [platform,coins,wallets,cycles,jobs,receipts,health,admins,signers]=await Promise.all([
   q('SELECT namespace,execution_mode,settlement,policy_version,primary_mint,config_version,test_allowlist_mints,test_allowlist_wallets,test_any_recipient,spend_cap_action_lamports,spend_cap_cycle_lamports,spend_cap_total_lamports,spent_total_lamports,buyback_max_slippage_bps,buyback_max_impact_bps,paused,pause_reason,updated_at FROM reward_platform ORDER BY namespace'),
-  q("SELECT mint,kind,namespace,status,blocked_reason,policy_version,name,symbol,intake,creator_wallet,primary_target_mint,launch_time,schedule_anchor FROM reward_coins WHERE program_version='v3' ORDER BY kind,created_at DESC LIMIT 200"),
-  q('SELECT id,namespace,mint,address,mode,status,funding_model,budget_bps,budget_requested_at,budget_balance_lamports,budget_lamports,budget_start_deposits,budget_set_at,operational_reserve_lamports,opening_balance_lamports,opening_credit_lamports,opening_slot,signer FROM reward_funding_wallets ORDER BY created_at DESC'),
-  q('SELECT id,mint,cycle_number,state,cutoff_time,scheduled_end,holder_reserve_lamports,total_lamports,total_loss_usd,eligible_count,reason,funding_mode,plan_expires_at FROM reward_cycles ORDER BY created_at DESC LIMIT 60'),
+  q("SELECT mint,kind,namespace,status,blocked_reason,policy_version,name,symbol,intake,creator_wallet,primary_target_mint,launch_time,schedule_anchor FROM reward_coins WHERE program_version='v3' AND status<>'retired' ORDER BY kind,created_at DESC LIMIT 200"),
+  q('SELECT id,namespace,mint,address,mode,status,funding_model,budget_bps,budget_requested_at,budget_balance_lamports,budget_lamports,budget_start_deposits,budget_set_at,operational_reserve_lamports,opening_balance_lamports,opening_credit_lamports,opening_slot,signer FROM reward_funding_wallets WHERE status<>\'retired\' ORDER BY created_at DESC'),
+  q('SELECT id,mint,cycle_number,state,cutoff_time,scheduled_end,holder_reserve_lamports,total_lamports,total_loss_usd,eligible_count,reason,funding_mode,plan_expires_at FROM reward_cycles c WHERE NOT (c.state=\'scheduled\' AND EXISTS (SELECT 1 FROM reward_coins k WHERE k.mint=c.mint AND k.status=\'retired\')) ORDER BY created_at DESC LIMIT 60'),
   q('SELECT id,source_mint,source_cycle_id,target_mint,budget_lamports,state,route,spent_lamports,acquired_raw,burned_raw,purchase_signature,burn_signature,reason,updated_at FROM reward_buyback_jobs ORDER BY created_at DESC LIMIT 60'),
   q('SELECT mint,signature,amount_lamports,state,holder_lamports,buyback_lamports,reason,slot FROM reward_intake_receipts ORDER BY created_at DESC LIMIT 60'),
   q('SELECT * FROM reward_health ORDER BY component'),
   q('SELECT wallet,label,added_by,added_at,revoked_at FROM reward_admin_wallets ORDER BY added_at'),
   q('SELECT id,address,role,storage,status,created_at,last_health_at,last_health_ok FROM reward_signers ORDER BY created_at DESC'),
  ]);
- const accounts=await q('SELECT * FROM reward_funding_accounts');
+ const accounts=await q("SELECT a.* FROM reward_funding_accounts a JOIN reward_coins k USING(mint) WHERE k.status<>'retired'");
  const workerKey=(await q('SELECT inbox_public_key,worker,updated_at FROM reward_worker_keys WHERE id=1'))[0]||null;
  const keyInbox=await q('SELECT id,funding_wallet,address,state,reason,created_at,processed_at FROM reward_key_inbox ORDER BY created_at DESC LIMIT 10');
  let chain=null;

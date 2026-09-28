@@ -71,6 +71,9 @@ function token(mint){
  if(!D.isAddress(mint))return heading('Token unavailable','Use a real Solana mint address.')+empty('This token link is no longer available','Previously saved test tokens are not mainnet assets.')+lookup();
  return heading('Token overview','Mainnet token verification and indexed market data.')+'<section class="card live-card"><div class="section-heading"><h2 id="token-name">'+(mint===primary?'REBOUND token':'Solana token')+'</h2>'+external('https://solscan.io/token/'+mint,'View on Solscan')+'</div><p class="live-address">'+esc(mint)+'</p><div id="mint-status" aria-live="polite">Checking mainnet…</div></section><section id="token-rewards" class="card live-card" aria-live="polite"><p>Checking REBOUND rewards…</p></section><section class="card live-card"><div id="token-market" aria-live="polite">Loading market data…</div></section>'+tokenChart(mint)+rewardNotice()+lookup();
 }
+async function knownCoin(mint,signal){if(primary&&mint===primary)return true;
+ try{const r=await fetch('/.netlify/functions/rewards?action=token&mint='+encodeURIComponent(mint),{headers:{accept:'application/json'},signal,cache:'no-store'});return r.status!==404;}
+ catch(e){if(e.name==='AbortError')throw e;return true;}}
 async function loadMint(mint,target,nameTarget,id,signal){
  try{
   const data=await chain('mint',mint,signal);if(id!==renderId)return;
@@ -107,7 +110,12 @@ function render(){
  $('#main').innerHTML=pages[route]();document.title=(route==='explore'?'':route.charAt(0).toUpperCase()+route.slice(1)+' · ')+'rebound';document.body.dataset.route=route;
  markNav(section||route);if(section)requestAnimationFrame(()=>jump(section));else window.scrollTo(0,0);
  document.body.classList.remove('menu-open');updateWallet();window.ReboundCharts.mount({signal});
- if(route==='token'&&D.isAddress(mint)){loadMint(mint,'#mint-status','#token-name',id,signal);loadMarket(mint,'#token-market',id,signal);}
+ // Only rebound coins (and the REBOUND token) have a page: any other address shows "not a rebound coin", with no
+ // chain or market data. The page stays hidden until the API confirms the coin, so nothing else flashes.
+ if(route==='token'&&D.isAddress(mint)){const box=$('#main');if(mint!==primary)box.dataset.pending='1';
+  knownCoin(mint,signal).then(ok=>{if(id!==renderId)return;delete box.dataset.pending;
+   if(!ok){box.innerHTML=heading('Not a rebound coin','Only coins launched on rebound and the REBOUND token have a page here.')+empty('This address is not a rebound coin','Check the address, or open the coin from the list on the home page.');return;}
+   loadMint(mint,'#mint-status','#token-name',id,signal);loadMarket(mint,'#token-market',id,signal);},()=>{});}
  if(route==='portfolio'&&wallet.address)loadWallet(id,signal);
  window.ReboundV3?.mount({route,mint:route==='token'?mint:primary,toast,signal});updateAdminNav();updateCa();
 }
