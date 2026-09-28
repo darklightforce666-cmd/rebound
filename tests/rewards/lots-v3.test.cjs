@@ -98,3 +98,9 @@ test('a trade called through a router: its delivery and payment are inside it by
  assert.equal(L.tradeCost({owner:'B',data:{venue:'pump-curve',route:'1/1',event:{solAmount:'100',fee:'1',creatorFee:'1'}}},
   [{kind:'funding_transfer',path:'1/5',data:{from:'B',amount:'102',tree:'1/2'}}]),null,'a transfer outside the trade is not its payment');
 });
+
+test('an unmodeled PumpSwap pool instruction (BoostBuyAndBurn) does not reset the price window; other invalidations do',()=>{
+ const L=require('../../server/rewards/lots-v3.cjs');
+ assert.equal(L.marketObservation({kind:'market_invalidation',time:1,slot:1,id:'a',data:{reason:'unmodeled_pool_configuration_change'}}),null);
+ assert.equal(L.marketObservation({kind:'market_invalidation',time:1,slot:1,id:'b',data:{reason:'pool_migrated'}}).invalidated,true);
+});

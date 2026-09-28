@@ -139,7 +139,10 @@ const chainOrder=(a,b)=>Number(a.slot)-Number(b.slot)||a.transactionIndex-b.tran
 // Market state (price sample, graduation, invalidation) carried by one event, or null.
 function marketObservation(ev){
  if(ev.kind==='graduation')return{time:ev.time,slot:ev.slot,market:'graduation',graduation:true,evidence:ev.id};
- if(ev.kind==='market_invalidation')return{time:ev.time,slot:ev.slot,invalidated:true,evidence:ev.id};
+ // An unmodeled PumpSwap instruction on the pool (e.g. the pool's own BoostBuyAndBurn, every ~12 s after graduation)
+ // does not break the price: PumpSwap prices from real reserves only, and the same transaction's post balances are
+ // recorded as a pool_balances sample. Only other invalidation reasons reset the price window.
+ if(ev.kind==='market_invalidation')return ev.data?.reason==='unmodeled_pool_configuration_change'?null:{time:ev.time,slot:ev.slot,invalidated:true,evidence:ev.id};
  return observationFrom(ev);
 }
 const MARKET_KINDS=['purchase_candidate','sale','pool_balances','graduation','market_invalidation'];

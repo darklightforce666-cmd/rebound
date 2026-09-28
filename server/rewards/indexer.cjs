@@ -44,6 +44,8 @@ function tradeAsset(coin,program,e){
  if(program===PUMP){const m=e.quoteMint&&e.quoteMint!==PublicKey.default.toBase58()?e.quoteMint:WSOL;return m===WSOL?(q?'unsupported':'native-SOL'):m===q?q:'unsupported';}
  return q||'native-SOL';
 }
+// PumpSwap BoostBuyAndBurn: the pool buys with its boost SOL and burns the bought tokens; reserves are observed after it.
+const BOOST_BUY_AND_BURN=Buffer.from('04cf817a48797620','hex');
 function parseTransaction(tx,{slot,time,transactionIndex,coins,ownership=new Map()}){
  const events=[],holds=[];if(!tx.meta||tx.meta.err)return{events,holds,ownership};
  const keys=tx.transaction.message.accountKeys.map(address),signature=tx.transaction.signatures[0],coinMap=new Map(coins.map(c=>[c.mint,c]));
@@ -55,7 +57,7 @@ function parseTransaction(tx,{slot,time,transactionIndex,coins,ownership=new Map
  for(const ins of instructions){
   const program=address(ins.programId),parsed=ins.parsed,info=parsed?.info;
   if(program===PUMP||program===AMM){
-   if(program===AMM&&ins.data){const disc=Buffer.from(bs58.decode(ins.data)).subarray(0,8);const knownNames=['buy','buy_exact_quote_in','sell','sell_exact_quote_out','extend_account','deposit','withdraw','create_pool','transfer_creator_fees_to_pump_v2'];if(!disc.equals(EVENT_CPI)&&!knownNames.some(n=>disc.equals(W.hash('global:'+n).subarray(0,8))))for(const c of coins)if(ins.accounts?.map(address).includes(poolOf(c)))emit(ins,'market_invalidation',c.mint,null,{reason:'unmodeled_pool_configuration_change'});}
+   if(program===AMM&&ins.data){const disc=Buffer.from(bs58.decode(ins.data)).subarray(0,8);const knownNames=['buy','buy_exact_quote_in','sell','sell_exact_quote_out','extend_account','deposit','withdraw','create_pool','transfer_creator_fees_to_pump_v2'];if(!disc.equals(EVENT_CPI)&&!knownNames.some(n=>disc.equals(W.hash('global:'+n).subarray(0,8)))&&!disc.equals(BOOST_BUY_AND_BURN))for(const c of coins)if(ins.accounts?.map(address).includes(poolOf(c)))emit(ins,'market_invalidation',c.mint,null,{reason:'unmodeled_pool_configuration_change'});}
    try{
     const event=ins.data?eventDecoder(program,Buffer.from(bs58.decode(ins.data))):null;
     if(event){
