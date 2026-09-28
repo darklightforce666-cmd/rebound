@@ -25,6 +25,11 @@ export function verifiedAddresses(user){
  return(user?.identities||[]).filter(i=>i.provider==='web3').map(i=>/^web3:solana:(.+)$/.exec(i.id||i.provider_id||'')?.[1]).filter(Boolean);
 }
 
+// Sign-In-With-Solana text (https://github.com/phantom/sign-in-with-solana): fields in the grammar's order.
+export function siwsMessage({host,uri,address,statement,issuedAt=new Date().toISOString()}){
+ return[`${host} wants you to sign in with your Solana account:`,address,'',statement,'',`URI: ${uri}`,'Version: 1',`Issued At: ${issuedAt}`].join('\n');
+}
+
 // Sign in (or reuse a session) for exactly `wallet`. A session belonging to another wallet
 // is signed out first, so the app never acts for an address the user did not select.
 export async function signInWithSelectedWallet(supabase,wallet,{statement=SIGN_IN_STATEMENT}={}){
@@ -34,7 +39,12 @@ export async function signInWithSelectedWallet(supabase,wallet,{statement=SIGN_I
   if(verifiedAddresses(data?.user).includes(wallet.address))return current;
   await supabase.auth.signOut({scope:'local'});
  }
- const {data,error}=await supabase.auth.signInWithWeb3({chain:'solana',statement,wallet:supabaseWalletAdapter(wallet)});
+ // The Sign-In-With-Solana message is built here in the standard field order (URI before Version, as the SIWS
+ // grammar has it). supabase-js writes Version first, and Phantom refuses to show a SIWS-looking message it cannot
+ // parse ("invalid formatting"). The URI is the site's origin (no #route); Supabase checks it against its allow list.
+ const message=siwsMessage({host:location.host,uri:location.origin+'/',address:wallet.address,statement});
+ const signature=await supabaseWalletAdapter(wallet).signMessage(new TextEncoder().encode(message));
+ const {data,error}=await supabase.auth.signInWithWeb3({chain:'solana',message,signature});
  if(error)throw new Error(error.status===400&&/URI|domain/i.test(error.message)?'Sign-in is not enabled for this site address yet.':error.message||'Sign-in failed.');
  if(!verifiedAddresses(data.user).includes(wallet.address)){await supabase.auth.signOut({scope:'local'});throw new Error('Signed-in account does not match the selected wallet.');}
  return data.session;
