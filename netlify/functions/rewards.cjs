@@ -131,6 +131,24 @@ async function body(event){
 }
 
 let rpcShared=null;
+// Public round numbers start at the first round that ran: rounds closed with no funds before a coin's first real round
+// (e.g. the vault was still empty at launch) are not shown, and the next round takes number 1. Later rounds keep
+// their order; the admin dashboard and the database keep the stored numbers.
+const RENUMBERED=new Set(['home','wallet-check','token','token-holders','payouts','wallet-rewards']);
+async function publicRounds(db,out){
+ const rows=(await db.query("SELECT mint,cycle_number,state FROM reward_public_cycles ORDER BY mint,cycle_number")).rows,lead=new Map();
+ for(const r of rows){const l=lead.get(r.mint)||{n:0,done:false};if(!l.done){if(r.state==='skipped_no_funds')l.n=Number(r.cycle_number);else l.done=true;}lead.set(r.mint,l);}
+ const skip=m=>lead.get(m)?.n||0;
+ if(![...lead.values()].some(l=>l.n))return out;
+ const walk=(v,mint)=>{
+  if(Array.isArray(v)){for(let i=v.length-1;i>=0;i--){const x=v[i],m=x&&typeof x==='object'&&x.mint||mint;
+   if(x&&typeof x==='object'&&x.cycle_number!=null&&'state' in x&&!('owner' in x)&&Number(x.cycle_number)<=skip(m))v.splice(i,1);else walk(x,mint);}return;}
+  if(v&&typeof v==='object'){const m=v.mint||mint;
+   if(v.cycle_number!=null&&skip(m)&&Number(v.cycle_number)>skip(m))v.cycle_number=Number(v.cycle_number)-skip(m);
+   for(const k of Object.keys(v))if(v[k]&&typeof v[k]==='object')walk(v[k],m);}
+ };
+ walk(out,null);return out;
+}
 const handlers={
  GET:{
   async config({db}){return publicConfig(db);},
@@ -290,7 +308,8 @@ exports.handler=async event=>{
    data=await body(event);
    await Auth.rateLimit(pool,'ip:'+(event.headers['x-nf-client-connection-ip']||'unknown'),90).catch(e=>fail(429,'RATE_LIMITED',e.message,true));
   }
-  return reply(event,200,await handler({db:pool,event,q,data,origin,requestId}));
+  const out=await handler({db:pool,event,q,data,origin,requestId});
+  return reply(event,200,method==='GET'&&RENUMBERED.has(action)?await publicRounds(pool,out).catch(()=>out):out);
  }catch(error){
   const known=error instanceof ApiError?error:error instanceof Session.AuthError?new ApiError(error.status,error.code,error.message,error.status>=500):null;
   if(known)return reply(event,known.status,{code:known.code,message:known.message,retryable:known.retryable,requestId,...known.extra});
@@ -301,4 +320,4 @@ exports.handler=async event=>{
   return reply(event,safe?400:503,{code:!sqlState&&error?.code&&/^[A-Z_]+$/.test(error.code)?error.code:safe?'INVALID_REQUEST':'UNAVAILABLE',message:safe?error.message:'This service is temporarily unavailable. Nothing was changed; retry shortly.',retryable:!safe,requestId});
  }
 };
-exports._internal={handlers,origins,publicConfig,ApiError};
+exports._internal={handlers,origins,publicConfig,ApiError,publicRounds};

@@ -44,3 +44,13 @@ test('portfolio and admin: wallet-check carries holdings for the portfolio; a to
  }finally{await db.close();}
 });
 const A_MINT='3SohGcVPEwv6HS4DcSCMBE6RKu623aVzZKh4oWFppump';
+
+test('public round numbers start at the first round that ran (no-funds rounds before it are hidden)',async()=>{
+ const db=await supabaseDb();
+ try{
+  await db.query("INSERT INTO reward_public_cycles(mint,cycle_number,state,cutoff_time,scheduled_end,paid_lamports,paid_recipients) VALUES($1,1,'skipped_no_funds',1,2,0,0),($1,2,'complete',3,4,900,2),($1,3,'scheduled',5,6,0,0),($2,1,'complete',1,2,5,1)",[A,B]);
+  const out={cycles:[{mint:A,cycle_number:3,state:'scheduled'},{mint:A,cycle_number:2,state:'complete'},{mint:A,cycle_number:1,state:'skipped_no_funds'}],coin:{mint:A,round:{cycle_number:'3',state:'scheduled'}},other:[{mint:B,cycle_number:1,state:'complete'}],payouts:[{mint:A,cycle_number:2,owner:'x'}]};
+  await F._internal.publicRounds(db,out);
+  assert.deepEqual(out.cycles.map(c=>c.cycle_number),[2,1]);assert.equal(out.coin.round.cycle_number,2);assert.equal(out.other[0].cycle_number,1);assert.equal(out.payouts[0].cycle_number,1);
+ }finally{await db.close();}
+});

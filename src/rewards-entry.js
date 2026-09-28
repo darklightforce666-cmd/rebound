@@ -187,7 +187,7 @@ async function mountToken(host,mint,signal){
  await draw();
  try{tokenChannel?.unsubscribe();const f='mint=eq.'+mint;const redraw=debounce(()=>{if(host.isConnected)draw();else tokenChannel?.unsubscribe();},700);
   tokenChannel=await realtime('token-'+mint,[{table:'reward_public_cycles',filter:f},{table:'reward_public_tokens',filter:f,event:'UPDATE'},{table:'reward_public_payouts',filter:f,event:'INSERT'}],(table,p)=>{
-   if(table==='reward_public_payouts'&&host.isConnected){const tb=host.querySelector('#payouts-box tbody');if(tb){tb.insertAdjacentHTML('afterbegin',payoutRow(p.new,true,false,U));}}redraw();});}catch{}
+   redraw();});}catch{}   // redrawn from the API (public round numbers), never from the raw row
 }
 
 // ---------------- portfolio: the connected wallet's rebound coins (live) ----------------
