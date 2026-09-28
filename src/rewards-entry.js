@@ -295,6 +295,8 @@ async function mountLaunch(host,toast,signal){
 }
 async function start(flow,form,toast){
  if(!wallet?.address){window.ReboundConnect?.();throw Error('Connect your wallet first.');}
+ // The config is read once per page load: a page opened before the REBOUND token went live asks again here.
+ if(!cfg?.features?.launches){try{const c=await api('config');if(c)cfg=c;}catch{}}
  if(!cfg?.features?.launches)throw Error('Launches open together with the REBOUND token. Nothing was signed; your details stay in the form.');
  const file=form.get('image');if(!file||file.size>2000000)throw Error('Choose a PNG or JPEG image smaller than 2 MB.');
  const initialBuyLamports=lamportsOf(form.get('buy'));
