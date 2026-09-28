@@ -106,7 +106,7 @@ test('one-time consent binds user, wallet, domain, action and payload; replay an
   const session={userId:crypto.randomUUID(),reboundWallets:[w],wallets:[w]},origin='https://rebound.wtf';
   const payload={mint:'So11111111111111111111111111111111111111112'};
   const c=await Consent.challenge(db,session,{origin,wallet:w,action:'admin-pause',payload,binding:{policy:'abc'}});
-  assert.match(c.message,/^rebound\.wtf wants you to approve one REBOUND action/);assert.match(c.message,/does not send a transaction, move SOL or tokens, or authorize future spending/);
+  assert.match(c.message,/^REBOUND action approval\nSite: rebound\.wtf\nWallet: /);assert.doesNotMatch(c.message,/wants you to/);assert.match(c.message,/does not send a transaction, move SOL or tokens, or authorize future spending/);
   const sign=text=>signWith(key,text);
   const proof={id:c.id,signature:sign(c.message)};
   await assert.rejects(Consent.consume(db,session,{origin,wallet:w,action:'admin-pause',payload:{mint:'other'},proof}),/Invalid or expired/);

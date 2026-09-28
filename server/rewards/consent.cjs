@@ -12,7 +12,9 @@ const TTL_MS=120000;
 const payloadHash=(action,payload)=>{if(!ACTIONS.has(action))throw new AuthError('FORBIDDEN','Unsupported signed action',403);return W.hash(stable({action,payload})).toString('hex');};
 
 function message({domain,wallet,action,hash,nonce,expires,binding}){
- const lines=[`${domain} wants you to approve one REBOUND action with your Solana account:`,wallet,'',
+ // Not the Sign-In-With-Solana header ("… wants you to … with your Solana account:"): Phantom parses messages that
+ // look like SIWS and refuses to show one that is not a valid sign-in ("invalid formatting").
+ const lines=['REBOUND action approval',`Site: ${domain}`,`Wallet: ${wallet}`,'',
   'This signature approves only the action below. It does not send a transaction, move SOL or tokens, or authorize future spending.','',
   `Action: ${action}`,`Request: ${hash}`];
  for(const k of ['mint','policy','fundingMode','targetPrimaryMint'])if(binding[k])lines.push(`${k[0].toUpperCase()+k.slice(1)}: ${binding[k]}`);
